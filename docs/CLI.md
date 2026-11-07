@@ -72,6 +72,43 @@ and land ramps, with sea level as a hard boundary. Non-finite values are magenta
 | `--climate-frequency` | 45 | 20k |
 | `--steps-per-day` | 48 | 30-minute base step on Earth |
 
+### Terrain
+
+Without a heightmap the world is a blank ocean, 4000 m deep everywhere.
+`--heightmap FILE` (accepted by every command) makes a global equirectangular
+heightmap the terrain:
+
+| Option | Meaning |
+|---|---|
+| `--heightmap FILE` | A GeoTIFF (`.tif`, `.tiff`) or greyscale PNG (`.png`) covering the whole globe, north up. Values are metres above sea level, negative below |
+| `--heightmap-range MIN,MAX` | PNG only: the elevations (m) of black and white. 8- and 16-bit PNGs both work |
+
+For Earth, `scripts/fetch-etopo.sh` downloads ETOPO 2022 (60 arc-second, ice
+surface, about 470 MB) to `data/`, which is gitignored:
+
+```sh
+./scripts/fetch-etopo.sh
+fms dump -f terrain.elevation --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif
+```
+
+GeoTIFFs must be in latitude/longitude. Both pixel-is-area and pixel-is-point
+(grid-registered) files work, and a repeated column at +180° is dropped. Plain
+TIFFs with no georeferencing are read like a PNG. Files much finer than the grid
+are box-averaged while reading, down to about 4 pixels per terrain-cell spacing,
+which keeps memory low. Each terrain cell then takes the area-weighted mean of
+the pixels inside it, or a bilinear sample at its centre if the file is so
+coarse that no pixel centre falls inside.
+
+The importer sets `terrain.elevation`. These fields are derived from it:
+
+| Field | Grid | Meaning |
+|---|---|---|
+| `terrain.slope` | terrain | Surface slope (m per m; the sea surface is flat) |
+| `terrain.land_fraction` | climate | Fraction of the cell above sea level |
+| `terrain.surface_height` | climate | Mean surface height: land, or sea level over ocean |
+| `terrain.surface_height_stddev` | climate | Spread of surface height inside the cell (sub-grid mountains) |
+| `terrain.mean_slope` | climate | Mean slope of the terrain cells inside |
+
 ### Point probes
 
 `fms probe` reads each field at the cell nearest the requested point, on that
@@ -111,6 +148,8 @@ fms dump -f planet.daily_insolation --days 92 --smooth      # June solstice
 fms animate                                                 # a year of daily-mean sunlight
 fms animate -f planet.toa_insolation --days 1 --frames 48   # one day of the terminator moving
 fms patterns --smooth                                       # rendering self-test
+fms dump -f terrain.elevation -f terrain.surface_height_stddev \
+    --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif   # Earth's terrain on both grids
 fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles at the equator
 fms probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
 ```

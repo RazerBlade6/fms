@@ -20,6 +20,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-8 | [Scheduler overhead is ~119 µs per step](#o-8-scheduler-overhead-is-119-µs-per-step) | Performance | Scheduled: M2 step 16 |
 | O-9 | [Vector fields render as arrows only](#o-9-vector-fields-render-as-arrows-only) | Tooling | Watching |
 | O-10 | [Field names must be `'static` strings](#o-10-field-names-must-be-static-strings) | Fields | Scheduled: M4 step 2 |
+| O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
 
 ---
 
@@ -124,3 +125,18 @@ read better for large-scale circulation (Hadley cells, gyres).
 
 **Plan:** switch `FieldSpec::name` to `Cow<'static, str>` in M4 step 2 (save
 format), where keeping unknown fields first needs it.
+
+### O-11: Land below sea level counts as ocean
+
+**Seen (M2.1):** land and sea are split at elevation 0, so inland basins below
+sea level count as ocean in `terrain.land_fraction` and get a flat sea-level
+surface. On ETOPO the Caspian Sea (−28 m) is the only one visible at climate
+resolution. The Dead Sea, Qattara Depression and Death Valley are a few terrain
+cells at most.
+
+**Why it's acceptable for now:** the Caspian really is water, so for climate it
+mostly behaves right, and nothing reads the land/sea split yet.
+
+**Revisit when:** the slab ocean (M2 step 11) needs a real ocean mask: take the
+ocean to be the below-sea-level region connected to the open sea, and leave
+closed basins to hydrology's lakes and depressions.

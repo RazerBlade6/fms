@@ -14,7 +14,7 @@ fn small_world() -> World {
 fn builds_registers_core_fields_and_steps() {
     let mut world = small_world();
     assert!(world.adjustments.is_empty());
-    assert_eq!(world.fields.len(), 6);
+    assert_eq!(world.fields.len(), 12);
     for name in [
         "geo.terrain_latitude",
         "geo.terrain_cell_area",
@@ -22,6 +22,12 @@ fn builds_registers_core_fields_and_steps() {
         "geo.climate_cell_area",
         "planet.toa_insolation",
         "planet.daily_insolation",
+        "terrain.elevation",
+        "terrain.slope",
+        "terrain.land_fraction",
+        "terrain.surface_height",
+        "terrain.surface_height_stddev",
+        "terrain.mean_slope",
     ] {
         assert!(world.fields.key(name).is_ok(), "{name}");
     }
@@ -109,3 +115,83 @@ const GOLDEN: [u64; 3] = [
     0xc52d_c4e9_50d4_e23e,
     0xba12_f7fe_2830_1500,
 ];
+
+#[test]
+fn terrain_starts_as_a_blank_ocean() {
+    let world = small_world();
+    let t = world.core.terrain;
+    assert!(
+        world
+            .fields
+            .read(t.elevation)
+            .iter()
+            .all(|&z| z == fms_sim::BLANK_OCEAN_ELEVATION)
+    );
+    for id in [t.land_fraction, t.surface_height, t.mean_slope] {
+        assert!(world.fields.read(id).iter().all(|&v| v == 0.0));
+    }
+}
+
+#[test]
+fn setting_elevation_updates_the_derived_fields() {
+    let mut world = small_world();
+    // Land north of the equator, rising toward the pole; ocean to the south.
+    let elevation: Vec<f64> = world
+        .terrain
+        .mesh
+        .cell_centers()
+        .iter()
+        .map(|p| if p.z > 0.0 { 3000.0 * p.z } else { -2000.0 })
+        .collect();
+    world.set_elevation(elevation);
+    let t = world.core.terrain;
+    let areas = world.fields.read(world.core.climate_cell_area).to_vec();
+    let land = world.fields.read(t.land_fraction);
+    let total: f64 = areas.iter().sum();
+    let fraction: f64 = land.iter().zip(&areas).map(|(f, a)| f * a).sum::<f64>() / total;
+    assert!((fraction - 0.5).abs() < 0.03, "land fraction {fraction}");
+    let slope = world.fields.read(t.slope);
+    assert!(slope.iter().any(|&s| s > 0.0));
+    assert!(world.fields.first_invalid(t.surface_height.key()).is_none());
+}
+
+#[test]
+fn loads_a_png_heightmap() {
+    use std::io::BufWriter;
+    let path = std::env::temp_dir().join(format!("fms-sim-{}-heights.png", std::process::id()));
+    // Left half white (land at 1000 m), right half black (sea floor at -1000 m).
+    let (w, h) = (64u32, 32u32);
+    let bytes: Vec<u8> = (0..w * h)
+        .map(|i| if i % w < w / 2 { 255 } else { 0 })
+        .collect();
+    let mut enc = png::Encoder::new(BufWriter::new(std::fs::File::create(&path).unwrap()), w, h);
+    enc.set_color(png::ColorType::Grayscale);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .unwrap()
+        .write_image_data(&bytes)
+        .unwrap();
+
+    let mut world = small_world();
+    let import = world
+        .load_heightmap(&path, Some((-1000.0, 1000.0)))
+        .unwrap();
+    assert_eq!(import.size, (64, 32));
+    let elevation = world.fields.read(world.core.terrain.elevation).to_vec();
+    for (p, &z) in world
+        .terrain
+        .mesh
+        .cell_centers()
+        .iter()
+        .zip(elevation.iter())
+    {
+        let lon = fms_geo::coords::to_lat_lon(*p).1.to_degrees();
+        // Cells near 0° and ±180° straddle the boundary and mix both halves.
+        if lon < -10.0 && lon > -170.0 {
+            assert!((z - 1000.0).abs() < 1e-3, "west {lon}: {z}");
+        } else if lon > 10.0 && lon < 170.0 {
+            assert!((z + 1000.0).abs() < 1e-3, "east {lon}: {z}");
+        }
+    }
+    assert!(world.load_heightmap(&path, None).is_err());
+}

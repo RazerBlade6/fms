@@ -11,6 +11,11 @@ publish = false
 fms-geo.workspace = true
 fms-fields.workspace = true
 fms-planet.workspace = true
+fms-math.workspace = true
+glam.workspace = true
+png.workspace = true
+rayon.workspace = true
+tiff.workspace = true
 
 [lints]
 workspace = true

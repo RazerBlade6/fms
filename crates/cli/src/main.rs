@@ -75,6 +75,14 @@ struct WorldArgs {
     /// Base steps per solar day.
     #[arg(long, default_value_t = 48)]
     steps_per_day: u32,
+    /// Global heightmap to use as the terrain: a GeoTIFF such as ETOPO 2022
+    /// (`scripts/fetch-etopo.sh`), or a greyscale PNG with --heightmap-range.
+    /// Without one the world is a blank ocean.
+    #[arg(long)]
+    heightmap: Option<PathBuf>,
+    /// Elevations (m) of black and white in a PNG heightmap, `MIN,MAX`.
+    #[arg(long, value_parser = parse_range, allow_hyphen_values = true)]
+    heightmap_range: Option<(f64, f64)>,
 }
 
 #[derive(Args)]
@@ -196,7 +204,7 @@ fn parse_range(s: &str) -> Result<(f64, f64), String> {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Fields(args) => list_fields(&build_world(&args)),
+        Command::Fields(args) => build_world(&args).and_then(|w| list_fields(&w)),
         Command::Dump(args) => dump(args),
         Command::Animate(args) => animate(args),
         Command::Patterns(args) => render_patterns(args),
@@ -211,9 +219,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn build_world(args: &WorldArgs) -> World {
+fn build_world(args: &WorldArgs) -> Result<World, String> {
     let t = Instant::now();
-    let world = World::new(WorldConfig {
+    let mut world = World::new(WorldConfig {
         terrain_frequency: args.terrain_frequency,
         climate_frequency: args.climate_frequency,
         steps_per_day: args.steps_per_day,
@@ -233,7 +241,20 @@ fn build_world(args: &WorldArgs) -> World {
     for a in &world.adjustments {
         eprintln!("planet: {a}");
     }
-    world
+    if let Some(path) = &args.heightmap {
+        let import = world
+            .load_heightmap(path, args.heightmap_range)
+            .map_err(|e| e.to_string())?;
+        eprintln!(
+            "heightmap: {} read at {}×{} in {:.1}s, resampled in {:.2}s",
+            path.display(),
+            import.size.0,
+            import.size.1,
+            import.read_seconds,
+            import.resample_seconds,
+        );
+    }
+    Ok(world)
 }
 
 fn list_fields(world: &World) -> Result<(), String> {
@@ -479,7 +500,7 @@ fn write_one(
 }
 
 fn dump(args: DumpArgs) -> Result<(), String> {
-    let mut world = build_world(&args.world);
+    let mut world = build_world(&args.world)?;
     let keys: Vec<FieldKey> = if args.all {
         world.fields.keys().collect()
     } else if args.fields.is_empty() {
@@ -508,7 +529,7 @@ fn dump(args: DumpArgs) -> Result<(), String> {
 }
 
 fn animate(args: AnimateArgs) -> Result<(), String> {
-    let mut world = build_world(&args.world);
+    let mut world = build_world(&args.world)?;
     let key = resolve(&world, &args.field)?;
     let overlay = overlay_for(&world, key, &args.image)?;
     let days = args.days.unwrap_or(world.planet.params().year_days);
@@ -545,7 +566,7 @@ fn animate(args: AnimateArgs) -> Result<(), String> {
 }
 
 fn render_patterns(mut args: PatternArgs) -> Result<(), String> {
-    let mut world = build_world(&args.world);
+    let mut world = build_world(&args.world)?;
     let fields = patterns::register(&mut world)?;
     world.run_steps(1);
     args.image.out_dir = args.image.out_dir.join("patterns");
@@ -587,7 +608,7 @@ fn coord_label(lat: f64, lon: f64, sep: &str) -> String {
 /// Run the world, recording the probe's columns at the steps given by
 /// `--every`, then write `probe_<location>.csv` and `.png`.
 fn probe(args: ProbeArgs) -> Result<(), String> {
-    let mut world = build_world(&args.world);
+    let mut world = build_world(&args.world)?;
     let keys = args
         .fields
         .iter()

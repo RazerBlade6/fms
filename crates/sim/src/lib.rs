@@ -2,13 +2,15 @@
 //! steps it.
 //!
 //! For now a world holds the two grids, the planet, a handful of geometry
-//! fields, and the insolation systems. Later milestones add the GCM, ocean,
+//! fields, the terrain (elevation plus its derived statistics), and the
+//! insolation systems. Later milestones add the GCM, ocean,
 //! hydrology and climate systems here.
 //!
 //! See `docs/PLAN.md` §3 for the design.
 
 mod insolation;
 pub mod probe;
+mod terrain;
 
 use std::time::Instant;
 
@@ -23,6 +25,7 @@ use fms_sched::{Calendar, Scheduler, StepReport};
 
 pub use insolation::{DailyInsolation, Insolation};
 pub use probe::{Probe, ProbeError};
+pub use terrain::{BLANK_OCEAN_ELEVATION, HeightmapImport, TerrainFields};
 
 /// One of the two grids, with its precomputed geometry and point locator.
 pub struct Grid {
@@ -88,6 +91,8 @@ pub struct CoreFields {
     pub toa_insolation: FieldId<f64>,
     /// Daily-mean top-of-atmosphere insolation on climate cells (W m⁻²).
     pub daily_insolation: FieldId<f64>,
+    /// Elevation and the fields derived from it.
+    pub terrain: TerrainFields,
 }
 
 /// Timings from building a world, for diagnostics.
@@ -124,7 +129,9 @@ pub struct World {
 }
 
 impl World {
-    /// Build a world: grids, mapping, planet, built-in fields and systems.
+    /// Build a world: grids, mapping, planet, built-in fields and systems. The
+    /// terrain starts as a blank ocean ([`BLANK_OCEAN_ELEVATION`]); use
+    /// [`World::load_heightmap`] or [`World::set_elevation`] to change it.
     pub fn new(config: WorldConfig) -> Self {
         let (planet, adjustments) = Planet::new(config.planet);
 
@@ -165,7 +172,7 @@ impl World {
             .add(DailyInsolation::new(planet, centers, core.daily_insolation))
             .expect("built-in system is valid");
 
-        Self {
+        let mut world = Self {
             planet,
             adjustments,
             terrain,
@@ -179,7 +186,9 @@ impl World {
                 climate_grid,
                 two_level: two_level_time,
             },
-        }
+        };
+        world.update_terrain();
+        world
     }
 
     /// The grid a field lives on.
@@ -278,5 +287,6 @@ fn register_core_fields(
             ),
             0.0,
         )?,
+        terrain: terrain::register(fields)?,
     })
 }
