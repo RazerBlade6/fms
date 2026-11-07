@@ -10,9 +10,11 @@
 //! fms animate                                  # a year of daily-mean insolation
 //! fms animate -f planet.toa_insolation --days 1 --frames 48
 //! fms patterns                                 # analytic test fields (edges, vertices, vectors)
+//! fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2  # time series at a point
 //! ```
 
 mod arrows;
+mod chart;
 mod colormap;
 mod font;
 mod patterns;
@@ -26,7 +28,7 @@ use std::time::Instant;
 use clap::{Args, Parser, Subcommand};
 use fms_fields::{ColorScale, FieldKey};
 use fms_planet::Hemisphere;
-use fms_sim::{World, WorldConfig};
+use fms_sim::{Probe, World, WorldConfig};
 use glam::DVec3;
 
 use crate::arrows::ArrowLayout;
@@ -58,6 +60,8 @@ enum Command {
     /// Write analytic test fields (edge, vertex and vector fields) to
     /// `output/patterns/`, to check rendering before real dynamics exist.
     Patterns(PatternArgs),
+    /// Record fields at one location over time: a CSV plus a line chart.
+    Probe(ProbeArgs),
 }
 
 #[derive(Args, Clone)]
@@ -114,6 +118,36 @@ struct AnimateArgs {
 }
 
 #[derive(Args)]
+struct ProbeArgs {
+    #[command(flatten)]
+    world: WorldArgs,
+    /// Latitude in degrees (-90 to 90; south is negative).
+    #[arg(long, allow_hyphen_values = true)]
+    lat: f64,
+    /// Longitude in degrees (west is negative).
+    #[arg(long, allow_hyphen_values = true)]
+    lon: f64,
+    /// Field to record (repeatable). Vector fields give east and north columns.
+    #[arg(short, long = "field", required = true)]
+    fields: Vec<String>,
+    /// Simulated days to record.
+    #[arg(long, default_value_t = 1.0)]
+    days: f64,
+    /// Extra simulated hours to record.
+    #[arg(long, default_value_t = 0.0)]
+    hours: f64,
+    /// Record every N base steps, starting with the first.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+    every: u64,
+    /// Chart width in pixels.
+    #[arg(long, default_value_t = 1024)]
+    width: usize,
+    /// Output directory.
+    #[arg(long, default_value = "output")]
+    out_dir: PathBuf,
+}
+
+#[derive(Args)]
 struct PatternArgs {
     #[command(flatten)]
     world: WorldArgs,
@@ -166,6 +200,7 @@ fn main() -> ExitCode {
         Command::Dump(args) => dump(args),
         Command::Animate(args) => animate(args),
         Command::Patterns(args) => render_patterns(args),
+        Command::Probe(args) => probe(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -231,8 +266,12 @@ fn steps_for(world: &World, days: f64) -> u64 {
 /// A human-readable date stamp for legends: the time of the last completed
 /// step, which is when the fields were last computed.
 fn date_label(world: &World) -> String {
+    date_at(world, world.scheduler.current_step().saturating_sub(1))
+}
+
+/// Date stamp of the start of `step`.
+fn date_at(world: &World, step: u64) -> String {
     let calendar = *world.scheduler.calendar();
-    let step = world.scheduler.current_step().saturating_sub(1);
     let date = calendar.date(step);
     let hour = date.day_fraction(&calendar) * 24.0;
     let season = world
@@ -524,9 +563,193 @@ fn render_patterns(mut args: PatternArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Longitude wrapped to (-180, 180].
+fn wrap_lon(lon: f64) -> f64 {
+    let l = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    if l == -180.0 { 180.0 } else { l }
+}
+
+/// `33.9S 18.4E`-style label, joined with `sep`.
+fn coord_label(lat: f64, lon: f64, sep: &str) -> String {
+    let part = |v: f64, pos: char, neg: char| {
+        let s = format!("{:.2}", v.abs());
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        let hemisphere = if v < 0.0 && s != "0" { neg } else { pos };
+        format!("{s}{hemisphere}")
+    };
+    format!(
+        "{}{sep}{}",
+        part(lat, 'N', 'S'),
+        part(wrap_lon(lon), 'E', 'W')
+    )
+}
+
+/// Run the world, recording the probe's columns at the steps given by
+/// `--every`, then write `probe_<location>.csv` and `.png`.
+fn probe(args: ProbeArgs) -> Result<(), String> {
+    let mut world = build_world(&args.world);
+    let keys = args
+        .fields
+        .iter()
+        .map(|n| resolve(&world, n))
+        .collect::<Result<Vec<_>, _>>()?;
+    let probe = Probe::new(&world, args.lat, args.lon, &keys).map_err(|e| e.to_string())?;
+    let n_cols = probe.columns().len();
+
+    // A sample after step `s` holds the fields computed for time `s·dt`.
+    let total = steps_for(&world, args.days + args.hours / 24.0).max(1);
+    let mut steps = Vec::new();
+    let mut values = Vec::new(); // row-major: one row of `n_cols` per sample
+    let t = Instant::now();
+    for step in 0..total {
+        world.step();
+        if step % args.every == 0 {
+            steps.push(step);
+            probe.sample_into(&world, &mut values);
+        }
+    }
+    print_profile(&world, t.elapsed());
+
+    ensure_dir(&args.out_dir)?;
+    let tag = coord_label(args.lat, args.lon, "_");
+    let csv_path = args.out_dir.join(format!("probe_{tag}.csv"));
+    write_probe_csv(&csv_path, &world, &probe, &steps, &values)
+        .map_err(|e| format!("cannot write {}: {e}", csv_path.display()))?;
+
+    let calendar = *world.scheduler.calendar();
+    let hours = (total as f64) / f64::from(calendar.steps_per_day()) <= 3.0;
+    let per_day = if hours { 24.0 } else { 1.0 };
+    let times: Vec<f64> = steps
+        .iter()
+        .map(|&s| s as f64 * calendar.dt() / calendar.day_seconds() * per_day)
+        .collect();
+    let columns: Vec<Vec<f64>> = (0..n_cols)
+        .map(|j| values.iter().skip(j).step_by(n_cols).copied().collect())
+        .collect();
+    let series: Vec<chart::Series<'_>> = probe
+        .columns()
+        .iter()
+        .zip(&columns)
+        .map(|(c, v)| chart::Series {
+            title: format!(
+                "{}{}  {:?} CELL {} AT {}",
+                c.label,
+                units_suffix(c.units),
+                c.site.grid,
+                c.site.cell,
+                coord_label(c.site.lat_deg, c.site.lon_deg, " ")
+            ),
+            values: v,
+        })
+        .collect();
+    let header = format!(
+        "PROBE {}   {} TO {}",
+        coord_label(args.lat, args.lon, " "),
+        date_at(&world, steps[0]),
+        date_at(&world, *steps.last().expect("at least one sample")),
+    );
+    let axis = chart::TimeAxis {
+        times: &times,
+        caption: if hours { "HOURS" } else { "DAYS" },
+        hours,
+    };
+    let (pixels, height) = chart::render_chart(args.width, &header, &axis, &series);
+    let png_path = args.out_dir.join(format!("probe_{tag}.png"));
+    write_png(&png_path, args.width, height, &pixels, &chart::palette())
+        .map_err(|e| format!("cannot write {}: {e}", png_path.display()))?;
+
+    for (c, v) in probe.columns().iter().zip(&columns) {
+        let finite: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+        let (min, max) = finite
+            .iter()
+            .fold((f64::NAN, f64::NAN), |(lo, hi), &x| (x.min(lo), x.max(hi)));
+        let mean = finite.iter().sum::<f64>() / finite.len().max(1) as f64;
+        println!(
+            "{}{}: min {}, max {}, mean {}{}",
+            c.label,
+            units_suffix(c.units),
+            format_value(min),
+            format_value(max),
+            format_value(mean),
+            if finite.len() < v.len() {
+                format!(" ({} non-finite)", v.len() - finite.len())
+            } else {
+                String::new()
+            }
+        );
+    }
+    println!(
+        "{} samples -> {}, {}",
+        steps.len(),
+        csv_path.display(),
+        png_path.display()
+    );
+    Ok(())
+}
+
+fn units_suffix(units: &str) -> String {
+    if units.is_empty() {
+        String::new()
+    } else {
+        format!(" ({units})")
+    }
+}
+
+/// One row per sample: step, time, date, then one column per probe column.
+/// Floats are written in Rust's shortest round-trip form, so values are exact.
+fn write_probe_csv(
+    path: &Path,
+    world: &World,
+    probe: &Probe,
+    steps: &[u64],
+    values: &[f64],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let calendar = *world.scheduler.calendar();
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    write!(out, "step,time_s,day,year,day_of_year,hour")?;
+    for c in probe.columns() {
+        if c.units.is_empty() {
+            write!(out, ",{}", c.label)?;
+        } else {
+            write!(out, ",{} [{}]", c.label, c.units)?;
+        }
+    }
+    writeln!(out)?;
+    let n = probe.columns().len();
+    for (&step, row) in steps.iter().zip(values.chunks(n)) {
+        let time = step as f64 * calendar.dt();
+        let date = calendar.date(step);
+        write!(
+            out,
+            "{step},{time},{},{},{},{}",
+            time / calendar.day_seconds(),
+            date.year,
+            date.day_of_year + 1,
+            date.day_fraction(&calendar) * 24.0
+        )?;
+        for v in row {
+            write!(out, ",{v}")?;
+        }
+        writeln!(out)?;
+    }
+    out.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coordinate_labels() {
+        assert_eq!(coord_label(33.9, 18.4, " "), "33.9N 18.4E");
+        assert_eq!(coord_label(-33.925, -70.0, "_"), "33.92S_70W");
+        assert_eq!(coord_label(0.0, 180.0, " "), "0N 180E");
+        assert_eq!(coord_label(-0.001, 190.0, " "), "0N 170W");
+        assert_eq!(coord_label(90.0, -180.0, " "), "90N 180E");
+        assert_eq!(wrap_lon(540.0), 180.0);
+        assert_eq!(wrap_lon(-190.0), 170.0);
+    }
 
     #[test]
     fn ranges_parse() {

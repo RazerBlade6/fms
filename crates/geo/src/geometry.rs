@@ -268,15 +268,25 @@ impl MeshGeometry {
         assert_eq!(normal.len(), mesh.n_edges());
         (0..mesh.n_cells() as CellId)
             .into_par_iter()
-            .map(|c| {
-                let coeffs = &self.perot[self.ring_range(c)];
-                mesh.cell_edges(c)
-                    .iter()
-                    .zip(coeffs)
-                    .map(|(&e, &k)| k * normal[e as usize])
-                    .fold(DVec3::ZERO, |a, b| a + b)
-            })
+            .map(|c| self.reconstruct_vector(mesh, c, |e| normal[e as usize]))
             .collect()
+    }
+
+    /// [`MeshGeometry::reconstruct_vectors`] at one cell, reading each edge's
+    /// normal component through `normal`. For callers that need a single cell
+    /// (probes, pickers) without copying or touching the whole field.
+    pub fn reconstruct_vector(
+        &self,
+        mesh: &SphereMesh,
+        cell: CellId,
+        normal: impl Fn(EdgeId) -> f64,
+    ) -> DVec3 {
+        let coeffs = &self.perot[self.ring_range(cell)];
+        mesh.cell_edges(cell)
+            .iter()
+            .zip(coeffs)
+            .map(|(&e, &k)| k * normal(e))
+            .fold(DVec3::ZERO, |a, b| a + b)
     }
 
     /// Average a vertex field onto cells, weighting each vertex by its kite area
@@ -285,17 +295,26 @@ impl MeshGeometry {
         assert_eq!(values.len(), mesh.n_vertices());
         (0..mesh.n_cells() as CellId)
             .into_par_iter()
-            .map(|c| {
-                let kites = self.cell_kites(c);
-                let total: f64 = kites.iter().sum();
-                mesh.cell_vertices(c)
-                    .iter()
-                    .zip(kites)
-                    .map(|(&v, &k)| k * values[v as usize])
-                    .sum::<f64>()
-                    / total
-            })
+            .map(|c| self.vertex_average(mesh, c, |v| values[v as usize]))
             .collect()
+    }
+
+    /// [`MeshGeometry::vertices_to_cells`] at one cell, reading vertex values
+    /// through `value`.
+    pub fn vertex_average(
+        &self,
+        mesh: &SphereMesh,
+        cell: CellId,
+        value: impl Fn(VertexId) -> f64,
+    ) -> f64 {
+        let kites = self.cell_kites(cell);
+        let total: f64 = kites.iter().sum();
+        mesh.cell_vertices(cell)
+            .iter()
+            .zip(kites)
+            .map(|(&v, &k)| k * value(v))
+            .sum::<f64>()
+            / total
     }
 
     /// Average an edge field onto cells, weighting each edge by its length. For
@@ -305,16 +324,25 @@ impl MeshGeometry {
         assert_eq!(values.len(), mesh.n_edges());
         (0..mesh.n_cells() as CellId)
             .into_par_iter()
-            .map(|c| {
-                let edges = mesh.cell_edges(c);
-                let total: f64 = edges.iter().map(|&e| self.edge_lengths[e as usize]).sum();
-                edges
-                    .iter()
-                    .map(|&e| self.edge_lengths[e as usize] * values[e as usize])
-                    .sum::<f64>()
-                    / total
-            })
+            .map(|c| self.edge_average(mesh, c, |e| values[e as usize]))
             .collect()
+    }
+
+    /// [`MeshGeometry::edges_to_cells`] at one cell, reading edge values
+    /// through `value`.
+    pub fn edge_average(
+        &self,
+        mesh: &SphereMesh,
+        cell: CellId,
+        value: impl Fn(EdgeId) -> f64,
+    ) -> f64 {
+        let edges = mesh.cell_edges(cell);
+        let total: f64 = edges.iter().map(|&e| self.edge_lengths[e as usize]).sum();
+        edges
+            .iter()
+            .map(|&e| self.edge_lengths[e as usize] * value(e))
+            .sum::<f64>()
+            / total
     }
 
     /// Kite areas of `cell`, aligned with [`SphereMesh::cell_vertices`].

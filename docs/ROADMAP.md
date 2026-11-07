@@ -57,7 +57,7 @@ Added after the M1 review: tooling the GCM work depends on.
    convention.
 
 ## M2 — Headless GCM
-- [ ] 0. **Point probe**: `fms probe --lat --lon -f FIELD [-f …] --days D` writes a
+- [x] 0. **Point probe**: `fms probe --lat --lon -f FIELD [-f …] --days D` writes a
    time series at one location to `output/` as CSV plus a simple line chart. Needed
    to check diurnal and seasonal cycles and energy drift in the steps below.
 - [ ] 1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine

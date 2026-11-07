@@ -8,6 +8,7 @@
 //! See `docs/PLAN.md` §3 for the design.
 
 mod insolation;
+pub mod probe;
 
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use fms_planet::{Adjustment, Planet, PlanetParams};
 use fms_sched::{Calendar, Scheduler, StepReport};
 
 pub use insolation::{DailyInsolation, Insolation};
+pub use probe::{Probe, ProbeError};
 
 /// One of the two grids, with its precomputed geometry and point locator.
 pub struct Grid {
