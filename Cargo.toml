@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+fms-geo = { path = "crates/geo" }
+fms-fields = { path = "crates/fields" }
+fms-sched = { path = "crates/sched" }
+fms-planet = { path = "crates/planet" }
+fms-worldgen = { path = "crates/worldgen" }
+fms-atmos = { path = "crates/atmos" }
+fms-ocean = { path = "crates/ocean" }
+fms-hydro = { path = "crates/hydro" }
+fms-climate = { path = "crates/climate" }
+fms-sim = { path = "crates/sim" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# Numerical code: float comparisons and casts are deliberate and reviewed.
+float_cmp = "allow"
+
+[profile.dev]
+# The simulation is unusably slow without optimization; keep debug info.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = "line-tables-only"

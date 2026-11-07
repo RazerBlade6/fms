@@ -102,6 +102,9 @@ crates/
   app/        eframe/egui + wgpu renderer, brushes, map modes, inspector
 ```
 
+Package names have an `fms-` prefix (`fms-geo`, `fms-sim`, …) to avoid clashing
+with crates.io names. The binaries are `fms` (cli) and `fantasy-map` (app).
+
 Dependencies point one way. The `app` crate depends on the sim crates; the sim
 crates never depend on `app`. Everything except `app` runs headless.
 
@@ -379,7 +382,7 @@ Names only, as a reading list. Grouped by subsystem.
 Every step ends with an automated test or a visual check (a PNG/GIF from the CLI).
 
 ### M1 — Foundations
-1. **Workspace and CI**: Cargo workspace with all crate skeletons; rustfmt and
+1. ✅ **Workspace and CI**: Cargo workspace with all crate skeletons; rustfmt and
    clippy; GitHub Actions running tests.
 2. **Icosahedral mesh**: subdivide the icosahedron, build the Voronoi dual (cell
    centres, vertices, edges), and optimize it into an SCVT using Lloyd's algorithm.
@@ -505,6 +508,9 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
 8. **Planet panel**: edit planet parameters, which re-derives `dt` and triggers
    spin-up; shows warnings when values are clamped.
 9. **Save/load UI.**
+10. **CD pipeline**: a GitHub Actions workflow triggered by pushes to `main`.
+    It builds release binaries for macOS, Windows and Linux and publishes them as
+    a GitHub Release. Releases are cut on every push to `main` from M5 onwards.
 
 ### M6 — Editor
 1. **Generator trait**: blank-ocean world; heightmap import UI.
@@ -531,7 +537,16 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
   and crust data
 - Tidal locking, moons, extreme obliquity
 
-## 8. Risks
+## 8. Branching and release
+
+- `dev` is the working branch, where all development happens. `main` is the release branch.
+- CI (fmt, clippy, tests on macOS, Windows and Linux) runs on every push to `dev`
+  or `main`, and on pull requests.
+- `main` is only ever fast-forwarded from `dev` when a release is shipped.
+- CD runs on pushes to `main` and builds a GitHub Release, from M5 onwards
+  (M5 step 10).
+
+## 9. Risks
 
 | Risk | Mitigation |
 |---|---|

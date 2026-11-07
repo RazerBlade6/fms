@@ -1,0 +1,18 @@
+[package]
+name = "fms-cli"
+description = "Headless runner, field dumps and benchmarks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fms-sim.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fms"
+path = "src/main.rs"

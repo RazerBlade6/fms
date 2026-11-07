@@ -1,0 +1,13 @@
+[package]
+name = "fms-geo"
+description = "Icosahedral geodesic grids, two-level mapping, projections and picking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

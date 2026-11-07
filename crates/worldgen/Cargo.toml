@@ -1,0 +1,16 @@
+[package]
+name = "fms-worldgen"
+description = "World generators: plate layout, noise, heightmap import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fms-geo.workspace = true
+fms-fields.workspace = true
+fms-planet.workspace = true
+
+[lints]
+workspace = true
