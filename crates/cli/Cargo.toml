@@ -8,6 +8,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+clap.workspace = true
+fms-fields.workspace = true
+fms-geo.workspace = true
+fms-sched.workspace = true
+gif.workspace = true
+png.workspace = true
+rayon.workspace = true
 fms-sim.workspace = true
 
 [lints]

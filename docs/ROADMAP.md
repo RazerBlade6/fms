@@ -29,7 +29,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    - parameter struct with validation and clamping
    - derived quantities: Ω, f, sidereal day
    - orbit (Kepler) and insolation (instantaneous and daily mean)
-- [ ] 8. **CLI**: run a world headless; dump any field to an equirectangular PNG with
+- [x] 8. **CLI**: run a world headless; dump any field to an equirectangular PNG with
    a colormap; render a year of insolation as a GIF.
 - [ ] 9. **Tests**:
    - insolation matches analytic values (equinox and solstice, polar night)

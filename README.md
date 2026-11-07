@@ -7,12 +7,13 @@ winds, ocean currents, weather and climate zones, and runs them forward in time.
 Written in Rust (egui + wgpu). **Status:** early development (milestone 1).
 
 ```sh
-cargo test --workspace      # run all tests
-cargo run -p fms-cli        # headless runner (`fms`)
-cargo run -p fms-app        # GUI (`fantasy-map`)
+cargo test --workspace                        # run all tests
+cargo run --release -p fms-cli -- dump --all  # render every field to output/
+cargo run -p fms-app                          # GUI (`fantasy-map`, placeholder)
 ```
 
 ## Documentation
 
 - [Design plan](docs/PLAN.md): architecture, key decisions, subsystems, equations
 - [Roadmap](docs/ROADMAP.md): milestones and progress
+- [CLI](docs/CLI.md): the headless `fms` runner and its image output

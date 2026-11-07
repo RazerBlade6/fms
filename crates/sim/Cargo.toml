@@ -17,6 +17,8 @@ fms-atmos.workspace = true
 fms-ocean.workspace = true
 fms-hydro.workspace = true
 fms-climate.workspace = true
+glam.workspace = true
+rayon.workspace = true
 
 [lints]
 workspace = true
