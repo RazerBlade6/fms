@@ -6,10 +6,13 @@
 //!
 //! See `docs/PLAN.md` for the design.
 
+pub mod geometry;
+pub mod hilbert;
 pub mod icosahedron;
 pub mod mesh;
 pub mod spherical;
 
+pub use geometry::MeshGeometry;
 pub use mesh::{
     CellId, Edge, EdgeId, LloydOptions, LloydReport, MeshQuality, SphereMesh, VertexId,
 };

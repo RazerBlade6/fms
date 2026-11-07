@@ -14,7 +14,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    - exactly 12 pentagons
    - Euler characteristic = 2
    - cell areas sum to 4πr²
-- [ ] 3. **Mesh geometry and layout**: cell areas, edge lengths, dual lengths, edge
+- [x] 3. **Mesh geometry and layout**: cell areas, edge lengths, dual lengths, edge
    normals and tangents, and the TRiSK weights. Neighbours stored as CSR, cells
    reordered along a Hilbert curve.
 - [ ] 4. **Two-level grid**: map each fine cell to its coarse parent with area weights.

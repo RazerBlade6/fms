@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use fms_geo::{LloydOptions, SphereMesh};
+use fms_geo::{LloydOptions, MeshGeometry, SphereMesh};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -35,4 +35,12 @@ fn main() {
     );
     println!("  {report:?}, total {elapsed:.2?}");
     println!("  delaunay: {}", mesh.is_delaunay());
+
+    let t = Instant::now();
+    let geometry = MeshGeometry::new(&mesh);
+    println!(
+        "  geometry + TRiSK weights: {:.2?} ({} edges)",
+        t.elapsed(),
+        geometry.edge_lengths.len()
+    );
 }

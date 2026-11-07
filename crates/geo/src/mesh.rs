@@ -99,8 +99,13 @@ pub struct SphereMesh {
     /// Neighbours of each cell, CCW from outside. Neighbour `i` lies across the
     /// Voronoi edge from vertex `i - 1` to vertex `i` (cyclically).
     cell_neighbors: Vec<CellId>,
+    /// Edges of each cell, aligned with `cell_neighbors`: edge `i` separates the
+    /// cell from neighbour `i`.
+    cell_edges: Vec<EdgeId>,
     /// Voronoi edges.
     edges: Vec<Edge>,
+    /// The three edges meeting at each Voronoi vertex.
+    vertex_edges: Vec<[EdgeId; 3]>,
 }
 
 impl SphereMesh {
@@ -134,7 +139,36 @@ impl SphereMesh {
             mesh = Self::from_triangulation(pair[1], tri);
             report = mesh.optimize(options);
         }
-        (mesh, report)
+        (mesh.hilbert_ordered(), report)
+    }
+
+    /// Renumber cells and vertices along a Hilbert space-filling curve, so cells
+    /// that are close on the sphere are close in memory. Geometry and topology
+    /// are unchanged; only indices move. Edges follow the cell order.
+    pub fn hilbert_ordered(&self) -> Self {
+        let key = |p: DVec3| crate::hilbert::key(p);
+        let mut order: Vec<CellId> = (0..self.n_cells() as CellId).collect();
+        order.sort_by_key(|&c| key(self.cell_centers[c as usize]));
+        let mut new_index = vec![0 as CellId; self.n_cells()];
+        for (new, &old) in order.iter().enumerate() {
+            new_index[old as usize] = new as CellId;
+        }
+        let points = order
+            .iter()
+            .map(|&c| self.cell_centers[c as usize])
+            .collect();
+        let mut triangles: Vec<(u64, [CellId; 3])> = self
+            .triangles
+            .iter()
+            .zip(&self.vertices)
+            .map(|(t, &v)| (key(v), t.map(|c| new_index[c as usize])))
+            .collect();
+        triangles.sort_by_key(|&(k, _)| k);
+        let tri = icosahedron::Triangulation {
+            points,
+            triangles: triangles.into_iter().map(|(_, t)| t).collect(),
+        };
+        Self::from_triangulation(self.frequency, tri)
     }
 
     /// Build the Voronoi dual of a triangulation whose topology is that of the
@@ -218,6 +252,32 @@ impl SphereMesh {
             }
         }
 
+        // Edge ids on each cell, aligned with its neighbour list.
+        let mut cell_edges = vec![0 as EdgeId; incident.len()];
+        let slot_of = |cell: CellId, neighbor: CellId| -> usize {
+            let start = ring_offsets[cell as usize] as usize;
+            let end = ring_offsets[cell as usize + 1] as usize;
+            start
+                + cell_neighbors[start..end]
+                    .iter()
+                    .position(|&n| n == neighbor)
+                    .expect("adjacency is symmetric")
+        };
+        let mut vertex_edges = vec![[EdgeId::MAX; 3]; triangles.len()];
+        for (id, e) in edges.iter().enumerate() {
+            let [a, b] = e.cells;
+            cell_edges[slot_of(a, b)] = id as EdgeId;
+            cell_edges[slot_of(b, a)] = id as EdgeId;
+            for v in e.vertices {
+                let slots = &mut vertex_edges[v as usize];
+                let free = slots
+                    .iter()
+                    .position(|&s| s == EdgeId::MAX)
+                    .expect("3 edges per vertex");
+                slots[free] = id as EdgeId;
+            }
+        }
+
         let mut mesh = Self {
             frequency,
             cell_centers: points,
@@ -226,7 +286,9 @@ impl SphereMesh {
             ring_offsets,
             cell_vertices,
             cell_neighbors,
+            cell_edges,
             edges,
+            vertex_edges,
         };
         mesh.update_vertices();
         mesh
@@ -349,6 +411,17 @@ impl SphereMesh {
     /// across the edge from vertex `i - 1` to vertex `i` (cyclically).
     pub fn cell_neighbors(&self, cell: CellId) -> &[CellId] {
         &self.cell_neighbors[self.ring_range(cell)]
+    }
+
+    /// Edges of `cell`, aligned with [`SphereMesh::cell_neighbors`]: edge `i`
+    /// separates the cell from neighbour `i`.
+    pub fn cell_edges(&self, cell: CellId) -> &[EdgeId] {
+        &self.cell_edges[self.ring_range(cell)]
+    }
+
+    /// The three edges meeting at Voronoi vertex `vertex` (in no particular order).
+    pub fn vertex_edges(&self, vertex: VertexId) -> [EdgeId; 3] {
+        self.vertex_edges[vertex as usize]
     }
 
     /// Area of `cell` on the unit sphere.
