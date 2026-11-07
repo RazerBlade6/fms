@@ -1,0 +1,24 @@
+[package]
+name = "fms-sim"
+description = "Simulation orchestration, speed tiers, spin-up and persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fms-geo.workspace = true
+fms-fields.workspace = true
+fms-sched.workspace = true
+fms-planet.workspace = true
+fms-worldgen.workspace = true
+fms-atmos.workspace = true
+fms-ocean.workspace = true
+fms-hydro.workspace = true
+fms-climate.workspace = true
+glam.workspace = true
+rayon.workspace = true
+
+[lints]
+workspace = true

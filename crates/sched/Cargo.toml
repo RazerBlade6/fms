@@ -1,0 +1,23 @@
+[package]
+name = "fms-sched"
+description = "System scheduler: read/write sets, tick rates, deterministic execution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rayon.workspace = true
+fms-fields.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+fms-math.workspace = true
+
+[[bench]]
+name = "sched"
+harness = false
+
+[lints]
+workspace = true

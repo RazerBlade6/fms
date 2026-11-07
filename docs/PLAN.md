@@ -46,6 +46,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 | Planet range | Earth-like range + eccentricity; extremes clamped with warnings | Keeps the GCM numerically stable |
 | Edit views | Brushes in both globe and flat views, acting on sphere cells | No projection distortion when painting |
 | Determinism | Seeded RNG, fixed timestep, deterministic reductions; versioned binary saves | Reproducible worlds, exact save/load mid-run, reproducible bugs |
+| Portable math | Transcendental functions (`sin`, `exp`, `atan2`, …) come from the pure-Rust `libm` port via `fms-math`, never std; enforced by `clippy.toml` | std calls the platform C library, which differs between macOS, Windows and Linux; without this, saves would diverge across machines |
 | Undo | Command-based; each stroke stores a sparse diff of the cells it changed; terrain only | Cheap; the climate re-settles after undo instead of rewinding |
 | Validation | Earth benchmark + idealized test planets, run as regression tests | The only honest way to tune a simplified GCM |
 | First milestone | Headless GCM first | Prove the physics before building UI on top of it |
@@ -54,17 +55,49 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ### 3.1 Core concept: field registry + system scheduler
 
-- A **field** is a named, typed array with one value per cell, stored on a specific
-  grid level (`terrain` or `climate`). Examples: `elevation`, `surface_temp`,
-  `precip`, `wind_u_lower`, `koppen`, and later `soil_fertility` and `population`.
+- A **field** is a named, typed array with one value per cell, edge or vertex of
+  one grid level (`terrain` or `climate`). Edges carry normal velocities and
+  fluxes; vertices carry vorticity. Examples: `terrain.elevation`,
+  `atmos.surface_temp`, `atmos.wind_u_lower`, `climate.koppen`, and later
+  `soil.fertility` and `civ.population`.
+- **Naming convention:** `namespace.field`, both parts `snake_case`. The namespace
+  is the owning system or crate (`terrain`, `atmos`, `ocean`, `hydro`, `climate`,
+  `soil`, `civ`, …), so independently written crates can't collide. The registry
+  rejects names that don't follow it.
+  Types: f32, f64, u8, u16, u32, i32. Metadata: units, valid range (also used to
+  detect blow-ups), colour-scale hint, single/double buffering, whether the
+  field is saved, and the quantity. The quantity is `Scalar`, or for edge fields
+  `NormalComponent`: a vector field stored as its component along each edge
+  normal. Those are displayed by rebuilding cell-centre vectors with Perot's
+  method.
+- Fields are registered up front. After that, different fields can be read and
+  written from many threads at once. Each field has a lock, but a conflicting
+  access **panics** rather than blocks: it means a system under-declared its
+  read/write set, which the scheduler is supposed to prevent.
 - A **system** declares:
   - which fields it reads and which it writes
   - its tick rate as a multiple of the base step `dt`, or as an event (daily,
     monthly, on edit); see §4.6
   - which speed tiers it runs in
-- The **scheduler** orders systems by their read/write dependencies and runs
-  independent systems in parallel. It also enforces determinism: fixed order and
-  ordered reductions.
+- The **scheduler** guarantees that every step gives the same result as running
+  the due systems one after another **in the order they were added**. For
+  parallelism, each due system is placed in the earliest stage after every
+  earlier-added system it conflicts with (one writes a field the other reads or
+  writes). Systems within a stage run in parallel. The plan doesn't depend on
+  thread count, so results are bit-identical on 1 or 64 threads, and (with
+  `fms-math`) on macOS, Windows and Linux. A golden-hash test in CI checks this.
+- Systems access fields only through a context that checks every access
+  against the declared read/write set. An undeclared access panics on the first
+  try, not only when it happens to race with another system.
+- Time is an integer step count, so it never drifts. Day, year, month and
+  calendar quarter are derived from it. Fractional years alternate in length like
+  leap years. Year fraction 0 is the northern vernal equinox by convention. Each
+  system gets `interval_seconds`, the simulated time since it last ran, as its
+  timestep.
+- Seasons are astronomical and come from the orbit (`fms-planet`), not the
+  calendar. They change at the equinoxes and solstices, so on an eccentric orbit
+  they differ in length: Earth's northern spring, summer, autumn and winter are
+  92.76, 93.65, 89.84 and 89.00 days.
 - **Map modes** are renderers over fields: a colormap, contours, vectors or
   particles. A new field gets a basic map mode for free.
 - **Civ layer (future)**: an ECS (`hecs` or `bevy_ecs`) for agents such as
@@ -73,13 +106,26 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ### 3.2 Grids
 
-- Both levels are subdivided icosahedra. The climate grid is a coarser subdivision
-  of the same icosahedron, so the mapping between the two levels is simple
-  and precomputed.
-- **Fine → coarse**: averaged by area. Sub-grid terrain statistics (mean,
+- Both levels are subdivided icosahedra, optimized into a spherical centroidal
+  Voronoi tessellation (SCVT) with **multilevel Lloyd**: a coarse mesh
+  (frequency ≤ 32) is fully optimized, then refined by small prime factors and
+  re-optimized at each level. Plain Lloyd needs roughly O(frequency²) iterations
+  and is impractical above ~100k cells. Multilevel needs ~600 iterations per
+  level: about 0.4 s for 20k cells and about 8 s for 1.6M cells (release build).
+  Pick frequencies with small prime factors (e.g. 45, 400); cells = 10·f² + 2.
+  Fine meshes will be cached to disk once persistence exists.
+- Known limitations of the grids (cell-size spread, frequency constraints,
+  pentagon errors) are tracked in [OBSERVATIONS.md](OBSERVATIONS.md).
+- The two meshes are optimized independently, so they are not exactly nested.
+  The mapping between them is found by point location (a greedy walk over the
+  Delaunay graph) and precomputed once (~30 ms for 1.6M → 20k).
+- **Fine → coarse**: each fine cell belongs wholly to the coarse cell containing
+  its centre (~80 fine cells per coarse cell at 1.6M / 20k). Intensive fields use
+  an area-weighted mean over the children; extensive fields (water, mass) use a sum,
+  which conserves global totals exactly. Sub-grid terrain statistics (mean,
   variance, slope) are kept so the climate grid still feels mountains it can't resolve.
-- **Coarse → fine**: interpolated, then corrected for altitude using the lapse
-  rate for display and for hydrology.
+- **Coarse → fine**: barycentric interpolation on the coarse Delaunay triangle,
+  then corrected for altitude using the lapse rate for display and for hydrology.
 - Cells are stored as struct-of-arrays, with neighbours in compressed sparse-row
   (CSR) adjacency lists. Cells are ordered along a space-filling curve so neighbours
   sit close together in memory.
@@ -88,6 +134,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ```
 crates/
+  math/       portable transcendental functions (libm), for cross-platform determinism
   geo/        icosahedral grids, two-level mapping, projections, picking
   fields/     field registry, SoA storage, serialization
   sched/      system scheduler (tick rates, R/W sets, determinism)
@@ -102,6 +149,9 @@ crates/
   app/        eframe/egui + wgpu renderer, brushes, map modes, inspector
 ```
 
+Package names have an `fms-` prefix (`fms-geo`, `fms-sim`, …) to avoid clashing
+with crates.io names. The binaries are `fms` (cli) and `fantasy-map` (app).
+
 Dependencies point one way. The `app` crate depends on the sim crates; the sim
 crates never depend on `app`. Everything except `app` runs headless.
 
@@ -115,6 +165,33 @@ crates never depend on `app`. Everything except `app` runs headless.
   circulation cells form and how wide they are.
 - Greenhouse strength is a parameterized function of CO₂ and pressure that sets
   longwave opacity.
+- **Parameters and supported ranges.** Values outside these are clamped with a
+  warning. NaN or infinite values are replaced by Earth's value.
+
+  | Parameter | Range | Earth |
+  |---|---|---|
+  | Radius | 1,000–20,000 km | 6,371 km |
+  | Surface gravity | 1–30 m/s² | 9.81 |
+  | Solar day | 4–240 h | 24 h |
+  | Year | 20–5,000 solar days | 365.2422 |
+  | Obliquity | 0–60° | 23.44° |
+  | Eccentricity | 0–0.3 | 0.0167 |
+  | Solar longitude of perihelion | wrapped to 0–360° | 282.9° |
+  | Star luminosity | 0.05–20 L☉ | 1 |
+  | Semi-major axis | 0.05–50 AU | 1 |
+  | Surface pressure | 0.1–10 bar | 1.013 |
+  | CO₂ | 0–100,000 ppm | 420 |
+  | Ocean fraction | 0–1 | 0.71 |
+
+  Stellar flux `S₀ = 1361 W/m² · L / a²`. If it falls outside 500–3,000 W/m², the
+  planet is allowed but flagged as likely frozen or runaway.
+- **Conventions.** `t = 0` is the northern vernal equinox, at midnight at
+  longitude 0. That matches the calendar's year fraction 0. The year length is
+  the orbital period in solar days. Rotation is prograde, so the sidereal day
+  comes from `1/T_sid = 1/T_sol + 1/T_orbit`. The Sun's position uses mean
+  solar time; the equation of time is ignored.
+- Known limitations of the planet model (Kepler's third law, equation of time)
+  are tracked in [OBSERVATIONS.md](OBSERVATIONS.md).
 
 ### 4.2 Atmosphere (2-layer GCM)
 - Primitive equations solved with a finite-volume method on the icosahedral grid.
@@ -246,8 +323,9 @@ the climatology.
 - Versioned binary save format holding planet parameters, all persistent fields,
   sim clock, RNG state and the full undo stack. Fields are tagged by name and
   version so older saves can be migrated.
-- Determinism contract: same save + same build = bit-identical sim. Parallel
-  reductions use a fixed order.
+- Determinism contract: same save + same build = bit-identical sim, on any
+  thread count and on any of macOS, Windows and Linux. Parallel reductions use
+  a fixed order, and transcendental math goes through `fms-math` (`libm`).
 
 ## 5. Validation
 
@@ -376,162 +454,18 @@ Names only, as a reading list. Grouped by subsystem.
 
 ## 7. Milestones
 
-Every step ends with an automated test or a visual check (a PNG/GIF from the CLI).
+Milestones and their steps are tracked in [ROADMAP.md](ROADMAP.md).
 
-### M1 — Foundations
-1. **Workspace and CI**: Cargo workspace with all crate skeletons; rustfmt and
-   clippy; GitHub Actions running tests.
-2. **Icosahedral mesh**: subdivide the icosahedron, build the Voronoi dual (cell
-   centres, vertices, edges), and optimize it into an SCVT using Lloyd's algorithm.
-   Tests:
-   - exactly 12 pentagons
-   - Euler characteristic = 2
-   - cell areas sum to 4πr²
-3. **Mesh geometry and layout**: cell areas, edge lengths, dual lengths, edge
-   normals and tangents, and the TRiSK weights. Neighbours stored as CSR, cells
-   reordered along a Hilbert curve.
-4. **Two-level grid**: map each fine cell to its coarse parent with area weights.
-   Point → cell lookup (for picking and rasterization).
-5. **Field registry**: typed struct-of-arrays fields tagged by grid level;
-   double buffering; field metadata (units, valid range, default colormap).
-6. **Scheduler**:
-   - `System` trait with read/write sets and a rate as a multiple of `dt`
-   - deterministic ordering, with independent systems run in parallel
-   - sim clock and calendar (solar day, year, seasons)
-7. **Planet**:
-   - parameter struct with validation and clamping
-   - derived quantities: Ω, f, sidereal day
-   - orbit (Kepler) and insolation (instantaneous and daily mean)
-8. **CLI**: run a world headless; dump any field to an equirectangular PNG with
-   a colormap; render a year of insolation as a GIF.
-9. **Tests**:
-   - insolation matches analytic values (equinox and solstice, polar night)
-   - annual-mean symmetry at zero eccentricity
+## 8. Branching and release
 
-### M2 — Headless GCM
-1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine
-   grid, then aggregate to the coarse grid, keeping sub-grid terrain statistics.
-2. **Discrete operators**: TRiSK gradient, divergence, curl, kinetic energy and
-   tangential-velocity reconstruction. Test: convergence against analytic
-   spherical-harmonic fields; mass and energy conservation.
-3. **Shallow-water model (explicit)**: single layer. Pass Williamson test cases
-   2 (steady geostrophic flow), 5 (flow over a mountain) and 6 (Rossby–Haurwitz wave).
-4. **Semi-implicit time stepping**: leapfrog with the RAW filter; implicit
-   gravity-wave terms; Helmholtz solver (preconditioned conjugate gradient). Rerun
-   the Williamson tests at the larger `dt`.
-5. **2-layer dry dynamical core**: sigma coordinates, hydrostatic balance,
-   potential temperature per layer, a surface-pressure equation.
-6. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
-   friction. Mid-latitude jets and baroclinic eddies should appear.
-7. **Dissipation and safety**: hyperdiffusion, sponge layer, global energy and
-   mass diagnostics, automatic blow-up detection with a diagnostic dump.
-8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
-   CO₂/pressure-dependent optical depth. Replaces the Held–Suarez forcing.
-   Test: global energy balance closes.
-9. **Moisture**: positive-definite humidity advection, Clausius–Clapeyron
-   saturation, large-scale condensation, moist convective adjustment, latent
-   heating, precipitation output.
-10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
-    bucket soil moisture, snow cover and albedo, orographic precipitation using the
-    sub-grid terrain statistics.
-11. **Slab ocean and sea ice**: mixed-layer heat budget coupled to the
-    atmosphere; Semtner zero-layer sea ice with ice-albedo feedback.
-12. **Ocean currents**: currents driven by wind stress through Ekman/Sverdrup
-    balance, with western boundary intensification and heat advection.
-13. **Multi-rate scheduling**:
-    - derive `dt` from the CFL limit, rounded so it divides the solar day
-    - radiation every ~3 h, ocean every 1–6 h (§4.6)
-14. **Idealized planets**: aquaplanet (symmetric Hadley cell), no-tilt (no
-    seasons), fast and slow rotation (number and width of circulation cells).
-    Automated assertions on zonal-mean wind and temperature.
-15. **Earth benchmark, part 1**: compare against a reference climatology:
-    - trade winds and jets
-    - the tropical rain belt and its seasonal migration
-    - subtropical highs
-    - monsoons
-    - deserts in the right places
+- `dev` is the working branch, where all development happens. `main` is the release branch.
+- CI (fmt, clippy, tests on macOS, Windows and Linux) runs on every push to `dev`
+  or `main`, and on pull requests.
+- `main` is only ever fast-forwarded from `dev` when a release is shipped.
+- CD runs on pushes to `main` and builds a GitHub Release, from M5 onwards
+  ([roadmap](ROADMAP.md), M5 step 10).
 
-    Includes a parameter-tuning pass.
-16. **Performance pass**: profile, parallelize the hot kernels with rayon, check
-    the memory layout. Target: speed 2 (~340 steps/s) at the default resolution.
-
-### M3 — Hydrology and climate
-1. **Downscaling**: interpolate climate-grid fields onto the fine grid, with a
-   lapse-rate correction for elevation.
-2. **Rolling statistics**: per-cell monthly temperature and precipitation means
-   and variances (Welford), averaged over multiple years.
-3. **Köppen–Geiger classification**, plus an agreement metric against the
-   Peel et al. 2007 Earth map.
-4. **Biomes**: Whittaker classification. Biome sets surface albedo, roughness
-   and soil water capacity, which feed back into the GCM.
-5. **Flow routing**: steepest-descent directions, priority-flood depression
-   filling, flow accumulation, river extraction above a threshold.
-6. **Lakes and basins**: lake water balance; endorheic basins and salt lakes;
-   lakes become water surfaces in the GCM.
-7. **Earth benchmark, part 2**: hit the Köppen agreement threshold; major rivers
-   and basins appear in plausible places.
-
-### M4 — Speed tiers, determinism and persistence
-1. **Determinism audit**:
-   - fixed-order reductions and pairwise summation
-   - a separate seeded RNG stream for each system
-   - test: bit-identical replay across different thread counts
-2. **Save format**: versioned binary format with field tags and migration hooks.
-   Round-trip tests; mid-run save/load continues bit-identically.
-3. **Climatology learning**: per-cell, per-month mean, variance and
-   autocorrelation, collected during full-GCM runs.
-4. **Climate mode**: stochastic weather generator (AR(1) process plus wet/dry
-   Markov chain) driven by the learned climatology.
-5. **Tier switching**: hand off cleanly between the GCM and climate mode in both
-   directions, starting the GCM from a state consistent with the climatology.
-6. **Spin-up**: accelerated spin-up (asynchronous ocean coupling) on a background
-   thread, with progress reporting and cancellation.
-7. **Validation**: climate-mode statistics match full-GCM statistics within
-   tolerance.
-
-### M5 — GUI
-1. **App shell**: eframe + wgpu. The sim runs on its own thread and sends
-   double-buffered field snapshots to the UI over a channel.
-2. **Renderers**: globe (hex mesh, orbit camera) and flat equirectangular view.
-3. **Map mode framework**: colormaps and legends; every field automatically gets
-   a map mode; climate-grid fields are shown downscaled.
-4. **Contours**: marching triangles on the mesh, with configurable intervals.
-5. **Time controls**: play/pause, speeds 1–5, date and season HUD, sim-rate
-   readout.
-6. **Inspector**: click to pick a cell; show current values and annual
-   temperature and precipitation graphs.
-7. **Live overlays**: wind particles, ocean current vectors, clouds and
-   precipitation, snow and sea-ice extent.
-8. **Planet panel**: edit planet parameters, which re-derives `dt` and triggers
-   spin-up; shows warnings when values are clamped.
-9. **Save/load UI.**
-
-### M6 — Editor
-1. **Generator trait**: blank-ocean world; heightmap import UI.
-2. **Plate generator**:
-   - Voronoi plates, each with an Euler pole and a crust type
-   - boundary classification from relative motion
-   - elevation synthesis from boundaries plus fractal noise
-   - sea level set from the ocean fraction
-3. **Brush framework**:
-   - picking in both views
-   - falloff curves
-   - stroke → command holding a sparse diff
-   - undo/redo stack
-4. **Sculpt brushes**: raise, lower, smooth, flatten, noise.
-5. **Erosion tools**: hydraulic (droplet) and thermal (talus).
-6. **Water tools**: set sea level, paint river (carves a channel), fill lake.
-7. **Live-edit pipeline**: track dirty regions, recompute only the affected parts
-   (grid aggregation, sub-grid stats, hydrology), then start spin-up.
-
-### M7 — Later
-- Port the hot loops to wgpu compute shaders
-- Time-stepped plate tectonics (Cortial et al. 2019 style), behind the `Generator` trait
-- Civ layer: ECS agents, soil fertility, aridity indices, resources from plate
-  and crust data
-- Tidal locking, moons, extreme obliquity
-
-## 8. Risks
+## 9. Risks
 
 | Risk | Mitigation |
 |---|---|

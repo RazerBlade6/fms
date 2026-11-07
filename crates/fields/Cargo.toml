@@ -1,0 +1,17 @@
+[package]
+name = "fms-fields"
+description = "Field registry and struct-of-arrays per-cell storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fms-geo.workspace = true
+
+[dev-dependencies]
+rayon.workspace = true
+
+[lints]
+workspace = true
