@@ -8,6 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+fms-geo.workspace = true
+glam.workspace = true
+rayon.workspace = true
 
 [lints]
 workspace = true

@@ -105,6 +105,11 @@ dependencies = [
 [[package]]
 name = "fms-planet"
 version = "0.1.0"
+dependencies = [
+ "fms-geo",
+ "glam",
+ "rayon",
+]
 
 [[package]]
 name = "fms-sched"

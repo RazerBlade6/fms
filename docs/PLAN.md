@@ -152,6 +152,31 @@ crates never depend on `app`. Everything except `app` runs headless.
   circulation cells form and how wide they are.
 - Greenhouse strength is a parameterized function of CO₂ and pressure that sets
   longwave opacity.
+- **Parameters and supported ranges.** Values outside these are clamped with a
+  warning. NaN or infinite values are replaced by Earth's value.
+
+  | Parameter | Range | Earth |
+  |---|---|---|
+  | Radius | 1,000–20,000 km | 6,371 km |
+  | Surface gravity | 1–30 m/s² | 9.81 |
+  | Solar day | 4–240 h | 24 h |
+  | Year | 20–5,000 solar days | 365.2422 |
+  | Obliquity | 0–60° | 23.44° |
+  | Eccentricity | 0–0.3 | 0.0167 |
+  | Solar longitude of perihelion | wrapped to 0–360° | 282.9° |
+  | Star luminosity | 0.05–20 L☉ | 1 |
+  | Semi-major axis | 0.05–50 AU | 1 |
+  | Surface pressure | 0.1–10 bar | 1.013 |
+  | CO₂ | 0–100,000 ppm | 420 |
+  | Ocean fraction | 0–1 | 0.71 |
+
+  Stellar flux `S₀ = 1361 W/m² · L / a²`. If it falls outside 500–3,000 W/m², the
+  planet is allowed but flagged as likely frozen or runaway.
+- **Conventions.** `t = 0` is the northern vernal equinox, at midnight at
+  longitude 0. That matches the calendar's year fraction 0. The year length is
+  the orbital period in solar days. Rotation is prograde, so the sidereal day
+  comes from `1/T_sid = 1/T_sol + 1/T_orbit`. The Sun's position uses mean
+  solar time; the equation of time is ignored.
 
 ### 4.2 Atmosphere (2-layer GCM)
 - Primitive equations solved with a finite-volume method on the icosahedral grid.

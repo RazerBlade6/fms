@@ -25,7 +25,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    - `System` trait with read/write sets and a rate as a multiple of `dt`
    - deterministic ordering, with independent systems run in parallel
    - sim clock and calendar (solar day, year, seasons)
-- [ ] 7. **Planet**:
+- [x] 7. **Planet**:
    - parameter struct with validation and clamping
    - derived quantities: Ω, f, sidereal day
    - orbit (Kepler) and insolation (instantaneous and daily mean)
