@@ -28,6 +28,15 @@ jobs:
           components: clippy
       - run: cargo clippy --workspace --all-targets --locked
 
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo doc --workspace --no-deps --locked
+
   test:
     strategy:
       fail-fast: false

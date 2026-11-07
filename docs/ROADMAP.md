@@ -49,7 +49,7 @@ Added after the M1 review: tooling the GCM work depends on.
 - [x] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
    transfers, point location and scheduler overhead. Run locally (CI timing is
    too noisy) to catch performance regressions.
-- [ ] 5. **API docs in CI**: `cargo doc` with `-D warnings` (broken intra-doc
+- [x] 5. **API docs in CI**: `cargo doc` with `-D warnings` (broken intra-doc
    links fail the build).
 - [ ] 6. **Astronomical seasons**: season and equinox/solstice dates from the
    orbit (solar longitude) rather than calendar quarters, so eccentric orbits get
