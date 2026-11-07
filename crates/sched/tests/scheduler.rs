@@ -315,3 +315,30 @@ fn add_validates_systems() {
     assert_eq!(s.describe(a).name, "t.a");
     assert_eq!(a.index(), 0);
 }
+
+#[test]
+fn timings_are_reported_and_accumulated() {
+    let mut s = Scheduler::new(Calendar::earth());
+    let slow = s
+        .add(system("t.slow", Access::new(), Rate::Every(1), |_| {
+            std::thread::sleep(std::time::Duration::from_millis(2))
+        }))
+        .unwrap();
+    let rare = s
+        .add(system("t.rare", Access::new(), Rate::Every(3), |_| {}))
+        .unwrap();
+    let fields = registry();
+    let report = s.step(&fields);
+    assert_eq!(report.timings.len(), 2);
+    let slow_time = report.timings.iter().find(|(id, _)| *id == slow).unwrap().1;
+    assert!(slow_time >= std::time::Duration::from_millis(2));
+    assert!(report.elapsed >= slow_time);
+
+    s.run_steps(&fields, 5); // steps 1..=5: slow runs 5 more, rare runs at 3
+    let profile = s.profile();
+    assert_eq!((profile[0].name, profile[0].runs), ("t.slow", 6));
+    assert_eq!((profile[1].id, profile[1].runs), (rare, 2));
+    assert!(profile[0].total >= std::time::Duration::from_millis(12));
+    s.reset_profile();
+    assert!(s.profile().iter().all(|p| p.runs == 0 && p.total.is_zero()));
+}

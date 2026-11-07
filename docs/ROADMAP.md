@@ -44,7 +44,7 @@ Added after the M1 review: tooling the GCM work depends on.
    normal velocities (Perot-style reconstruction); CLI renders vector fields as
    speed plus arrows or streamlines, and edge/vertex fields via cell averages.
    Needed to debug every dynamics step in M2.
-- [ ] 3. **Per-system timing**: wall-clock time for each system in the
+- [x] 3. **Per-system timing**: wall-clock time for each system in the
    `StepReport`; `fms` prints a timing breakdown per run.
 - [ ] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
    transfers, point location and scheduler overhead. Run locally (CI timing is

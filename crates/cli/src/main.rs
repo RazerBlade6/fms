@@ -244,6 +244,51 @@ fn date_label(world: &World) -> String {
     )
 }
 
+/// Print where simulation time went: throughput and a per-system breakdown.
+fn print_profile(world: &World, wall: std::time::Duration) {
+    let steps = world.scheduler.current_step();
+    let calendar = world.scheduler.calendar();
+    let days = steps as f64 / f64::from(calendar.steps_per_day());
+    let secs = wall.as_secs_f64().max(1e-9);
+    eprintln!(
+        "simulated {days:.2} days ({steps} steps) in {wall:.2?}: {:.0} steps/s, {:.2} days/s",
+        steps as f64 / secs,
+        days / secs
+    );
+    let profile = world.scheduler.profile();
+    let busy: f64 = profile.iter().map(|p| p.total.as_secs_f64()).sum();
+    eprintln!(
+        "  {:<28} {:>8} {:>11} {:>11} {:>6}",
+        "system", "runs", "total", "mean", "share"
+    );
+    for p in profile {
+        let total = p.total.as_secs_f64();
+        let mean = if p.runs > 0 {
+            total / p.runs as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "  {:<28} {:>8} {:>9.2}ms {:>9.1}µs {:>5.1}%",
+            p.name,
+            p.runs,
+            total * 1e3,
+            mean * 1e6,
+            if busy > 0.0 {
+                100.0 * total / busy
+            } else {
+                0.0
+            }
+        );
+    }
+    eprintln!(
+        "  {:<28} {:>8} {:>9.2}ms  (systems in one stage run in parallel, so this can exceed wall time)",
+        "all systems",
+        "",
+        busy * 1e3
+    );
+}
+
 fn resolve(world: &World, name: &str) -> Result<FieldKey, String> {
     world.fields.key(name).map_err(|e| e.to_string())
 }
@@ -409,7 +454,9 @@ fn dump(args: DumpArgs) -> Result<(), String> {
 
     // Always run at least one step so every system has produced its output.
     let steps = steps_for(&world, args.days + args.hours / 24.0);
+    let t = Instant::now();
     world.run_steps(steps.max(1));
+    print_profile(&world, t.elapsed());
     ensure_dir(&args.image.out_dir)?;
     for (key, overlay) in keys.into_iter().zip(overlays) {
         write_one(&world, key, overlay, &args.image)?;
@@ -436,10 +483,7 @@ fn animate(args: AnimateArgs) -> Result<(), String> {
         world.run_steps(target.saturating_sub(now));
         frames.push(capture(&world, key, overlay));
     }
-    eprintln!(
-        "simulated {days} days ({total_steps} steps) in {:.1?}",
-        t.elapsed()
-    );
+    print_profile(&world, t.elapsed());
 
     let (images, colormap, (w, h)) = paint(&world, key, overlay, &frames, &args.image);
     ensure_dir(&args.image.out_dir)?;

@@ -14,5 +14,5 @@ mod scheduler;
 mod system;
 
 pub use clock::{Calendar, CalendarError, Date, Hemisphere, Season};
-pub use scheduler::{SchedError, Scheduler, StepReport, SystemId};
+pub use scheduler::{SchedError, Scheduler, StepReport, SystemId, SystemProfile};
 pub use system::{Access, Rate, StepContext, System, SystemDesc, Tier, Tiers};

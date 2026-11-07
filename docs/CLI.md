@@ -42,6 +42,10 @@ The world starts at the northern vernal equinox, at midnight at longitude 0.
 The legend's date stamp is the time the fields were computed, which is the last
 completed step.
 
+After simulating, `dump` and `animate` print a timing report to stderr:
+throughput (steps/s and simulated days/s), then each system's run count, total
+time, mean time per run and share of all system time.
+
 ### Images
 
 | Option | Default | Meaning |

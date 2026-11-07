@@ -1,6 +1,7 @@
 //! Deterministic, parallel execution of systems.
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use fms_fields::{FieldRegistry, validate_name};
 use rayon::prelude::*;
@@ -55,6 +56,24 @@ pub struct StepReport {
     /// Systems that ran, grouped into stages. Stages ran in order; systems within
     /// a stage ran in parallel.
     pub stages: Vec<Vec<SystemId>>,
+    /// Wall-clock time each system took this step, in the order they ran.
+    /// Diagnostic only: never feeds back into the simulation.
+    pub timings: Vec<(SystemId, Duration)>,
+    /// Wall-clock time of the whole step, including scheduling overhead.
+    pub elapsed: Duration,
+}
+
+/// Accumulated wall-clock cost of one system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemProfile {
+    /// The system.
+    pub id: SystemId,
+    /// Its name.
+    pub name: &'static str,
+    /// Number of times it ran.
+    pub runs: u64,
+    /// Total wall-clock time across those runs.
+    pub total: Duration,
 }
 
 struct Slot {
@@ -62,6 +81,9 @@ struct Slot {
     desc: SystemDesc,
     last_run: Option<u64>,
     requested: bool,
+    runs: u64,
+    total: Duration,
+    last_elapsed: Duration,
 }
 
 /// Runs systems at their rates, in a fixed order, in parallel where safe.
@@ -110,6 +132,9 @@ impl Scheduler {
             desc,
             last_run: None,
             requested: false,
+            runs: 0,
+            total: Duration::ZERO,
+            last_elapsed: Duration::ZERO,
         });
         Ok(id)
     }
@@ -207,6 +232,7 @@ impl Scheduler {
     /// Run every due system for the current step, then advance the clock by one
     /// base step.
     pub fn step(&mut self, fields: &FieldRegistry) -> StepReport {
+        let step_start = Instant::now();
         let date = self.date();
         let stages = self.plan();
         let dt = self.calendar.dt();
@@ -232,7 +258,12 @@ impl Scheduler {
                 .map(|(_, (slot, &interval))| (slot, interval))
                 .collect();
             let run = |(slot, interval): &mut (&mut Slot, f64)| {
-                let Slot { system, desc, .. } = &mut **slot;
+                let Slot {
+                    system,
+                    desc,
+                    last_elapsed,
+                    ..
+                } = &mut **slot;
                 let ctx = StepContext {
                     fields,
                     access: &desc.access,
@@ -241,7 +272,9 @@ impl Scheduler {
                     date,
                     interval_seconds: *interval,
                 };
+                let start = Instant::now();
                 system.run(&ctx);
+                *last_elapsed = start.elapsed();
             };
             if members.len() == 1 {
                 members.iter_mut().for_each(run);
@@ -250,13 +283,45 @@ impl Scheduler {
             }
         }
 
-        for id in stages.iter().flatten() {
+        let mut timings = Vec::new();
+        for &id in stages.iter().flatten() {
             let slot = &mut self.slots[id.index()];
             slot.last_run = Some(date.step);
             slot.requested = false;
+            slot.runs += 1;
+            slot.total += slot.last_elapsed;
+            timings.push((id, slot.last_elapsed));
         }
         self.step += 1;
-        StepReport { date, stages }
+        StepReport {
+            date,
+            stages,
+            timings,
+            elapsed: step_start.elapsed(),
+        }
+    }
+
+    /// Accumulated cost of every system since it was added (or since
+    /// [`Scheduler::reset_profile`]), in registration order.
+    pub fn profile(&self) -> Vec<SystemProfile> {
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| SystemProfile {
+                id: SystemId(i as u32),
+                name: s.desc.name,
+                runs: s.runs,
+                total: s.total,
+            })
+            .collect()
+    }
+
+    /// Zero the accumulated profile.
+    pub fn reset_profile(&mut self) {
+        for s in &mut self.slots {
+            s.runs = 0;
+            s.total = Duration::ZERO;
+        }
     }
 
     /// Run `n` steps.
