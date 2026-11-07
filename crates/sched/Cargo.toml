@@ -12,7 +12,12 @@ rayon.workspace = true
 fms-fields.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 fms-math.workspace = true
+
+[[bench]]
+name = "sched"
+harness = false
 
 [lints]
 workspace = true

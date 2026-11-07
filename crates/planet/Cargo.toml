@@ -13,5 +13,12 @@ fms-geo.workspace = true
 glam.workspace = true
 rayon.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "planet"
+harness = false
+
 [lints]
 workspace = true

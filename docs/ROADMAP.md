@@ -46,7 +46,7 @@ Added after the M1 review: tooling the GCM work depends on.
    Needed to debug every dynamics step in M2.
 - [x] 3. **Per-system timing**: wall-clock time for each system in the
    `StepReport`; `fms` prints a timing breakdown per run.
-- [ ] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
+- [x] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
    transfers, point location and scheduler overhead. Run locally (CI timing is
    too noisy) to catch performance regressions.
 - [ ] 5. **API docs in CI**: `cargo doc` with `-D warnings` (broken intra-doc

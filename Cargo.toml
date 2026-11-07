@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 clap = { version = "4.6", features = ["derive"] }
+criterion = "0.8"
 gif = "0.14"
 glam = "0.34"
 libm = "0.2"

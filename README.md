@@ -17,3 +17,4 @@ cargo run -p fms-app                          # GUI (`fantasy-map`, placeholder)
 - [Design plan](docs/PLAN.md): architecture, key decisions, subsystems, equations
 - [Roadmap](docs/ROADMAP.md): milestones and progress
 - [CLI](docs/CLI.md): the headless `fms` runner and its image output
+- [Benchmarks](docs/BENCHMARKS.md): how to run them, and baseline numbers
