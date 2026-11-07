@@ -17,6 +17,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
   out of the simulation and follow from the planet's physical setup.
 - **Time simulation**: pressing Play advances time. Speed 1 = 1 sim-day per second.
   Speed 5 = the fastest the model can sustain (target is about 1 sim-year per second).
+  A "day" is the planet's own solar day (one day/night cycle), not an Earth day.
 - **Extensibility**: a future civilisation layer (soil fertility, aridity, agents)
   plugs in without changing the core.
 
@@ -33,6 +34,8 @@ over time. The app is built so it can grow into a civilisation simulator later.
 | Atmosphere | 2-layer primitive-equation model | Smallest model that produces Hadley and Ferrel cells, jets and storms on its own |
 | Ocean | Slab mixed layer + wind-driven surface currents + thermodynamic sea ice | Ocean heat transport (western boundary currents) matters for coastal climates |
 | Compute | CPU with rayon first, GPU (wgpu compute) later | Easier to debug the physics; data is laid out as struct-of-arrays so it can be ported |
+| Time stepping | Semi-implicit GCM; base step derived from the CFL limit (~20–30 min at default resolution); slower subsystems run every N steps | Stable and affordable; resolves the day/night cycle |
+| Day length | "1 day" = the planet's solar day (one day/night cycle) | Speed 1 always shows one day/night cycle per second |
 | High speeds | Speed tiers: full GCM at speeds 1–2, cheaper climate mode at 3–5 | Speed 5 cannot afford full dynamics |
 | Resolution | Two levels: fine terrain (~1–2.5M cells) and coarse climate grid (~10–40k cells) | Detailed terrain and rivers while keeping the GCM affordable |
 | World gen | One-shot plate layout now; time-stepped plate sim later behind the same interface | Plausible mountain ranges in under 1 s; can be upgraded later |
@@ -56,7 +59,8 @@ over time. The app is built so it can grow into a civilisation simulator later.
   `precip`, `wind_u_lower`, `koppen`, and later `soil_fertility` and `population`.
 - A **system** declares:
   - which fields it reads and which it writes
-  - its tick rate (every step, daily, monthly, on edit)
+  - its tick rate as a multiple of the base step `dt`, or as an event (daily,
+    monthly, on edit); see §4.6
   - which speed tiers it runs in
 - The **scheduler** orders systems by their read/write dependencies and runs
   independent systems in parallel. It also enforces determinism: fixed order and
@@ -122,8 +126,9 @@ crates never depend on `app`. Everything except `app` runs headless.
   - large-scale condensation and simple convective adjustment
   - orographic lift using the sub-grid terrain statistics
   - boundary-layer friction
-- Timestep is limited by the CFL condition; roughly 10–50 steps per sim-day,
-  depending on resolution and planet radius.
+- **Semi-implicit time stepping** (as in SPEEDY): fast gravity waves are solved
+  implicitly, so the timestep is limited by advection (winds) rather than wave speed.
+  At the default resolution this gives a base step of ~20–30 min. See §4.6.
 
 ### 4.3 Ocean
 - Mixed-layer heat budget, with a mixed-layer depth that can vary by region.
@@ -144,7 +149,42 @@ crates never depend on `app`. Everything except `app` runs headless.
 - Köppen–Geiger classification (Af, BWh, Cfb, …) and a Whittaker biome layer.
   Biomes drive surface albedo and roughness, which feed back into the GCM.
 
-### 4.6 Speed tiers
+### 4.6 Time stepping and speed tiers
+
+**Definition of a day.** "Day" always means the planet's own **solar day** (one
+day/night cycle), not an Earth day. Speed 1 = one planetary day per second, at
+any rotation rate.
+
+**Base step (`dt`).** The scheduler runs one base step, and every system runs
+every N base steps.
+- `dt` is derived from the climate grid spacing, the planet radius and the maximum
+  expected wind speed, using an advective CFL limit with a safety margin.
+- It is then rounded down so that it divides the solar day evenly, and capped so
+  that there are at least 24 steps per solar day (keeps the day/night cycle resolved).
+- `dt` stays fixed for a given world. It only changes when the resolution or
+  planet parameters change, which keeps saves and replays deterministic.
+- Speed controls change how many base steps run per real second, never `dt`
+  itself.
+
+**System rates** (typical values at the default ~20k-cell climate grid on an
+Earth-sized planet; each system declares its rate in its scheduler registration):
+
+| System | Rate |
+|---|---|
+| Atmospheric dynamics (winds, pressure, heat/moisture transport) | every base step (~20–30 min, ~48–72 per day) |
+| Surface fluxes, clouds and precipitation | every base step |
+| Radiation | every ~3 h |
+| Ocean mixed layer, currents, sea ice | every 1–6 h |
+| Hydrology (runoff, flow routing, lakes) | daily |
+| Climate statistics | accumulated daily; Köppen/biomes reclassified monthly |
+| Future civ systems | daily / monthly / yearly |
+
+Rough throughput: speed 1 at `dt` = 30 min is 48 steps/s, which is trivial. Speed 2
+(~1 week/s) is about 340 steps/s, which a 2-layer model on 20k cells should sustain
+on multiple CPU cores. Faster speeds use climate mode.
+
+**Speed tiers.**
+
 | Speed | Target | Mode |
 |---|---|---|
 | 1 | 1 day/s | Full GCM |
