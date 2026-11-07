@@ -111,6 +111,7 @@ name = "fms-sched"
 version = "0.1.0"
 dependencies = [
  "fms-fields",
+ "rayon",
 ]
 
 [[package]]

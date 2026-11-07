@@ -21,7 +21,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    Point → cell lookup (for picking and rasterization).
 - [x] 5. **Field registry**: typed struct-of-arrays fields tagged by grid level;
    double buffering; field metadata (units, valid range, default colormap).
-- [ ] 6. **Scheduler**:
+- [x] 6. **Scheduler**:
    - `System` trait with read/write sets and a rate as a multiple of `dt`
    - deterministic ordering, with independent systems run in parallel
    - sim clock and calendar (solar day, year, seasons)

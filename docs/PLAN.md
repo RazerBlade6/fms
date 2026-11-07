@@ -75,9 +75,19 @@ over time. The app is built so it can grow into a civilisation simulator later.
   - its tick rate as a multiple of the base step `dt`, or as an event (daily,
     monthly, on edit); see §4.6
   - which speed tiers it runs in
-- The **scheduler** orders systems by their read/write dependencies and runs
-  independent systems in parallel. It also enforces determinism: fixed order and
-  ordered reductions.
+- The **scheduler** guarantees that every step gives the same result as running
+  the due systems one after another **in the order they were added**. For
+  parallelism, each due system is placed in the earliest stage after every
+  earlier-added system it conflicts with (one writes a field the other reads or
+  writes). Systems within a stage run in parallel. The plan doesn't depend on
+  thread count, so results are bit-identical on 1 or 64 threads.
+- Systems access fields only through a context that checks every access
+  against the declared read/write set. An undeclared access panics on the first
+  try, not only when it happens to race with another system.
+- Time is an integer step count, so it never drifts. Day, year, month and season
+  are derived from it. Fractional years alternate in length like leap years.
+  Year fraction 0 is the northern vernal equinox by convention. Each system
+  gets `interval_seconds`, the simulated time since it last ran, as its timestep.
 - **Map modes** are renderers over fields: a colormap, contours, vectors or
   particles. A new field gets a basic map mode for free.
 - **Civ layer (future)**: an ECS (`hecs` or `bevy_ecs`) for agents such as
