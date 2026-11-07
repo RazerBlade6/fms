@@ -7,7 +7,8 @@
 //! divides it evenly. A **year** may be a non-integer number of days; year `y`
 //! starts on day `⌊y · days_per_year⌋`, so years alternate between `⌊d⌋` and
 //! `⌈d⌉` days the way leap years do. Year fraction 0 is the northern vernal
-//! equinox by convention.
+//! equinox by convention. Astronomical seasons come from the orbit, in
+//! `fms-planet`.
 
 use std::fmt;
 
@@ -153,28 +154,6 @@ pub struct Date {
     pub month: u8,
 }
 
-/// Hemisphere, for naming seasons.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hemisphere {
-    /// Northern hemisphere.
-    North,
-    /// Southern hemisphere.
-    South,
-}
-
-/// Astronomical season.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Season {
-    /// From the vernal equinox.
-    Spring,
-    /// From the summer solstice.
-    Summer,
-    /// From the autumnal equinox.
-    Autumn,
-    /// From the winter solstice.
-    Winter,
-}
-
 impl Date {
     /// Fraction of the current year elapsed, `[0, 1)`, including the time of day.
     pub fn year_fraction(&self, calendar: &Calendar) -> f64 {
@@ -188,21 +167,12 @@ impl Date {
         f64::from(self.step_of_day) / f64::from(calendar.steps_per_day())
     }
 
-    /// Season in a hemisphere, by quarter of the year. Year fraction 0 is the
-    /// northern vernal equinox; this is a calendar convention, so with an
-    /// eccentric orbit the astronomical seasons can be unequal in length.
-    pub fn season(&self, calendar: &Calendar, hemisphere: Hemisphere) -> Season {
-        let quarter = (self.year_fraction(calendar) * 4.0).floor() as u8 % 4;
-        let quarter = match hemisphere {
-            Hemisphere::North => quarter,
-            Hemisphere::South => (quarter + 2) % 4,
-        };
-        [
-            Season::Spring,
-            Season::Summer,
-            Season::Autumn,
-            Season::Winter,
-        ][quarter as usize]
+    /// Calendar quarter `0..4`, by year fraction. Quarter 0 starts at the
+    /// northern vernal equinox by convention. This is a calendar division only:
+    /// for real seasons, which differ in length on eccentric orbits, use
+    /// `fms_planet::Planet::season`.
+    pub fn quarter(&self, calendar: &Calendar) -> u8 {
+        (self.year_fraction(calendar) * 4.0).floor() as u8 % 4
     }
 
     /// Whether this is the first step of a day.

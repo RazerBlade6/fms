@@ -40,7 +40,8 @@ The world starts at the northern vernal equinox, at midnight at longitude 0.
   default span is one planet year.
 
 The legend's date stamp is the time the fields were computed, which is the last
-completed step.
+completed step. It ends with the northern hemisphere's astronomical season
+(`N SPRING` …), which changes at the equinoxes and solstices.
 
 After simulating, `dump` and `animate` print a timing report to stderr:
 throughput (steps/s and simulated days/s), then each system's run count, total

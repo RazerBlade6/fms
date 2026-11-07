@@ -13,6 +13,7 @@
 
 mod orbit;
 mod params;
+mod seasons;
 
 use std::f64::consts::{PI, TAU};
 
@@ -22,6 +23,7 @@ use rayon::prelude::*;
 
 pub use orbit::{Orbit, OrbitState, eccentric_anomaly, eccentric_from_true, true_anomaly};
 pub use params::{Adjustment, PlanetParams, SOLAR_CONSTANT_1AU};
+pub use seasons::{Hemisphere, Season};
 
 /// A validated planet with derived quantities.
 #[derive(Clone, Copy, Debug, PartialEq)]

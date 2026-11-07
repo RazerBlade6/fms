@@ -318,3 +318,44 @@ fn insolation_into_matches_pointwise() {
         assert_eq!(*o, earth.insolation(*p, t));
     }
 }
+
+#[test]
+fn earth_seasons_have_their_real_lengths() {
+    // Present-day northern seasons: spring 92.76, summer 93.65, autumn 89.84,
+    // winter 88.99 days.
+    let lengths = Planet::earth().season_lengths_days();
+    for (got, want) in lengths.iter().zip([92.76, 93.65, 89.84, 88.99]) {
+        assert!((got - want).abs() < 0.3, "{lengths:?}");
+    }
+    assert!((lengths.iter().sum::<f64>() - 365.2422).abs() < 1e-9);
+}
+
+#[test]
+fn circular_orbits_have_equal_seasons() {
+    for len in circular(23.44).season_lengths_days() {
+        assert!((len - 365.2422 / 4.0).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn seasons_switch_at_equinoxes_and_solstices() {
+    use fms_planet::{Hemisphere, Season};
+    let earth = Planet::earth();
+    let starts = earth.season_starts();
+    assert_eq!(starts[0], 0.0);
+    for (q, &t) in starts.iter().enumerate() {
+        // Solar longitude at each start is exactly a multiple of 90°.
+        let lon = earth.orbit_state(t).solar_longitude;
+        let target = q as f64 * FRAC_PI_2;
+        assert!(fms_math::sin(lon - target).abs() < 1e-9 && fms_math::cos(lon - target) > 0.0);
+        let just_after = t + 60.0;
+        assert_eq!(earth.season(just_after, Hemisphere::North), Season::ALL[q]);
+        assert_eq!(
+            earth.season(just_after, Hemisphere::South),
+            Season::ALL[(q + 2) % 4]
+        );
+    }
+    // Maximum declination falls in the summer solstice's instant.
+    let solstice = earth.orbit_state(starts[1]).declination;
+    assert!((solstice - 23.44f64.to_radians()).abs() < 1e-9);
+}

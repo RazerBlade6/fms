@@ -1,6 +1,6 @@
 //! Calendar arithmetic: days, years, months, seasons.
 
-use fms_sched::{Calendar, CalendarError, Hemisphere, Season};
+use fms_sched::{Calendar, CalendarError};
 
 #[test]
 fn rejects_invalid_parameters() {
@@ -92,15 +92,10 @@ fn twelve_months_per_year() {
 }
 
 #[test]
-fn seasons_follow_the_year_and_flip_by_hemisphere() {
+fn quarters_and_fractions_follow_the_year() {
     let c = Calendar::new(1.0, 4, 100.0).unwrap();
     let at = |day: u64| c.date(day * 4);
-    assert_eq!(at(0).season(&c, Hemisphere::North), Season::Spring);
-    assert_eq!(at(30).season(&c, Hemisphere::North), Season::Summer);
-    assert_eq!(at(60).season(&c, Hemisphere::North), Season::Autumn);
-    assert_eq!(at(90).season(&c, Hemisphere::North), Season::Winter);
-    assert_eq!(at(30).season(&c, Hemisphere::South), Season::Winter);
-    assert_eq!(at(0).season(&c, Hemisphere::South), Season::Autumn);
+    assert_eq!([0, 30, 60, 90].map(|d| at(d).quarter(&c)), [0, 1, 2, 3]);
     let d = c.date(4 * 50 + 2);
     assert!((d.year_fraction(&c) - 50.5 / 100.0).abs() < 1e-12);
     assert!((d.day_fraction(&c) - 0.5).abs() < 1e-12);

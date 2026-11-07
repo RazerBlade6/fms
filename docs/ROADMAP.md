@@ -51,7 +51,7 @@ Added after the M1 review: tooling the GCM work depends on.
    too noisy) to catch performance regressions.
 - [x] 5. **API docs in CI**: `cargo doc` with `-D warnings` (broken intra-doc
    links fail the build).
-- [ ] 6. **Astronomical seasons**: season and equinox/solstice dates from the
+- [x] 6. **Astronomical seasons**: season and equinox/solstice dates from the
    orbit (solar longitude) rather than calendar quarters, so eccentric orbits get
    seasons of unequal length. The calendar quarter stays available as a
    convention.

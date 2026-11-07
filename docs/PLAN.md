@@ -89,10 +89,15 @@ over time. The app is built so it can grow into a civilisation simulator later.
 - Systems access fields only through a context that checks every access
   against the declared read/write set. An undeclared access panics on the first
   try, not only when it happens to race with another system.
-- Time is an integer step count, so it never drifts. Day, year, month and season
-  are derived from it. Fractional years alternate in length like leap years.
-  Year fraction 0 is the northern vernal equinox by convention. Each system
-  gets `interval_seconds`, the simulated time since it last ran, as its timestep.
+- Time is an integer step count, so it never drifts. Day, year, month and
+  calendar quarter are derived from it. Fractional years alternate in length like
+  leap years. Year fraction 0 is the northern vernal equinox by convention. Each
+  system gets `interval_seconds`, the simulated time since it last ran, as its
+  timestep.
+- Seasons are astronomical and come from the orbit (`fms-planet`), not the
+  calendar. They change at the equinoxes and solstices, so on an eccentric orbit
+  they differ in length: Earth's northern spring, summer, autumn and winter are
+  92.76, 93.65, 89.84 and 89.00 days.
 - **Map modes** are renderers over fields: a colormap, contours, vectors or
   particles. A new field gets a basic map mode for free.
 - **Civ layer (future)**: an ECS (`hecs` or `bevy_ecs`) for agents such as

@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
 use fms_fields::{ColorScale, FieldKey};
-use fms_sched::Hemisphere;
+use fms_planet::Hemisphere;
 use fms_sim::{World, WorldConfig};
 use glam::DVec3;
 
@@ -232,15 +232,19 @@ fn steps_for(world: &World, days: f64) -> u64 {
 /// step, which is when the fields were last computed.
 fn date_label(world: &World) -> String {
     let calendar = *world.scheduler.calendar();
-    let date = calendar.date(world.scheduler.current_step().saturating_sub(1));
+    let step = world.scheduler.current_step().saturating_sub(1);
+    let date = calendar.date(step);
     let hour = date.day_fraction(&calendar) * 24.0;
+    let season = world
+        .planet
+        .season(step as f64 * calendar.dt(), Hemisphere::North);
     format!(
-        "YEAR {} DAY {} {:02}:{:02} {:?}",
+        "YEAR {} DAY {} {:02}:{:02} N {:?}",
         date.year,
         date.day_of_year + 1,
         hour.floor() as u32,
         ((hour.fract()) * 60.0).round() as u32 % 60,
-        date.season(&calendar, Hemisphere::North),
+        season,
     )
 }
 
