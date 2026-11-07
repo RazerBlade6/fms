@@ -73,7 +73,14 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ### 3.2 Grids
 
-- Both levels are subdivided icosahedra. The climate grid is a coarser subdivision
+- Both levels are subdivided icosahedra, optimized into a spherical centroidal
+  Voronoi tessellation (SCVT) with **multilevel Lloyd**: a coarse mesh
+  (frequency ≤ 32) is fully optimized, then refined by small prime factors and
+  re-optimized at each level. Plain Lloyd needs roughly O(frequency²) iterations
+  and is impractical above ~100k cells. Multilevel needs ~600 iterations per
+  level: about 0.4 s for 20k cells and about 8 s for 1.6M cells (release build).
+  Pick frequencies with small prime factors (e.g. 45, 400); cells = 10·f² + 2.
+  Fine meshes will be cached to disk once persistence exists. The climate grid is a coarser subdivision
   of the same icosahedron, so the mapping between the two levels is simple
   and precomputed.
 - **Fine → coarse**: averaged by area. Sub-grid terrain statistics (mean,
@@ -384,7 +391,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
 ### M1 — Foundations
 1. ✅ **Workspace and CI**: Cargo workspace with all crate skeletons; rustfmt and
    clippy; GitHub Actions running tests.
-2. **Icosahedral mesh**: subdivide the icosahedron, build the Voronoi dual (cell
+2. ✅ **Icosahedral mesh**: subdivide the icosahedron, build the Voronoi dual (cell
    centres, vertices, edges), and optimize it into an SCVT using Lloyd's algorithm.
    Tests:
    - exactly 12 pentagons

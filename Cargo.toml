@@ -9,6 +9,9 @@ rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+glam = "0.34"
+rayon = "1.12"
+
 fms-geo = { path = "crates/geo" }
 fms-fields = { path = "crates/fields" }
 fms-sched = { path = "crates/sched" }
