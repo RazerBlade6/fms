@@ -93,7 +93,7 @@ impl Planet {
 
     /// Coriolis parameter `f = 2Ω sin φ` at latitude `lat` (radians).
     pub fn coriolis(&self, lat: f64) -> f64 {
-        2.0 * self.rotation_rate * lat.sin()
+        2.0 * self.rotation_rate * fms_math::sin(lat)
     }
 
     /// Coriolis parameter at a unit vector (`2Ω z`).
@@ -146,16 +146,16 @@ impl Planet {
     /// angle `cos h₀ = −tan φ tan δ`, clamped for polar day and night.
     pub fn daily_mean_insolation(&self, lat: f64, t: f64) -> f64 {
         let state = self.orbit.state(t);
-        let (sin_lat, cos_lat) = lat.sin_cos();
-        let (sin_dec, cos_dec) = state.declination.sin_cos();
+        let (sin_lat, cos_lat) = fms_math::sin_cos(lat);
+        let (sin_dec, cos_dec) = fms_math::sin_cos(state.declination);
         let cos_h0 = if cos_lat * cos_dec == 0.0 {
             // At a pole: day if the Sun is above that pole's horizon.
             if sin_lat * sin_dec > 0.0 { -1.0 } else { 1.0 }
         } else {
             (-(sin_lat * sin_dec) / (cos_lat * cos_dec)).clamp(-1.0, 1.0)
         };
-        let h0 = cos_h0.acos();
+        let h0 = fms_math::acos(cos_h0);
         self.mean_flux / PI / state.distance_ratio.powi(2)
-            * (h0 * sin_lat * sin_dec + cos_lat * cos_dec * h0.sin())
+            * (h0 * sin_lat * sin_dec + cos_lat * cos_dec * fms_math::sin(h0))
     }
 }

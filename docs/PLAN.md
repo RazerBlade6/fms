@@ -46,6 +46,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 | Planet range | Earth-like range + eccentricity; extremes clamped with warnings | Keeps the GCM numerically stable |
 | Edit views | Brushes in both globe and flat views, acting on sphere cells | No projection distortion when painting |
 | Determinism | Seeded RNG, fixed timestep, deterministic reductions; versioned binary saves | Reproducible worlds, exact save/load mid-run, reproducible bugs |
+| Portable math | Transcendental functions (`sin`, `exp`, `atan2`, …) come from the pure-Rust `libm` port via `fms-math`, never std; enforced by `clippy.toml` | std calls the platform C library, which differs between macOS, Windows and Linux; without this, saves would diverge across machines |
 | Undo | Command-based; each stroke stores a sparse diff of the cells it changed; terrain only | Cheap; the climate re-settles after undo instead of rewinding |
 | Validation | Earth benchmark + idealized test planets, run as regression tests | The only honest way to tune a simplified GCM |
 | First milestone | Headless GCM first | Prove the physics before building UI on top of it |
@@ -80,7 +81,8 @@ over time. The app is built so it can grow into a civilisation simulator later.
   parallelism, each due system is placed in the earliest stage after every
   earlier-added system it conflicts with (one writes a field the other reads or
   writes). Systems within a stage run in parallel. The plan doesn't depend on
-  thread count, so results are bit-identical on 1 or 64 threads.
+  thread count, so results are bit-identical on 1 or 64 threads, and (with
+  `fms-math`) on macOS, Windows and Linux. A golden-hash test in CI checks this.
 - Systems access fields only through a context that checks every access
   against the declared read/write set. An undeclared access panics on the first
   try, not only when it happens to race with another system.
@@ -104,6 +106,12 @@ over time. The app is built so it can grow into a civilisation simulator later.
   level: about 0.4 s for 20k cells and about 8 s for 1.6M cells (release build).
   Pick frequencies with small prime factors (e.g. 45, 400); cells = 10·f² + 2.
   Fine meshes will be cached to disk once persistence exists.
+- **Known limitation, cell-size spread:** the converged meshes are not perfectly
+  uniform. The largest cell is 1.46× the smallest at 20k cells, and 1.76× at
+  1.6M. The smallest cells sit around the 12 pentagons and set the CFL timestep,
+  which costs ~17% of the maximum `dt` on the climate grid. Density-weighted
+  Lloyd or spring-dynamics grid optimization could narrow this. Revisit only if
+  the M2 performance pass shows `dt` is the bottleneck.
 - The two meshes are optimized independently, so they are not exactly nested.
   The mapping between them is found by point location (a greedy walk over the
   Delaunay graph) and precomputed once (~30 ms for 1.6M → 20k).
@@ -122,6 +130,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ```
 crates/
+  math/       portable transcendental functions (libm), for cross-platform determinism
   geo/        icosahedral grids, two-level mapping, projections, picking
   fields/     field registry, SoA storage, serialization
   sched/      system scheduler (tick rates, R/W sets, determinism)
@@ -177,6 +186,11 @@ crates never depend on `app`. Everything except `app` runs headless.
   the orbital period in solar days. Rotation is prograde, so the sidereal day
   comes from `1/T_sid = 1/T_sol + 1/T_orbit`. The Sun's position uses mean
   solar time; the equation of time is ignored.
+- **Known limitation, orbit consistency:** year length and semi-major axis are
+  set independently, so Kepler's third law (`P² ∝ a³ / M★`) is not enforced
+  and physically impossible combinations are allowed. That's acceptable for
+  fantasy worlds. An optional star-mass parameter could derive one from the
+  other, or flag inconsistent combinations, if realism is wanted later.
 
 ### 4.2 Atmosphere (2-layer GCM)
 - Primitive equations solved with a finite-volume method on the icosahedral grid.
@@ -308,8 +322,9 @@ the climatology.
 - Versioned binary save format holding planet parameters, all persistent fields,
   sim clock, RNG state and the full undo stack. Fields are tagged by name and
   version so older saves can be migrated.
-- Determinism contract: same save + same build = bit-identical sim. Parallel
-  reductions use a fixed order.
+- Determinism contract: same save + same build = bit-identical sim, on any
+  thread count and on any of macOS, Windows and Linux. Parallel reductions use
+  a fixed order, and transcendental math goes through `fms-math` (`libm`).
 
 ## 5. Validation
 

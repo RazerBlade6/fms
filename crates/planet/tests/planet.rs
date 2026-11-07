@@ -102,12 +102,15 @@ fn kepler_solver_is_accurate() {
         for i in 0..100 {
             let m = TAU * f64::from(i) / 100.0;
             let ecc = eccentric_anomaly(m, e);
-            assert!((ecc - e * ecc.sin() - m).abs() < 1e-12, "e={e} M={m}");
+            assert!(
+                (ecc - e * fms_math::sin(ecc) - m).abs() < 1e-12,
+                "e={e} M={m}"
+            );
             let nu = true_anomaly(ecc, e);
             // Round trip true → eccentric anomaly, compared as angles.
             let back = eccentric_from_true(nu, e);
             assert!(
-                (back - ecc).sin().abs() < 1e-9 && (back - ecc).cos() > 0.0,
+                fms_math::sin(back - ecc).abs() < 1e-9 && fms_math::cos(back - ecc) > 0.0,
                 "e={e} M={m}"
             );
         }
@@ -184,7 +187,7 @@ fn daily_mean_insolation_analytic_values() {
     // North pole at the summer solstice: S₀ sin ε (Sun circles at elevation ε).
     assert!(close(
         p.daily_mean_insolation(FRAC_PI_2, quarter),
-        s0 * 23.44f64.to_radians().sin(),
+        s0 * fms_math::sin(23.44f64.to_radians()),
         1e-9
     ));
     // Polar night.
@@ -211,7 +214,7 @@ fn global_mean(f: impl Fn(f64) -> f64) -> f64 {
     (0..n)
         .map(|i| {
             let mu = -1.0 + 2.0 * (f64::from(i) + 0.5) / f64::from(n);
-            f(mu.asin())
+            f(fms_math::asin(mu))
         })
         .sum::<f64>()
         / f64::from(n)
@@ -245,7 +248,7 @@ fn instantaneous_insolation_integrates_to_daily_mean() {
                 let state = earth.orbit_state(t0);
                 let p = from_lat_lon(lat, 1.3);
                 // Use the day-start declination for an apples-to-apples comparison.
-                let sun = from_lat_lon(state.declination, sun.y.atan2(sun.x));
+                let sun = from_lat_lon(state.declination, fms_math::atan2(sun.y, sun.x));
                 earth.mean_flux() / state.distance_ratio.powi(2) * p.dot(sun).max(0.0)
             })
             .sum::<f64>()
@@ -306,7 +309,7 @@ fn annual_mean_insolation_is_hemispherically_symmetric() {
 fn insolation_into_matches_pointwise() {
     let earth = Planet::earth();
     let points: Vec<_> = (0..500)
-        .map(|i| from_lat_lon((f64::from(i) * 0.37).sin(), f64::from(i) * 1.1))
+        .map(|i| from_lat_lon(fms_math::sin(f64::from(i) * 0.37), f64::from(i) * 1.1))
         .collect();
     let mut out = vec![0.0; points.len()];
     let t = 12_345_678.0;

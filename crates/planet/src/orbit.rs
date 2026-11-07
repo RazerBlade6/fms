@@ -8,9 +8,9 @@ use std::f64::consts::TAU;
 /// few iterations for `e < 0.9`.
 pub fn eccentric_anomaly(mean_anomaly: f64, e: f64) -> f64 {
     let m = mean_anomaly.rem_euclid(TAU);
-    let mut ecc = m + e * m.sin();
+    let mut ecc = m + e * fms_math::sin(m);
     for _ in 0..50 {
-        let delta = (ecc - e * ecc.sin() - m) / (1.0 - e * ecc.cos());
+        let delta = (ecc - e * fms_math::sin(ecc) - m) / (1.0 - e * fms_math::cos(ecc));
         ecc -= delta;
         if delta.abs() < 1e-15 {
             break;
@@ -22,13 +22,19 @@ pub fn eccentric_anomaly(mean_anomaly: f64, e: f64) -> f64 {
 /// True anomaly from the eccentric anomaly.
 pub fn true_anomaly(eccentric_anomaly: f64, e: f64) -> f64 {
     let half = eccentric_anomaly / 2.0;
-    2.0 * ((1.0 + e).sqrt() * half.sin()).atan2((1.0 - e).sqrt() * half.cos())
+    2.0 * fms_math::atan2(
+        (1.0 + e).sqrt() * fms_math::sin(half),
+        (1.0 - e).sqrt() * fms_math::cos(half),
+    )
 }
 
 /// Eccentric anomaly from the true anomaly (inverse of [`true_anomaly`]).
 pub fn eccentric_from_true(true_anomaly: f64, e: f64) -> f64 {
     let half = true_anomaly / 2.0;
-    2.0 * ((1.0 - e).sqrt() * half.sin()).atan2((1.0 + e).sqrt() * half.cos())
+    2.0 * fms_math::atan2(
+        (1.0 - e).sqrt() * fms_math::sin(half),
+        (1.0 + e).sqrt() * fms_math::cos(half),
+    )
 }
 
 /// Where the planet is on its orbit at one instant.
@@ -69,7 +75,7 @@ impl Orbit {
         // At the equinox the solar longitude is 0, so the true anomaly is −ϖ.
         let nu0 = -perihelion_longitude;
         let e0 = eccentric_from_true(nu0, eccentricity);
-        let m0 = (e0 - eccentricity * e0.sin()).rem_euclid(TAU);
+        let m0 = (e0 - eccentricity * fms_math::sin(e0)).rem_euclid(TAU);
         Self {
             period,
             eccentricity,
@@ -86,11 +92,12 @@ impl Orbit {
         let ecc = eccentric_anomaly(mean_anomaly, e);
         let nu = true_anomaly(ecc, e);
         let solar_longitude = (nu + self.perihelion_longitude).rem_euclid(TAU);
-        let declination = (self.obliquity.sin() * solar_longitude.sin()).asin();
+        let declination =
+            fms_math::asin(fms_math::sin(self.obliquity) * fms_math::sin(solar_longitude));
         OrbitState {
             mean_anomaly,
             true_anomaly: nu,
-            distance_ratio: 1.0 - e * ecc.cos(),
+            distance_ratio: 1.0 - e * fms_math::cos(ecc),
             solar_longitude,
             declination,
         }

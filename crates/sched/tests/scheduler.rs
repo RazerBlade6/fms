@@ -211,7 +211,7 @@ fn workload() -> Vec<Vec<f64>> {
             move |ctx| {
                 let src = ctx.read(x);
                 for (k, v) in ctx.write(o).iter_mut().enumerate() {
-                    *v = (*v + src[k] * (i + 1) as f64).sin();
+                    *v = fms_math::sin(*v + src[k] * (i + 1) as f64);
                 }
             },
         ))
@@ -223,7 +223,7 @@ fn workload() -> Vec<Vec<f64>> {
         Rate::Every(2),
         move |ctx| {
             for (k, v) in ctx.write(x).iter_mut().enumerate() {
-                *v = (*v - k as f64).cos() * 10.0;
+                *v = fms_math::cos(*v - k as f64) * 10.0;
             }
         },
     ))

@@ -1,0 +1,31 @@
+# Simulation results must be bit-identical on every platform. The std float
+# functions below call the platform's C math library, which varies between
+# macOS, Windows and Linux. Use the `fms_math` equivalents (pure-Rust libm).
+disallowed-methods = [
+    { path = "f64::sin", reason = "platform-dependent; use fms_math::sin" },
+    { path = "f64::cos", reason = "platform-dependent; use fms_math::cos" },
+    { path = "f64::sin_cos", reason = "platform-dependent; use fms_math::sin_cos" },
+    { path = "f64::tan", reason = "platform-dependent; use fms_math::tan" },
+    { path = "f64::asin", reason = "platform-dependent; use fms_math::asin" },
+    { path = "f64::acos", reason = "platform-dependent; use fms_math::acos" },
+    { path = "f64::atan", reason = "platform-dependent; use fms_math::atan" },
+    { path = "f64::atan2", reason = "platform-dependent; use fms_math::atan2" },
+    { path = "f64::exp", reason = "platform-dependent; use fms_math::exp" },
+    { path = "f64::exp_m1", reason = "platform-dependent; use fms_math::exp_m1" },
+    { path = "f64::exp2", reason = "platform-dependent; use fms_math::pow" },
+    { path = "f64::ln", reason = "platform-dependent; use fms_math::ln" },
+    { path = "f64::ln_1p", reason = "platform-dependent; use fms_math::ln_1p" },
+    { path = "f64::log", reason = "platform-dependent; use fms_math::ln" },
+    { path = "f64::log2", reason = "platform-dependent; use fms_math::ln" },
+    { path = "f64::log10", reason = "platform-dependent; use fms_math::log10" },
+    { path = "f64::powf", reason = "platform-dependent; use fms_math::pow" },
+    { path = "f64::hypot", reason = "platform-dependent; use fms_math::hypot" },
+    { path = "f64::cbrt", reason = "platform-dependent; use fms_math::cbrt" },
+    { path = "f64::sinh", reason = "platform-dependent; add to fms_math" },
+    { path = "f64::cosh", reason = "platform-dependent; add to fms_math" },
+    { path = "f64::tanh", reason = "platform-dependent; use fms_math::tanh" },
+    { path = "f32::sin", reason = "platform-dependent; use fms_math (f64)" },
+    { path = "f32::cos", reason = "platform-dependent; use fms_math (f64)" },
+    { path = "f32::exp", reason = "platform-dependent; use fms_math (f64)" },
+    { path = "f32::powf", reason = "platform-dependent; use fms_math (f64)" },
+]

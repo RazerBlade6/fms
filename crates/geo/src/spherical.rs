@@ -20,14 +20,14 @@ pub fn circumcenter(a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
 pub fn triangle_area(a: DVec3, b: DVec3, c: DVec3) -> f64 {
     let numerator = a.dot(b.cross(c)).abs();
     let denominator = 1.0 + a.dot(b) + b.dot(c) + c.dot(a);
-    2.0 * numerator.atan2(denominator)
+    2.0 * fms_math::atan2(numerator, denominator)
 }
 
 /// Great-circle distance (central angle, radians) between two unit vectors.
 #[inline]
 pub fn arc_length(a: DVec3, b: DVec3) -> f64 {
     // atan2 form is accurate for both tiny and near-antipodal angles.
-    a.cross(b).length().atan2(a.dot(b))
+    fms_math::atan2(a.cross(b).length(), a.dot(b))
 }
 
 /// First moment `∫ x dA` of a spherical polygon whose vertices `ring` are listed
@@ -89,15 +89,15 @@ mod tests {
             .map(|i| {
                 let phi = 2.0 * PI * f64::from(i) / f64::from(n);
                 DVec3::new(
-                    alpha.sin() * phi.cos(),
-                    alpha.sin() * phi.sin(),
-                    alpha.cos(),
+                    fms_math::sin(alpha) * fms_math::cos(phi),
+                    fms_math::sin(alpha) * fms_math::sin(phi),
+                    fms_math::cos(alpha),
                 )
             })
             .collect();
         let m = polygon_moment(ring.iter().copied());
         assert!(m.x.abs() < 1e-12 && m.y.abs() < 1e-12);
-        assert!((m.z - PI * alpha.sin().powi(2)).abs() < 1e-5);
+        assert!((m.z - PI * fms_math::sin(alpha).powi(2)).abs() < 1e-5);
     }
 
     #[test]

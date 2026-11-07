@@ -47,7 +47,7 @@ fn random_points(n: usize, seed: u64) -> Vec<DVec3> {
             let z = 2.0 * next() - 1.0;
             let phi = 2.0 * PI * next();
             let r = (1.0 - z * z).sqrt();
-            DVec3::new(r * phi.cos(), r * phi.sin(), z)
+            DVec3::new(r * fms_math::cos(phi), r * fms_math::sin(phi), z)
         })
         .collect()
 }
@@ -156,7 +156,7 @@ fn restriction_conserves_and_preserves_constants() {
 #[test]
 fn restrict_mean_approximates_smooth_fields() {
     let g = grids();
-    let field = |p: DVec3| (2.0 * p.x).sin() + p.y * p.z;
+    let field = |p: DVec3| fms_math::sin(2.0 * p.x) + p.y * p.z;
     let fine: Vec<f64> = g.fine.cell_centers().iter().map(|&p| field(p)).collect();
     let mut coarse = vec![0.0; g.coarse.n_cells()];
     g.map.restrict_mean(&fine, &mut coarse);
@@ -178,7 +178,7 @@ fn prolong_preserves_constants_and_is_accurate() {
     g.map.prolong(&vec![-1.25; g.coarse.n_cells()], &mut fine);
     assert!(fine.iter().all(|&x| (x + 1.25).abs() < 1e-12));
 
-    let field = |p: DVec3| (2.0 * p.x).sin() + p.y * p.z;
+    let field = |p: DVec3| fms_math::sin(2.0 * p.x) + p.y * p.z;
     let coarse: Vec<f64> = g.coarse.cell_centers().iter().map(|&p| field(p)).collect();
     g.map.prolong(&coarse, &mut fine);
     let max_err = g

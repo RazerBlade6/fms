@@ -72,7 +72,8 @@ struct Slot {
 /// stage after every earlier-added due system it conflicts with (see
 /// [`Access::conflicts_with`](crate::Access::conflicts_with)). Systems in the same
 /// stage touch disjoint data, so running them concurrently commutes. The stage
-/// plan does not depend on thread count, so results are identical across machines.
+/// plan does not depend on thread count, so results are identical on any number
+/// of threads (and, with `fms-math`, on any platform).
 pub struct Scheduler {
     calendar: Calendar,
     step: u64,

@@ -74,3 +74,38 @@ fn identical_runs_are_bit_identical() {
     let (a, b) = (run(), run());
     assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
 }
+
+/// Hash of the optimized climate grid and the insolation field after 100 steps.
+/// CI runs this on macOS, Windows and Linux: a mismatch on any of them means
+/// some computation is not bit-reproducible across platforms.
+#[test]
+fn results_are_bit_identical_across_platforms() {
+    let mut w = small_world();
+    w.run_steps(100);
+    let hash = |values: &mut dyn Iterator<Item = f64>| {
+        values.fold(0xcbf2_9ce4_8422_2325u64, |h, v| {
+            (h ^ v.to_bits()).wrapping_mul(0x0100_0000_01b3)
+        })
+    };
+    let grid = hash(
+        &mut w
+            .climate
+            .mesh
+            .cell_centers()
+            .iter()
+            .flat_map(|p| p.to_array()),
+    );
+    let insolation = hash(&mut w.fields.read(w.core.toa_insolation).iter().copied());
+    let daily = hash(&mut w.fields.read(w.core.daily_insolation).iter().copied());
+    assert_eq!(
+        [grid, insolation, daily],
+        GOLDEN,
+        "results differ from the reference platform: {grid:#018x}, {insolation:#018x}, {daily:#018x}"
+    );
+}
+
+const GOLDEN: [u64; 3] = [
+    0x3d60_e023_2d57_f745,
+    0xc52d_c4e9_50d4_e23e,
+    0xba12_f7fe_2830_1500,
+];

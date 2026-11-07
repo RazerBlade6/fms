@@ -1,0 +1,14 @@
+[package]
+name = "fms-math"
+description = "Portable, bit-reproducible math functions for the simulation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+libm.workspace = true
+
+[lints]
+workspace = true

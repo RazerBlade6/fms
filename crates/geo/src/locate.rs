@@ -54,8 +54,8 @@ impl CellLocator {
     }
 
     fn start_cell(&self, p: DVec3) -> CellId {
-        let lat = p.z.clamp(-1.0, 1.0).asin();
-        let lon = p.y.atan2(p.x);
+        let lat = fms_math::asin(p.z.clamp(-1.0, 1.0));
+        let lon = fms_math::atan2(p.y, p.x);
         let i = bucket_index(
             lat,
             self.n_lat,

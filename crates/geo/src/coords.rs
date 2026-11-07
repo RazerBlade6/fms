@@ -9,16 +9,16 @@ use glam::DVec3;
 /// Unit vector for a latitude/longitude pair (radians).
 #[inline]
 pub fn from_lat_lon(lat: f64, lon: f64) -> DVec3 {
-    let (sin_lat, cos_lat) = lat.sin_cos();
-    let (sin_lon, cos_lon) = lon.sin_cos();
+    let (sin_lat, cos_lat) = fms_math::sin_cos(lat);
+    let (sin_lon, cos_lon) = fms_math::sin_cos(lon);
     DVec3::new(cos_lat * cos_lon, cos_lat * sin_lon, sin_lat)
 }
 
 /// Latitude and longitude (radians) of a unit vector.
 #[inline]
 pub fn to_lat_lon(p: DVec3) -> (f64, f64) {
-    let lat = p.z.atan2(p.x.hypot(p.y));
-    let lon = p.y.atan2(p.x);
+    let lat = fms_math::atan2(p.z, fms_math::hypot(p.x, p.y));
+    let lon = fms_math::atan2(p.y, p.x);
     (lat, lon)
 }
 

@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+fms-math.workspace = true
 glam.workspace = true
 rayon.workspace = true
 

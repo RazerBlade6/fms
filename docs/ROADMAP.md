@@ -35,6 +35,27 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    - insolation matches analytic values (equinox and solstice, polar night)
    - annual-mean symmetry at zero eccentricity
 
+## M1.5 — Tooling and visibility
+Added after the M1 review: tooling the GCM work depends on.
+- [x] 1. **Portable math**: `fms-math` wraps `libm` for all transcendental
+   functions; `clippy.toml` forbids the std versions; golden-hash tests prove
+   results are bit-identical on macOS, Windows and Linux.
+- [ ] 2. **Wind visualization**: reconstruct a cell-centred vector field from edge
+   normal velocities (Perot-style reconstruction); CLI renders vector fields as
+   speed plus arrows or streamlines, and edge/vertex fields via cell averages.
+   Needed to debug every dynamics step in M2.
+- [ ] 3. **Per-system timing**: wall-clock time for each system in the
+   `StepReport`; `fms` prints a timing breakdown per run.
+- [ ] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
+   transfers, point location and scheduler overhead. Run locally (CI timing is
+   too noisy) to catch performance regressions.
+- [ ] 5. **API docs in CI**: `cargo doc` with `-D warnings` (broken intra-doc
+   links fail the build).
+- [ ] 6. **Astronomical seasons**: season and equinox/solstice dates from the
+   orbit (solar longitude) rather than calendar quarters, so eccentric orbits get
+   seasons of unequal length. The calendar quarter stays available as a
+   convention.
+
 ## M2 — Headless GCM
 - [ ] 1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine
    grid, then aggregate to the coarse grid, keeping sub-grid terrain statistics.

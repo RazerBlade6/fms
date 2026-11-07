@@ -12,9 +12,11 @@ license = "MIT OR Apache-2.0"
 clap = { version = "4.6", features = ["derive"] }
 gif = "0.14"
 glam = "0.34"
+libm = "0.2"
 png = "0.18"
 rayon = "1.12"
 
+fms-math = { path = "crates/math" }
 fms-geo = { path = "crates/geo" }
 fms-fields = { path = "crates/fields" }
 fms-sched = { path = "crates/sched" }

@@ -11,5 +11,8 @@ publish = false
 rayon.workspace = true
 fms-fields.workspace = true
 
+[dev-dependencies]
+fms-math.workspace = true
+
 [lints]
 workspace = true
