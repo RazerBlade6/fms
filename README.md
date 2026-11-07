@@ -14,4 +14,5 @@ cargo run -p fms-app        # GUI (`fantasy-map`)
 
 ## Documentation
 
-- [Design plan](docs/PLAN.md): architecture, key decisions, subsystems, milestones
+- [Design plan](docs/PLAN.md): architecture, key decisions, subsystems, equations
+- [Roadmap](docs/ROADMAP.md): milestones and progress
