@@ -114,12 +114,8 @@ over time. The app is built so it can grow into a civilisation simulator later.
   level: about 0.4 s for 20k cells and about 8 s for 1.6M cells (release build).
   Pick frequencies with small prime factors (e.g. 45, 400); cells = 10·f² + 2.
   Fine meshes will be cached to disk once persistence exists.
-- **Known limitation, cell-size spread:** the converged meshes are not perfectly
-  uniform. The largest cell is 1.46× the smallest at 20k cells, and 1.76× at
-  1.6M. The smallest cells sit around the 12 pentagons and set the CFL timestep,
-  which costs ~17% of the maximum `dt` on the climate grid. Density-weighted
-  Lloyd or spring-dynamics grid optimization could narrow this. Revisit only if
-  the M2 performance pass shows `dt` is the bottleneck.
+- Known limitations of the grids (cell-size spread, frequency constraints,
+  pentagon errors) are tracked in [OBSERVATIONS.md](OBSERVATIONS.md).
 - The two meshes are optimized independently, so they are not exactly nested.
   The mapping between them is found by point location (a greedy walk over the
   Delaunay graph) and precomputed once (~30 ms for 1.6M → 20k).
@@ -194,11 +190,8 @@ crates never depend on `app`. Everything except `app` runs headless.
   the orbital period in solar days. Rotation is prograde, so the sidereal day
   comes from `1/T_sid = 1/T_sol + 1/T_orbit`. The Sun's position uses mean
   solar time; the equation of time is ignored.
-- **Known limitation, orbit consistency:** year length and semi-major axis are
-  set independently, so Kepler's third law (`P² ∝ a³ / M★`) is not enforced
-  and physically impossible combinations are allowed. That's acceptable for
-  fantasy worlds. An optional star-mass parameter could derive one from the
-  other, or flag inconsistent combinations, if realism is wanted later.
+- Known limitations of the planet model (Kepler's third law, equation of time)
+  are tracked in [OBSERVATIONS.md](OBSERVATIONS.md).
 
 ### 4.2 Atmosphere (2-layer GCM)
 - Primitive equations solved with a finite-volume method on the icosahedral grid.

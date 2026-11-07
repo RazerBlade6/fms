@@ -42,4 +42,4 @@ Taken on 2026-11-07 on the development Mac (Apple silicon), release profile,
 | `planet/insolation_20k` | 128 µs | Parallel |
 | `planet/daily_mean_20k` | 3.07 ms | Serial loop in the bench; the system runs it in parallel |
 | `planet/orbit_state` | 93 ns | Kepler solve |
-| `scheduler/step_20_systems` | 119 µs | 20 trivial systems in 2 stages. This is mostly the cost of starting parallel work per stage; at speed 2 (~340 steps/s) it is ~4% overhead. Candidate for optimization (cache stage plans, run tiny stages serially) if it shows up in M2 profiles |
+| `scheduler/step_20_systems` | 119 µs | 20 trivial systems in 2 stages; see [OBSERVATIONS.md](OBSERVATIONS.md) O-8 |

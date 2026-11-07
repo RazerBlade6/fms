@@ -57,6 +57,9 @@ Added after the M1 review: tooling the GCM work depends on.
    convention.
 
 ## M2 — Headless GCM
+- [ ] 0. **Point probe**: `fms probe --lat --lon -f FIELD [-f …] --days D` writes a
+   time series at one location to `output/` as CSV plus a simple line chart. Needed
+   to check diurnal and seasonal cycles and energy drift in the steps below.
 - [ ] 1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine
    grid, then aggregate to the coarse grid, keeping sub-grid terrain statistics.
 - [ ] 2. **Discrete operators**: TRiSK gradient, divergence, curl, kinetic energy and
@@ -91,7 +94,10 @@ Added after the M1 review: tooling the GCM work depends on.
     - radiation every ~3 h, ocean every 1–6 h (§4.6)
 - [ ] 14. **Idealized planets**: aquaplanet (symmetric Hadley cell), no-tilt (no
     seasons), fast and slow rotation (number and width of circulation cells).
-    Automated assertions on zonal-mean wind and temperature.
+    Automated assertions on zonal-mean wind and temperature. Also a
+    **grid-imprinting check**: measure how strongly the pentagons' pattern shows up
+    in the long-run Held–Suarez climate ([OBSERVATIONS.md](OBSERVATIONS.md) O-1), and
+    apply a fix if it is visible.
 - [ ] 15. **Earth benchmark, part 1**: compare against a reference climatology:
     - trade winds and jets
     - the tropical rain belt and its seasonal migration
