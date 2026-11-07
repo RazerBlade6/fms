@@ -268,3 +268,53 @@ fn hilbert_order_improves_locality_and_keeps_topology() {
     let total: f64 = ordered.cell_areas().iter().sum();
     assert!((total - 4.0 * PI).abs() < 1e-11);
 }
+
+/// (max, rms) error of Perot reconstruction of solid-body rotation, relative to
+/// the maximum speed (1).
+fn perot_error(k: u32) -> (f64, f64) {
+    let (m, g) = mesh(k);
+    let omega = DVec3::new(0.3, -0.2, 1.0).normalize();
+    let u: Vec<f64> = (0..m.n_edges())
+        .map(|e| omega.cross(g.edge_points[e]).dot(g.edge_normals[e]))
+        .collect();
+    let v = g.reconstruct_vectors(m, &u);
+    let errors: Vec<f64> = m
+        .cell_centers()
+        .iter()
+        .zip(&v)
+        .map(|(&x, &r)| (r - omega.cross(x)).length())
+        .collect();
+    let max = errors.iter().fold(0.0f64, |a, &e| a.max(e));
+    let rms = (errors.iter().map(|e| e * e).sum::<f64>() / errors.len() as f64).sqrt();
+    (max, rms)
+}
+
+#[test]
+fn perot_reconstructs_tangent_vectors() {
+    let (m, g) = mesh(16);
+    // Results are tangent to the sphere.
+    let u = noise(m.n_edges(), 5);
+    for (x, v) in m.cell_centers().iter().zip(g.reconstruct_vectors(m, &u)) {
+        assert!(x.dot(v).abs() < 1e-12);
+    }
+    let ((max16, rms16), (max32, rms32)) = (perot_error(16), perot_error(32));
+    println!("perot: k=16 max {max16:.3e} rms {rms16:.3e}; k=32 max {max32:.3e} rms {rms32:.3e}");
+    // Max error does not shrink (largest at pentagons), as with TRiSK.
+    assert!(max16 < 0.03 && max32 < 0.03);
+    assert!(rms32 < rms16, "should converge: {rms16} -> {rms32}");
+}
+
+#[test]
+fn averaging_onto_cells_preserves_constants() {
+    let (m, g) = mesh(16);
+    assert!(
+        g.vertices_to_cells(m, &vec![2.5; m.n_vertices()])
+            .iter()
+            .all(|&v| (v - 2.5).abs() < 1e-12)
+    );
+    assert!(
+        g.edges_to_cells(m, &vec![-1.0; m.n_edges()])
+            .iter()
+            .all(|&v| (v + 1.0).abs() < 1e-12)
+    );
+}

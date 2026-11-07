@@ -206,9 +206,11 @@ dependencies = [
  "clap",
  "fms-fields",
  "fms-geo",
+ "fms-math",
  "fms-sched",
  "fms-sim",
  "gif",
+ "glam",
  "png",
  "rayon",
 ]

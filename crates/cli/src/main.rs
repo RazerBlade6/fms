@@ -9,23 +9,32 @@
 //! fms dump -f planet.toa_insolation --hours 12 # one field after half a day
 //! fms animate                                  # a year of daily-mean insolation
 //! fms animate -f planet.toa_insolation --days 1 --frames 48
+//! fms patterns                                 # analytic test fields (edges, vertices, vectors)
 //! ```
 
+mod arrows;
 mod colormap;
 mod font;
+mod patterns;
 mod render;
+mod view;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
-use fms_fields::{ColorScale, Element, FieldKey};
+use fms_fields::{ColorScale, FieldKey};
 use fms_sched::Hemisphere;
 use fms_sim::{World, WorldConfig};
+use glam::DVec3;
 
+use crate::arrows::ArrowLayout;
 use crate::colormap::Colormap;
-use crate::render::{CellRaster, Legend, format_value, image_height, render, write_gif, write_png};
+use crate::render::{
+    CellRaster, Legend, Overlay, format_value, image_height, render, write_gif, write_png,
+};
+use crate::view::{View, is_vector, title, view};
 
 #[derive(Parser)]
 #[command(
@@ -46,6 +55,9 @@ enum Command {
     Dump(DumpArgs),
     /// Run the world and write a GIF of one field over time.
     Animate(AnimateArgs),
+    /// Write analytic test fields (edge, vertex and vector fields) to
+    /// `output/patterns/`, to check rendering before real dynamics exist.
+    Patterns(PatternArgs),
 }
 
 #[derive(Args, Clone)]
@@ -68,7 +80,7 @@ struct DumpArgs {
     /// Field to render (repeatable).
     #[arg(short, long = "field")]
     fields: Vec<String>,
-    /// Render every cell field.
+    /// Render every field.
     #[arg(long)]
     all: bool,
     /// Simulated days to run before rendering.
@@ -102,6 +114,14 @@ struct AnimateArgs {
 }
 
 #[derive(Args)]
+struct PatternArgs {
+    #[command(flatten)]
+    world: WorldArgs,
+    #[command(flatten)]
+    image: ImageArgs,
+}
+
+#[derive(Args)]
 struct ImageArgs {
     /// Image width in pixels (height is half).
     #[arg(long, default_value_t = 1024)]
@@ -116,6 +136,16 @@ struct ImageArgs {
     /// but hides the true resolution. Ignored for categorical fields.
     #[arg(long)]
     smooth: bool,
+    /// Overlay arrows from this vector field (an edge normal-component field,
+    /// e.g. a wind). Vector fields show their own arrows by default.
+    #[arg(long)]
+    vectors: Option<String>,
+    /// Draw no arrows, even for vector fields.
+    #[arg(long, conflicts_with = "vectors")]
+    no_arrows: bool,
+    /// Approximate spacing between arrows (pixels).
+    #[arg(long, default_value_t = 28)]
+    arrow_spacing: usize,
 }
 
 fn parse_range(s: &str) -> Result<(f64, f64), String> {
@@ -135,6 +165,7 @@ fn main() -> ExitCode {
         Command::Fields(args) => list_fields(&build_world(&args)),
         Command::Dump(args) => dump(args),
         Command::Animate(args) => animate(args),
+        Command::Patterns(args) => render_patterns(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -175,10 +206,10 @@ fn list_fields(world: &World) -> Result<(), String> {
         let meta = world.fields.meta(key);
         let s = &meta.spec;
         println!(
-            "{:<28} {:?} {:?} {:<8} {:>9} values  {}",
+            "{:<30} {:?} {:<6} {:<8} {:>9} values  {}",
             s.name,
             s.location.grid,
-            s.location.element,
+            format!("{:?}", s.location.element),
             format!("[{}]", s.units),
             meta.len,
             s.description
@@ -214,14 +245,31 @@ fn date_label(world: &World) -> String {
 }
 
 fn resolve(world: &World, name: &str) -> Result<FieldKey, String> {
-    let key = world.fields.key(name).map_err(|e| e.to_string())?;
-    let element = world.fields.meta(key).spec.location.element;
-    if element != Element::Cell {
-        return Err(format!(
-            "`{name}` lives on {element:?}s; only cell fields can be rendered so far"
-        ));
+    world.fields.key(name).map_err(|e| e.to_string())
+}
+
+/// The field whose arrows to overlay on `key`, if any.
+fn overlay_for(
+    world: &World,
+    key: FieldKey,
+    image: &ImageArgs,
+) -> Result<Option<FieldKey>, String> {
+    if image.no_arrows {
+        return Ok(None);
     }
-    Ok(key)
+    match &image.vectors {
+        Some(name) => {
+            let k = resolve(world, name)?;
+            if is_vector(world, k) {
+                Ok(Some(k))
+            } else {
+                Err(format!(
+                    "`{name}` is not a vector (edge normal-component) field"
+                ))
+            }
+        }
+        None => Ok(is_vector(world, key).then_some(key)),
+    }
 }
 
 fn data_range(values: &[f64]) -> (f64, f64) {
@@ -240,73 +288,131 @@ fn data_range(values: &[f64]) -> (f64, f64) {
     }
 }
 
-fn title(world: &World, key: FieldKey) -> String {
-    let spec = &world.fields.meta(key).spec;
-    if spec.units.is_empty() {
-        spec.name.to_owned()
-    } else {
-        format!("{} ({})", spec.name, spec.units)
+/// One moment of a field, resampled for drawing.
+struct Frame {
+    view: View,
+    arrows: Option<Vec<DVec3>>,
+    stamp: String,
+}
+
+fn capture(world: &World, key: FieldKey, overlay: Option<FieldKey>) -> Frame {
+    let arrows = overlay.map(|k| view(world, k).vectors.expect("overlay is a vector field"));
+    Frame {
+        view: view(world, key),
+        arrows,
+        stamp: date_label(world),
     }
+}
+
+/// Render frames of one field with a shared colour range and arrow scale.
+/// Returns the images, the colour map and the image size.
+fn paint(
+    world: &World,
+    key: FieldKey,
+    overlay: Option<FieldKey>,
+    frames: &[Frame],
+    image: &ImageArgs,
+) -> (Vec<Vec<u8>>, Colormap, (usize, usize)) {
+    let spec = &world.fields.meta(key).spec;
+    let (min, max) = image.range.unwrap_or_else(|| {
+        let all: Vec<f64> = frames
+            .iter()
+            .flat_map(|f| f.view.values.iter().copied())
+            .collect();
+        data_range(&all)
+    });
+    let colormap = Colormap::new(spec.color_scale, min, max);
+    let smooth = image.smooth && spec.color_scale != ColorScale::Categorical;
+    let raster = CellRaster::new(world.grid(spec.location.grid), image.width, smooth);
+    let layout = overlay.map(|k| {
+        let grid = world.grid(world.fields.meta(k).spec.location.grid);
+        ArrowLayout::new(grid, image.width, image.arrow_spacing)
+    });
+    let max_speed = frames
+        .iter()
+        .flat_map(|f| f.arrows.iter().flatten())
+        .map(|v| v.length())
+        .fold(0.0, f64::max);
+    let mut heading = title(world, key);
+    if let Some(k) = overlay.filter(|&k| k != key) {
+        heading.push_str(&format!(" + {}", world.fields.meta(k).spec.name));
+    }
+    if max_speed > 0.0 {
+        heading.push_str(&format!(" ARROW MAX {}", format_value(max_speed)));
+    }
+    let images = frames
+        .iter()
+        .map(|f| {
+            let overlay = match (&layout, &f.arrows) {
+                (Some(layout), Some(vectors)) => Some(Overlay {
+                    layout,
+                    vectors,
+                    max_speed,
+                }),
+                _ => None,
+            };
+            let legend = Legend {
+                title: &heading,
+                subtitle: &f.stamp,
+            };
+            render(
+                &raster,
+                &f.view.values,
+                &colormap,
+                &legend,
+                overlay.as_ref(),
+            )
+        })
+        .collect();
+    (images, colormap, (raster.width, image_height(&raster)))
+}
+
+fn write_one(
+    world: &World,
+    key: FieldKey,
+    overlay: Option<FieldKey>,
+    image: &ImageArgs,
+) -> Result<(), String> {
+    let frame = capture(world, key, overlay);
+    let (images, colormap, (w, h)) =
+        paint(world, key, overlay, std::slice::from_ref(&frame), image);
+    let name = world.fields.meta(key).spec.name;
+    let path = image.out_dir.join(format!("{name}.png"));
+    write_png(&path, w, h, &images[0], colormap.palette())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let (min, max) = colormap.range();
+    println!(
+        "{name} [{} .. {}] -> {}",
+        format_value(min),
+        format_value(max),
+        path.display()
+    );
+    Ok(())
 }
 
 fn dump(args: DumpArgs) -> Result<(), String> {
     let mut world = build_world(&args.world);
-    let names: Vec<String> = if args.all {
-        world
-            .fields
-            .keys()
-            .filter(|&k| world.fields.meta(k).spec.location.element == Element::Cell)
-            .map(|k| world.fields.meta(k).spec.name.to_owned())
-            .collect()
+    let keys: Vec<FieldKey> = if args.all {
+        world.fields.keys().collect()
     } else if args.fields.is_empty() {
         return Err("give at least one --field NAME, or --all (see `fms fields`)".into());
     } else {
-        args.fields.clone()
+        args.fields
+            .iter()
+            .map(|n| resolve(&world, n))
+            .collect::<Result<_, _>>()?
     };
-    let keys = names
+    let overlays = keys
         .iter()
-        .map(|n| resolve(&world, n))
+        .map(|&k| overlay_for(&world, k, &args.image))
         .collect::<Result<Vec<_>, _>>()?;
 
     // Always run at least one step so every system has produced its output.
     let steps = steps_for(&world, args.days + args.hours / 24.0);
     world.run_steps(steps.max(1));
     ensure_dir(&args.image.out_dir)?;
-    let stamp = date_label(&world);
-
-    for key in keys {
-        let meta = world.fields.meta(key);
-        let grid = world.grid(meta.spec.location.grid);
-        let smooth = args.image.smooth && meta.spec.color_scale != ColorScale::Categorical;
-        let raster = CellRaster::new(grid, args.image.width, smooth);
-        let values = world.fields.read_column(key).to_f64_vec();
-        let (min, max) = args.image.range.unwrap_or_else(|| data_range(&values));
-        let colormap = Colormap::new(meta.spec.color_scale, min, max);
-        let pixels = render(
-            &raster,
-            &values,
-            &colormap,
-            &Legend {
-                title: &title(&world, key),
-                subtitle: &stamp,
-            },
-        );
-        let path = args.image.out_dir.join(format!("{}.png", meta.spec.name));
-        write_png(
-            &path,
-            raster.width,
-            image_height(&raster),
-            &pixels,
-            colormap.palette(),
-        )
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        println!(
-            "{} [{} .. {}] -> {}",
-            meta.spec.name,
-            format_value(min),
-            format_value(max),
-            path.display()
-        );
+    for (key, overlay) in keys.into_iter().zip(overlays) {
+        write_one(&world, key, overlay, &args.image)?;
     }
     Ok(())
 }
@@ -314,79 +420,59 @@ fn dump(args: DumpArgs) -> Result<(), String> {
 fn animate(args: AnimateArgs) -> Result<(), String> {
     let mut world = build_world(&args.world);
     let key = resolve(&world, &args.field)?;
+    let overlay = overlay_for(&world, key, &args.image)?;
     let days = args.days.unwrap_or(world.planet.params().year_days);
-    let frames = args.frames.max(1);
+    let frame_count = args.frames.max(1);
     let total_steps = steps_for(&world, days);
-    let frame_step = |k: u32| total_steps * u64::from(k) / u64::from(frames);
+    let frame_step = |k: u32| total_steps * u64::from(k) / u64::from(frame_count);
 
-    // Simulate first, then pick one colour range for every frame.
+    // Simulate first, then pick one colour range and arrow scale for all frames.
     let t = Instant::now();
-    let mut snapshots = Vec::with_capacity(frames as usize);
+    let mut frames = Vec::with_capacity(frame_count as usize);
     world.run_steps(1);
-    for k in 0..frames {
+    for k in 0..frame_count {
         let target = frame_step(k).max(1);
         let now = world.scheduler.current_step();
         world.run_steps(target.saturating_sub(now));
-        snapshots.push((
-            world.fields.read_column(key).to_f64_vec(),
-            date_label(&world),
-        ));
+        frames.push(capture(&world, key, overlay));
     }
     eprintln!(
         "simulated {days} days ({total_steps} steps) in {:.1?}",
         t.elapsed()
     );
 
-    let (min, max) = args.image.range.unwrap_or_else(|| {
-        let all: Vec<f64> = snapshots
-            .iter()
-            .flat_map(|(v, _)| v.iter().copied())
-            .collect();
-        data_range(&all)
-    });
-    let meta = world.fields.meta(key);
-    let colormap = Colormap::new(meta.spec.color_scale, min, max);
-    let smooth = args.image.smooth && meta.spec.color_scale != ColorScale::Categorical;
-    let raster = CellRaster::new(
-        world.grid(meta.spec.location.grid),
-        args.image.width,
-        smooth,
-    );
-    let title = title(&world, key);
-    let images: Vec<Vec<u8>> = snapshots
-        .iter()
-        .map(|(values, stamp)| {
-            render(
-                &raster,
-                values,
-                &colormap,
-                &Legend {
-                    title: &title,
-                    subtitle: stamp,
-                },
-            )
-        })
-        .collect();
-
+    let (images, colormap, (w, h)) = paint(&world, key, overlay, &frames, &args.image);
     ensure_dir(&args.image.out_dir)?;
-    let path = args.image.out_dir.join(format!("{}.gif", meta.spec.name));
-    write_gif(
-        &path,
-        raster.width,
-        image_height(&raster),
-        &images,
-        colormap.palette(),
-        args.fps,
-    )
-    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let name = world.fields.meta(key).spec.name;
+    let path = args.image.out_dir.join(format!("{name}.gif"));
+    write_gif(&path, w, h, &images, colormap.palette(), args.fps)
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let (min, max) = colormap.range();
     println!(
-        "{} [{} .. {}], {} frames -> {}",
-        meta.spec.name,
+        "{name} [{} .. {}], {frame_count} frames -> {}",
         format_value(min),
         format_value(max),
-        frames,
         path.display()
     );
+    Ok(())
+}
+
+fn render_patterns(mut args: PatternArgs) -> Result<(), String> {
+    let mut world = build_world(&args.world);
+    let fields = patterns::register(&mut world)?;
+    world.run_steps(1);
+    args.image.out_dir = args.image.out_dir.join("patterns");
+    ensure_dir(&args.image.out_dir)?;
+    for (key, default_overlay) in fields {
+        let overlay = if args.image.no_arrows {
+            None
+        } else if args.image.vectors.is_some() {
+            overlay_for(&world, key, &args.image)?
+        } else {
+            default_overlay
+        };
+        write_one(&world, key, overlay, &args.image)?;
+    }
     Ok(())
 }
 

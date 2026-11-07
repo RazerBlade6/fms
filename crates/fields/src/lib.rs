@@ -32,7 +32,7 @@ mod registry;
 pub use column::{Column, DType, FieldType};
 pub use meta::{
     Buffering, ColorScale, Element, FieldMeta, FieldSpec, GridLevel, GridSizes, Location,
-    MeshCounts,
+    MeshCounts, Quantity,
 };
 pub use registry::{
     ColumnRef, FieldError, FieldId, FieldKey, FieldMut, FieldRef, FieldRegistry, validate_name,

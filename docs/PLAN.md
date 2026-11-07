@@ -65,8 +65,11 @@ over time. The app is built so it can grow into a civilisation simulator later.
   `soil`, `civ`, …), so independently written crates can't collide. The registry
   rejects names that don't follow it.
   Types: f32, f64, u8, u16, u32, i32. Metadata: units, valid range (also used to
-  detect blow-ups), colour-scale hint, single/double buffering, and whether the
-  field is saved.
+  detect blow-ups), colour-scale hint, single/double buffering, whether the
+  field is saved, and the quantity. The quantity is `Scalar`, or for edge fields
+  `NormalComponent`: a vector field stored as its component along each edge
+  normal. Those are displayed by rebuilding cell-centre vectors with Perot's
+  method.
 - Fields are registered up front. After that, different fields can be read and
   written from many threads at once. Each field has a lock, but a conflicting
   access **panics** rather than blocks: it means a system under-declared its

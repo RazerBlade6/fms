@@ -123,6 +123,16 @@ pub enum ColorScale {
     Moisture,
 }
 
+/// What a field's values represent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Quantity {
+    /// A scalar per element (temperature, elevation, a flux magnitude, …).
+    Scalar,
+    /// On edges: the component of a vector field along each edge normal `nₑ`
+    /// (e.g. wind). Displayed by reconstructing a vector at cell centres.
+    NormalComponent,
+}
+
 /// Whether a field has one buffer or a front/back pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Buffering {
@@ -156,6 +166,8 @@ pub struct FieldSpec {
     /// Whether the field is part of the saved state. Derived fields that can be
     /// recomputed from others are not.
     pub persistent: bool,
+    /// What the values mean, beyond their units.
+    pub quantity: Quantity,
 }
 
 impl FieldSpec {
@@ -171,6 +183,7 @@ impl FieldSpec {
             color_scale: ColorScale::Sequential,
             buffering: Buffering::Single,
             persistent: true,
+            quantity: Quantity::Scalar,
         }
     }
 }

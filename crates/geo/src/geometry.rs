@@ -61,6 +61,9 @@ pub struct MeshGeometry {
     trisk_offsets: Vec<u32>,
     trisk_edges: Vec<EdgeId>,
     trisk_weights: Vec<f64>,
+    /// Perot reconstruction coefficients, aligned with [`SphereMesh::cell_edges`]:
+    /// the cell-centre vector is `Σₑ cₑ uₑ`.
+    perot: Vec<DVec3>,
     /// Offsets into `kite_areas` / `cell_edge_signs` (copied from the mesh rings).
     ring_offsets: Vec<u32>,
 }
@@ -179,9 +182,11 @@ impl MeshGeometry {
             trisk_offsets: Vec::new(),
             trisk_edges: Vec::new(),
             trisk_weights: Vec::new(),
+            perot: Vec::new(),
             ring_offsets,
         };
         geometry.compute_trisk_weights(mesh);
+        geometry.compute_perot(mesh);
         geometry
     }
 
@@ -230,6 +235,86 @@ impl MeshGeometry {
         self.trisk_offsets = offsets;
         self.trisk_edges = list_edges;
         self.trisk_weights = list_weights;
+    }
+
+    /// Perot (2000) reconstruction coefficients:
+    /// `cₑ = lₑ n_{e,i} nₑ ⊗ (xₑ − xᵢ) / Aᵢ`, applied to the normal component.
+    ///
+    /// For a uniform vector field `U` in the plane, `Σₑ lₑ (U·n_out)(xₑ − xᵢ) = Aᵢ U`
+    /// by the divergence theorem, so the reconstruction is exact for constant
+    /// fields and first-order accurate in general. On the sphere the result is
+    /// projected onto the tangent plane at the cell centre.
+    fn compute_perot(&mut self, mesh: &SphereMesh) {
+        let centers = mesh.cell_centers();
+        let mut perot = vec![DVec3::ZERO; self.kite_areas.len()];
+        for c in 0..mesh.n_cells() as CellId {
+            let start = self.ring_offsets[c as usize] as usize;
+            let xc = centers[c as usize];
+            let area = self.cell_areas[c as usize];
+            for (k, &e) in mesh.cell_edges(c).iter().enumerate() {
+                let e = e as usize;
+                let lever = self.edge_points[e] - xc;
+                let lever = lever - xc * lever.dot(xc);
+                perot[start + k] =
+                    lever * (self.edge_lengths[e] * self.cell_edge_signs[start + k] / area);
+            }
+        }
+        self.perot = perot;
+    }
+
+    /// Reconstruct a tangent vector at every cell centre from edge normal
+    /// components `normal` (one per edge, along `nₑ`), using Perot's method.
+    pub fn reconstruct_vectors(&self, mesh: &SphereMesh, normal: &[f64]) -> Vec<DVec3> {
+        assert_eq!(normal.len(), mesh.n_edges());
+        (0..mesh.n_cells() as CellId)
+            .into_par_iter()
+            .map(|c| {
+                let coeffs = &self.perot[self.ring_range(c)];
+                mesh.cell_edges(c)
+                    .iter()
+                    .zip(coeffs)
+                    .map(|(&e, &k)| k * normal[e as usize])
+                    .fold(DVec3::ZERO, |a, b| a + b)
+            })
+            .collect()
+    }
+
+    /// Average a vertex field onto cells, weighting each vertex by its kite area
+    /// (the area the cell and the dual triangle share).
+    pub fn vertices_to_cells(&self, mesh: &SphereMesh, values: &[f64]) -> Vec<f64> {
+        assert_eq!(values.len(), mesh.n_vertices());
+        (0..mesh.n_cells() as CellId)
+            .into_par_iter()
+            .map(|c| {
+                let kites = self.cell_kites(c);
+                let total: f64 = kites.iter().sum();
+                mesh.cell_vertices(c)
+                    .iter()
+                    .zip(kites)
+                    .map(|(&v, &k)| k * values[v as usize])
+                    .sum::<f64>()
+                    / total
+            })
+            .collect()
+    }
+
+    /// Average an edge field onto cells, weighting each edge by its length. For
+    /// scalars that live on edges; normal velocities need
+    /// [`MeshGeometry::reconstruct_vectors`] instead.
+    pub fn edges_to_cells(&self, mesh: &SphereMesh, values: &[f64]) -> Vec<f64> {
+        assert_eq!(values.len(), mesh.n_edges());
+        (0..mesh.n_cells() as CellId)
+            .into_par_iter()
+            .map(|c| {
+                let edges = mesh.cell_edges(c);
+                let total: f64 = edges.iter().map(|&e| self.edge_lengths[e as usize]).sum();
+                edges
+                    .iter()
+                    .map(|&e| self.edge_lengths[e as usize] * values[e as usize])
+                    .sum::<f64>()
+                    / total
+            })
+            .collect()
     }
 
     /// Kite areas of `cell`, aligned with [`SphereMesh::cell_vertices`].

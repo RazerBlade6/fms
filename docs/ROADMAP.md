@@ -40,7 +40,7 @@ Added after the M1 review: tooling the GCM work depends on.
 - [x] 1. **Portable math**: `fms-math` wraps `libm` for all transcendental
    functions; `clippy.toml` forbids the std versions; golden-hash tests prove
    results are bit-identical on macOS, Windows and Linux.
-- [ ] 2. **Wind visualization**: reconstruct a cell-centred vector field from edge
+- [x] 2. **Wind visualization**: reconstruct a cell-centred vector field from edge
    normal velocities (Perot-style reconstruction); CLI renders vector fields as
    speed plus arrows or streamlines, and edge/vertex fields via cell averages.
    Needed to debug every dynamics step in M2.

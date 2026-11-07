@@ -8,6 +8,9 @@ use fms_geo::coords::from_lat_lon;
 use fms_sim::Grid;
 use rayon::prelude::*;
 
+use glam::DVec3;
+
+use crate::arrows::ArrowLayout;
 use crate::colormap::{BLACK, Colormap, WHITE};
 use crate::font::{draw_text, text_width};
 
@@ -81,12 +84,23 @@ pub fn format_value(v: f64) -> String {
     }
 }
 
+/// Vectors to draw as arrows over the map.
+pub struct Overlay<'a> {
+    /// Where to draw arrows.
+    pub layout: &'a ArrowLayout,
+    /// One vector per cell of the overlay field's grid.
+    pub vectors: &'a [DVec3],
+    /// Speed that maps to a full-length arrow.
+    pub max_speed: f64,
+}
+
 /// Render `values` (one per cell) as an indexed image with a legend.
 pub fn render(
     raster: &CellRaster,
     values: &[f64],
     colormap: &Colormap,
     legend: &Legend<'_>,
+    overlay: Option<&Overlay<'_>>,
 ) -> Vec<u8> {
     let (w, h) = (raster.width, raster.height);
     let mut pixels = vec![WHITE; w * (h + FOOTER)];
@@ -102,6 +116,10 @@ pub fn render(
                 .sum();
             *p = colormap.index(v);
         });
+    if let Some(o) = overlay {
+        o.layout
+            .draw(&mut pixels[..w * h], w, h, o.vectors, o.max_speed);
+    }
 
     // Legend: title line, colour bar, min/max labels.
     let margin = 8;
@@ -226,7 +244,7 @@ mod tests {
                     title: "TEST.FIELD (M)",
                     subtitle: "YEAR 0 DAY 1",
                 };
-                let pixels = render(&raster, &values, &colormap, &legend);
+                let pixels = render(&raster, &values, &colormap, &legend, None);
                 assert_eq!(pixels.len(), width * image_height(&raster));
             }
         }
@@ -246,12 +264,14 @@ mod tests {
             &values,
             &colormap,
             &legend,
+            None,
         );
         let smooth = render(
             &CellRaster::new(&grid, 128, true),
             &values,
             &colormap,
             &legend,
+            None,
         );
         assert_eq!(flat, smooth);
     }
