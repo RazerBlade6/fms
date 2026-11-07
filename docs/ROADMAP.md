@@ -31,7 +31,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    - orbit (Kepler) and insolation (instantaneous and daily mean)
 - [x] 8. **CLI**: run a world headless; dump any field to an equirectangular PNG with
    a colormap; render a year of insolation as a GIF.
-- [ ] 9. **Tests**:
+- [x] 9. **Tests**:
    - insolation matches analytic values (equinox and solstice, polar night)
    - annual-mean symmetry at zero eccentricity
 
