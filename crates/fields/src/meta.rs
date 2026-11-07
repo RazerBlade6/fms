@@ -137,7 +137,8 @@ pub enum Buffering {
 /// Description of a field, supplied at registration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldSpec {
-    /// Unique name, `snake_case`, e.g. `"surface_temperature"`.
+    /// Unique name of the form `namespace.field`, both parts `snake_case`, where
+    /// the namespace is the owning system or crate, e.g. `"atmos.surface_temperature"`.
     pub name: &'static str,
     /// One-line human description.
     pub description: &'static str,

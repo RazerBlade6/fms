@@ -56,8 +56,13 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 - A **field** is a named, typed array with one value per cell, edge or vertex of
   one grid level (`terrain` or `climate`). Edges carry normal velocities and
-  fluxes; vertices carry vorticity. Examples: `elevation`, `surface_temp`,
-  `precip`, `wind_u_lower`, `koppen`, and later `soil_fertility` and `population`.
+  fluxes; vertices carry vorticity. Examples: `terrain.elevation`,
+  `atmos.surface_temp`, `atmos.wind_u_lower`, `climate.koppen`, and later
+  `soil.fertility` and `civ.population`.
+- **Naming convention:** `namespace.field`, both parts `snake_case`. The namespace
+  is the owning system or crate (`terrain`, `atmos`, `ocean`, `hydro`, `climate`,
+  `soil`, `civ`, …), so independently written crates can't collide. The registry
+  rejects names that don't follow it.
   Types: f32, f64, u8, u16, u32, i32. Metadata: units, valid range (also used to
   detect blow-ups), colour-scale hint, single/double buffering, and whether the
   field is saved.

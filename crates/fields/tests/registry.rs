@@ -25,19 +25,19 @@ fn fields_have_the_length_of_their_location() {
     let mut r = registry();
     let a = r
         .register(
-            FieldSpec::new("elevation", "m", Location::TERRAIN_CELLS),
+            FieldSpec::new("terrain.elevation", "m", Location::TERRAIN_CELLS),
             0.0f32,
         )
         .unwrap();
     let b = r
         .register(
-            FieldSpec::new("u", "m s-1", Location::CLIMATE_EDGES),
+            FieldSpec::new("atmos.u", "m s-1", Location::CLIMATE_EDGES),
             0.0f64,
         )
         .unwrap();
     let c = r
         .register(
-            FieldSpec::new("zeta", "s-1", Location::CLIMATE_VERTICES),
+            FieldSpec::new("atmos.zeta", "s-1", Location::CLIMATE_VERTICES),
             0.0f64,
         )
         .unwrap();
@@ -51,19 +51,19 @@ fn fields_have_the_length_of_their_location() {
 #[test]
 fn names_are_unique_and_lookups_are_type_checked() {
     let mut r = registry();
-    let spec = FieldSpec::new("koppen", "", Location::TERRAIN_CELLS);
+    let spec = FieldSpec::new("climate.koppen", "", Location::TERRAIN_CELLS);
     let id = r.register(spec.clone(), 0u8).unwrap();
     assert_eq!(
         r.register(spec, 0u8),
-        Err(FieldError::DuplicateName("koppen"))
+        Err(FieldError::DuplicateName("climate.koppen"))
     );
-    assert_eq!(r.id::<u8>("koppen"), Ok(id));
+    assert_eq!(r.id::<u8>("climate.koppen"), Ok(id));
     assert!(matches!(
-        r.id::<f32>("koppen"),
+        r.id::<f32>("climate.koppen"),
         Err(FieldError::TypeMismatch { .. })
     ));
     assert!(matches!(
-        r.id::<u8>("nope"),
+        r.id::<u8>("climate.nope"),
         Err(FieldError::UnknownName(_))
     ));
     assert_eq!(r.len(), 1);
@@ -74,21 +74,21 @@ fn register_with_checks_length() {
     let mut r = registry();
     let err = r
         .register_with(
-            FieldSpec::new("x", "", Location::CLIMATE_CELLS),
+            FieldSpec::new("test.x", "", Location::CLIMATE_CELLS),
             vec![1.0f64; 7],
         )
         .unwrap_err();
     assert_eq!(
         err,
         FieldError::WrongLength {
-            name: "x",
+            name: "test.x",
             expected: 42,
             actual: 7
         }
     );
     let id = r
         .register_with(
-            FieldSpec::new("x", "", Location::CLIMATE_CELLS),
+            FieldSpec::new("test.x", "", Location::CLIMATE_CELLS),
             vec![2.5f64; 42],
         )
         .unwrap();
@@ -100,14 +100,14 @@ fn different_fields_can_be_accessed_concurrently() {
     let mut r = registry();
     let ids: Vec<_> = (0..8)
         .map(|i| {
-            let name: &'static str = Box::leak(format!("field_{i}").into_boxed_str());
+            let name: &'static str = Box::leak(format!("test.field_{i}").into_boxed_str());
             r.register(FieldSpec::new(name, "", Location::TERRAIN_CELLS), 0.0f64)
                 .unwrap()
         })
         .collect();
     let source = r
         .register(
-            FieldSpec::new("source", "", Location::TERRAIN_CELLS),
+            FieldSpec::new("test.source", "", Location::TERRAIN_CELLS),
             1.0f64,
         )
         .unwrap();
@@ -125,11 +125,14 @@ fn different_fields_can_be_accessed_concurrently() {
 }
 
 #[test]
-#[should_panic(expected = "access conflict: field `t` is already borrowed")]
+#[should_panic(expected = "access conflict: field `atmos.t` is already borrowed")]
 fn conflicting_access_panics_instead_of_blocking() {
     let mut r = registry();
     let t = r
-        .register(FieldSpec::new("t", "K", Location::CLIMATE_CELLS), 0.0f64)
+        .register(
+            FieldSpec::new("atmos.t", "K", Location::CLIMATE_CELLS),
+            0.0f64,
+        )
         .unwrap();
     let _reader = r.read(t);
     let _writer = r.write(t);
@@ -140,7 +143,7 @@ fn double_buffers_swap() {
     let mut r = registry();
     let spec = FieldSpec {
         buffering: Buffering::Double,
-        ..FieldSpec::new("h", "m", Location::CLIMATE_CELLS)
+        ..FieldSpec::new("atmos.h", "m", Location::CLIMATE_CELLS)
     };
     let h = r.register(spec, 1.0f64).unwrap();
     {
@@ -164,7 +167,10 @@ fn double_buffers_swap() {
 fn back_buffer_of_single_buffered_field_panics() {
     let mut r = registry();
     let t = r
-        .register(FieldSpec::new("t", "K", Location::CLIMATE_CELLS), 0.0f64)
+        .register(
+            FieldSpec::new("atmos.t", "K", Location::CLIMATE_CELLS),
+            0.0f64,
+        )
         .unwrap();
     let _ = r.write_back(t);
 }
@@ -174,11 +180,14 @@ fn untyped_access_and_validity_checks() {
     let mut r = registry();
     let spec = FieldSpec {
         valid_range: Some((150.0, 350.0)),
-        ..FieldSpec::new("t", "K", Location::CLIMATE_CELLS)
+        ..FieldSpec::new("atmos.t", "K", Location::CLIMATE_CELLS)
     };
     let t = r.register(spec, 288.0f32).unwrap();
     let k = r
-        .register(FieldSpec::new("class", "", Location::CLIMATE_CELLS), 3u8)
+        .register(
+            FieldSpec::new("climate.class", "", Location::CLIMATE_CELLS),
+            3u8,
+        )
         .unwrap();
 
     assert_eq!(r.read_column(k.key()).get_f64(5), 3.0);
@@ -195,10 +204,45 @@ fn untyped_access_and_validity_checks() {
 #[test]
 fn keys_iterate_in_registration_order() {
     let mut r = registry();
-    for name in ["a", "b", "c"] {
+    for name in ["test.a", "test.b", "test.c"] {
         r.register(FieldSpec::new(name, "", Location::CLIMATE_CELLS), 0i32)
             .unwrap();
     }
     let names: Vec<_> = r.keys().map(|k| r.meta(k).spec.name).collect();
-    assert_eq!(names, ["a", "b", "c"]);
+    assert_eq!(names, ["test.a", "test.b", "test.c"]);
+}
+
+#[test]
+fn names_must_be_namespaced_snake_case() {
+    for good in [
+        "terrain.elevation",
+        "atmos.wind_u_lower",
+        "civ.population2",
+        "a.b",
+    ] {
+        assert!(fms_fields::validate_name(good), "{good}");
+    }
+    for bad in [
+        "elevation",
+        ".elevation",
+        "terrain.",
+        "terrain.Elevation",
+        "Terrain.elevation",
+        "terrain.elev ation",
+        "terrain.2d",
+        "_x.y",
+        "a.b.c",
+        "terrain-elevation",
+    ] {
+        assert!(!fms_fields::validate_name(bad), "{bad}");
+    }
+    let mut r = registry();
+    assert_eq!(
+        r.register(
+            FieldSpec::new("elevation", "m", Location::TERRAIN_CELLS),
+            0.0f32
+        ),
+        Err(FieldError::InvalidName("elevation"))
+    );
+    assert!(r.is_empty());
 }

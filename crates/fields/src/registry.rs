@@ -59,6 +59,9 @@ impl<T> fmt::Debug for FieldId<T> {
 pub enum FieldError {
     /// A field with this name is already registered.
     DuplicateName(&'static str),
+    /// The name does not follow the `namespace.field` convention
+    /// (see [`validate_name`]).
+    InvalidName(&'static str),
     /// No field has this name.
     UnknownName(String),
     /// The field exists but has a different element type.
@@ -85,6 +88,11 @@ impl fmt::Display for FieldError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FieldError::DuplicateName(n) => write!(f, "field `{n}` is already registered"),
+            FieldError::InvalidName(n) => write!(
+                f,
+                "field name `{n}` must be `namespace.field`, both parts snake_case \
+                 (e.g. `terrain.elevation`)"
+            ),
             FieldError::UnknownName(n) => write!(f, "no field named `{n}`"),
             FieldError::TypeMismatch {
                 name,
@@ -156,6 +164,9 @@ impl FieldRegistry {
         spec: FieldSpec,
         values: Vec<T>,
     ) -> Result<FieldId<T>, FieldError> {
+        if !validate_name(spec.name) {
+            return Err(FieldError::InvalidName(spec.name));
+        }
         if self.by_name.contains_key(spec.name) {
             return Err(FieldError::DuplicateName(spec.name));
         }
@@ -327,6 +338,23 @@ impl fmt::Debug for FieldRegistry {
                     .collect::<Vec<_>>(),
             )
             .finish()
+    }
+}
+
+/// Whether `name` follows the field naming convention: `namespace.field`, where
+/// both parts are non-empty `snake_case` (lowercase ASCII letters, digits and
+/// underscores, starting with a letter). The namespace names the owning system or
+/// crate (`terrain`, `atmos`, `ocean`, `hydro`, `climate`, `civ`, …), so
+/// independently written crates cannot collide.
+pub fn validate_name(name: &str) -> bool {
+    let part_ok = |p: &str| {
+        let mut chars = p.chars();
+        chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    match name.split_once('.') {
+        Some((namespace, field)) => part_ok(namespace) && part_ok(field),
+        None => false,
     }
 }
 
