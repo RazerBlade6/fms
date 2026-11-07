@@ -19,7 +19,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
    reordered along a Hilbert curve.
 - [x] 4. **Two-level grid**: map each fine cell to its coarse parent with area weights.
    Point → cell lookup (for picking and rasterization).
-- [ ] 5. **Field registry**: typed struct-of-arrays fields tagged by grid level;
+- [x] 5. **Field registry**: typed struct-of-arrays fields tagged by grid level;
    double buffering; field metadata (units, valid range, default colormap).
 - [ ] 6. **Scheduler**:
    - `System` trait with read/write sets and a rate as a multiple of `dt`

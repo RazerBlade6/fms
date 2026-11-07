@@ -54,9 +54,17 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ### 3.1 Core concept: field registry + system scheduler
 
-- A **field** is a named, typed array with one value per cell, stored on a specific
-  grid level (`terrain` or `climate`). Examples: `elevation`, `surface_temp`,
+- A **field** is a named, typed array with one value per cell, edge or vertex of
+  one grid level (`terrain` or `climate`). Edges carry normal velocities and
+  fluxes; vertices carry vorticity. Examples: `elevation`, `surface_temp`,
   `precip`, `wind_u_lower`, `koppen`, and later `soil_fertility` and `population`.
+  Types: f32, f64, u8, u16, u32, i32. Metadata: units, valid range (also used to
+  detect blow-ups), colour-scale hint, single/double buffering, and whether the
+  field is saved.
+- Fields are registered up front. After that, different fields can be read and
+  written from many threads at once. Each field has a lock, but a conflicting
+  access **panics** rather than blocks: it means a system under-declared its
+  read/write set, which the scheduler is supposed to prevent.
 - A **system** declares:
   - which fields it reads and which it writes
   - its tick rate as a multiple of the base step `dt`, or as an event (daily,
