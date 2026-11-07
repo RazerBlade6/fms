@@ -17,7 +17,7 @@ Every step ends with an automated test or a visual check (a PNG/GIF from the CLI
 - [x] 3. **Mesh geometry and layout**: cell areas, edge lengths, dual lengths, edge
    normals and tangents, and the TRiSK weights. Neighbours stored as CSR, cells
    reordered along a Hilbert curve.
-- [ ] 4. **Two-level grid**: map each fine cell to its coarse parent with area weights.
+- [x] 4. **Two-level grid**: map each fine cell to its coarse parent with area weights.
    Point → cell lookup (for picking and rasterization).
 - [ ] 5. **Field registry**: typed struct-of-arrays fields tagged by grid level;
    double buffering; field metadata (units, valid range, default colormap).

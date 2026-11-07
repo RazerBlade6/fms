@@ -80,13 +80,17 @@ over time. The app is built so it can grow into a civilisation simulator later.
   and is impractical above ~100k cells. Multilevel needs ~600 iterations per
   level: about 0.4 s for 20k cells and about 8 s for 1.6M cells (release build).
   Pick frequencies with small prime factors (e.g. 45, 400); cells = 10·f² + 2.
-  Fine meshes will be cached to disk once persistence exists. The climate grid is a coarser subdivision
-  of the same icosahedron, so the mapping between the two levels is simple
-  and precomputed.
-- **Fine → coarse**: averaged by area. Sub-grid terrain statistics (mean,
+  Fine meshes will be cached to disk once persistence exists.
+- The two meshes are optimized independently, so they are not exactly nested.
+  The mapping between them is found by point location (a greedy walk over the
+  Delaunay graph) and precomputed once (~30 ms for 1.6M → 20k).
+- **Fine → coarse**: each fine cell belongs wholly to the coarse cell containing
+  its centre (~80 fine cells per coarse cell at 1.6M / 20k). Intensive fields use
+  an area-weighted mean over the children; extensive fields (water, mass) use a sum,
+  which conserves global totals exactly. Sub-grid terrain statistics (mean,
   variance, slope) are kept so the climate grid still feels mountains it can't resolve.
-- **Coarse → fine**: interpolated, then corrected for altitude using the lapse
-  rate for display and for hydrology.
+- **Coarse → fine**: barycentric interpolation on the coarse Delaunay triangle,
+  then corrected for altitude using the lapse rate for display and for hydrology.
 - Cells are stored as struct-of-arrays, with neighbours in compressed sparse-row
   (CSR) adjacency lists. Cells are ordered along a space-filling curve so neighbours
   sit close together in memory.
