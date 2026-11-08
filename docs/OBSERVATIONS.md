@@ -38,6 +38,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-26 | [Strong easterlies aloft at the equator](#o-26-strong-easterlies-aloft-at-the-equator) | Dynamics | Watching |
 | O-27 | [Shortwave water absorption depends on the layering](#o-27-shortwave-water-absorption-depends-on-the-layering) | Radiation | Scheduled: M2 step 10 |
 | O-28 | [More than two layers make the vertical modes non-normal](#o-28-more-than-two-layers-make-the-vertical-modes-non-normal) | Numerics | Accepted |
+| O-29 | [The layered core is ~12% slower than the two-layer one](#o-29-the-layered-core-is-12-slower-than-the-two-layer-one) | Performance | Scheduled: M2 step 16 |
 
 ---
 
@@ -594,4 +595,21 @@ conserved exactly by the spatial scheme, and all the layered tests pass.
 **Revisit if:** the vertical modes misbehave with many layers (computational
 modes, noise in θ between layers): Arakawa & Suarez's weighted interface θ
 is the alternative.
+
+### O-29: The layered core is ~12% slower than the two-layer one
+
+**Seen (M2.9.5):** on two layers, with arithmetic identical to step 9's
+(bit-for-bit results), the layered core takes 7.31 ms per moist step
+against 6.60, and 3.09 per dry Held–Suarez step against 2.75, at 2.5k cells
+([BENCHMARKS.md](BENCHMARKS.md)). Likely causes: small vectors allocated
+per cell and step in the moist physics, radiation and interface humidity
+ratios (`Vec` per column where step 9 had fixed arrays), per-layer vectors of
+vectors, and copying the per-cell Exner and geopotential scratch into the
+layers.
+
+**Why it's acceptable for now:** it's a constant factor, well within the
+performance budget's margin at this stage.
+
+**Plan:** M2 step 16 (performance pass): profile first; then stack arrays
+of `MAX_LAYERS` in the per-column physics, and reuse buffers.
 
