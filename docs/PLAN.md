@@ -200,7 +200,7 @@ crates never depend on `app`. Everything except `app` runs headless.
   Upper and lower layers each have wind, temperature and moisture (moisture mostly
   in the lower layer).
 - Physics parameterizations:
-  - shortwave and longwave radiation (grey, two-band)
+  - shortwave and longwave radiation (semi-grey; see below)
   - surface fluxes (bulk formulas)
   - large-scale condensation and simple convective adjustment
   - orographic lift using the sub-grid terrain statistics
@@ -215,6 +215,20 @@ crates never depend on `app`. Everything except `app` runs headless.
   vertical advection. Together these conserve total energy (kinetic + enthalpy
   + surface potential) exactly in the spatial discretization, and keep an
   isentropic atmosphere at rest over mountains exactly at rest.
+- **Radiation** (decided at M2.8): two-stream transfer through the two layers
+  and the surface, semi-grey in four kinds of spectral interval. CO₂ has an
+  opaque band at 667 cm⁻¹ whose width grows with the log of the
+  pressure-broadened CO₂ amount (the band-wing model), so its forcing is
+  logarithmic by construction. The 800–1200 cm⁻¹ window has a self-broadened
+  water continuum. Water's band cores and their weak edges each use a
+  four-term k-distribution. Each layer's emission is linear in optical depth
+  between its edges, and the lower layer follows the convective lapse rate.
+  Water vapour comes from a fixed relative-humidity profile (Manabe &
+  Wetherald 1967) until humidity is prognostic (M2 step 9). Shortwave:
+  ozone and saturating near-infrared water-vapour absorption, a stand-in
+  cloud deck at the layer interface, and the surface albedo. Calibrated in a
+  single column against Earth's global-mean column; see `crates/atmos/src/radiation.rs`
+  and [OBSERVATIONS.md](OBSERVATIONS.md) O-19, O-20.
 - **Semi-implicit time stepping** (as in SPEEDY): fast gravity waves are solved
   implicitly, so the timestep is limited by advection (winds) rather than wave speed.
   At the default resolution this gives a base step of ~20–30 min. See §4.6.

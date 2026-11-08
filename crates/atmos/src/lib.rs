@@ -12,10 +12,12 @@
 
 pub mod baroclinic;
 pub mod climatology;
+pub mod column_physics;
 pub mod diffusion;
 pub mod forcing;
 pub mod held_suarez;
 pub mod helmholtz;
+pub mod radiation;
 pub mod safety;
 pub mod semi_implicit;
 pub mod shallow_water;
@@ -25,10 +27,12 @@ pub mod williamson;
 
 pub use baroclinic::ShearedFlow;
 pub use climatology::{ZonalClimatology, ZonalMeans};
+pub use column_physics::{ColumnPhysics, Equilibrium, PhysicsParams, SingleColumn};
 pub use diffusion::{Hyperdiffusion, HyperdiffusionOptions};
-pub use forcing::{EnergyTerms, Forcing};
+pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};
 pub use helmholtz::{Helmholtz, SolveReport};
+pub use radiation::{Column, Fluxes, RadiationParams};
 pub use safety::{BlowUp, Fault, Health, Limits, Variable};
 pub use semi_implicit::{SemiImplicit, SemiImplicitOptions, SolverStats};
 pub use shallow_water::{Diagnostics, ShallowWater, State};

@@ -394,22 +394,35 @@ fn write_maps(
     for key in fields.keys() {
         let is_wind = key == fields.wind_upper.key() || key == fields.wind_lower.key();
         let overlay = (is_wind && !image.no_arrows).then_some(key);
-        let mut frame = capture(world, key, overlay);
-        frame.stamp = stamp.into();
-        let (images, colormap, (w, h)) =
-            paint(world, key, overlay, std::slice::from_ref(&frame), image);
-        let name = world.fields.meta(key).spec.name;
-        let path = dir.join(format!("{name}.png"));
-        write_png(&path, w, h, &images[0], colormap.palette())
-            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        let (min, max) = colormap.range();
-        println!(
-            "{name} [{} .. {}] -> {}",
-            format_value(min),
-            format_value(max),
-            path.display()
-        );
+        write_map(world, key, overlay, dir, stamp, image)?;
     }
+    Ok(())
+}
+
+/// A PNG of one field, as currently published, named after it.
+pub fn write_map(
+    world: &World,
+    key: FieldKey,
+    overlay: Option<FieldKey>,
+    dir: &Path,
+    stamp: &str,
+    image: &ImageArgs,
+) -> Result<(), String> {
+    let mut frame = capture(world, key, overlay);
+    frame.stamp = stamp.into();
+    let (images, colormap, (w, h)) =
+        paint(world, key, overlay, std::slice::from_ref(&frame), image);
+    let name = world.fields.meta(key).spec.name;
+    let path = dir.join(format!("{name}.png"));
+    write_png(&path, w, h, &images[0], colormap.palette())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let (min, max) = colormap.range();
+    println!(
+        "{name} [{} .. {}] -> {}",
+        format_value(min),
+        format_value(max),
+        path.display()
+    );
     Ok(())
 }
 

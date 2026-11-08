@@ -233,7 +233,7 @@ pub struct TwoLayer<'a> {
     stages: [TwoLayerState; 4],
     stage_state: TwoLayerState,
     diffusion: Option<Hyperdiffusion>,
-    forcing: Option<Box<dyn Forcing>>,
+    forcing: Option<Box<dyn Forcing + 'a>>,
 }
 
 impl<'a> TwoLayer<'a> {
@@ -312,7 +312,7 @@ impl<'a> TwoLayer<'a> {
 
     /// The model with external forcing ([`crate::forcing`]), e.g.
     /// [`crate::HeldSuarez`].
-    pub fn with_forcing(mut self, forcing: Box<dyn Forcing>) -> Self {
+    pub fn with_forcing(mut self, forcing: Box<dyn Forcing + 'a>) -> Self {
         self.forcing = Some(forcing);
         self
     }
@@ -320,6 +320,20 @@ impl<'a> TwoLayer<'a> {
     /// Whether the model has external forcing.
     pub fn has_forcing(&self) -> bool {
         self.forcing.is_some()
+    }
+
+    /// The external forcing, if any.
+    pub fn forcing(&self) -> Option<&(dyn Forcing + 'a)> {
+        self.forcing.as_deref()
+    }
+
+    /// Tell the forcing a step of `dt` seconds has completed with `state`
+    /// ([`Forcing::advance`]). The steppers call this; call it yourself only
+    /// when stepping by other means.
+    pub fn advance_forcing(&mut self, state: &TwoLayerState, dt: f64) {
+        if let Some(f) = &mut self.forcing {
+            f.advance(state, dt);
+        }
     }
 
     /// The operators.
@@ -545,7 +559,8 @@ impl<'a> TwoLayer<'a> {
     }
 
     /// Advance `state` by `dt` seconds with classic fourth-order Runge–Kutta,
-    /// including hyperdiffusion and forcing.
+    /// including hyperdiffusion and forcing (and [`Forcing::advance`] at the
+    /// end).
     pub fn step(&mut self, state: &mut TwoLayerState, dt: f64) {
         let Self {
             ops,
@@ -596,6 +611,9 @@ impl<'a> TwoLayer<'a> {
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
                 .for_each(|(i, x)| *x += dt / 6.0 * (a[i] + 2.0 * b[i] + 2.0 * c[i] + d[i]));
+        }
+        if let Some(f) = forcing.as_mut() {
+            f.advance(state, dt);
         }
     }
 

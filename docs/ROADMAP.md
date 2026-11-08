@@ -93,16 +93,28 @@ Added after the M1 review: tooling the GCM work depends on.
    energy budget that closes (Newtonian heating 0.38 W/m² balanced by friction
    and diffusion). Tests (k = 16, 450 days): jets, hemispheric agreement,
    steady and closed energy budget. The lower layer is not the surface (O-18).
-- [ ] 8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
+- [x] 8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
    CO₂/pressure-dependent optical depth. Replaces the Held–Suarez forcing.
-   Test: global energy balance closes.
+   Test: global energy balance closes. Done as semi-grey two-stream radiation
+   (CO₂ band-wing model, window, k-distribution water), with water vapour at
+   fixed relative humidity and a temporary 10 m slab aquaplanet with bulk
+   sensible and latent heat fluxes and convective adjustment (`fms climate`,
+   PLAN §4.2). Single column: Earth-like climate (287 K, OLR 247 W/m²),
+   3.6 W/m² and 2.4 K per CO₂ doubling, sane across 0–100,000 ppm, 0.1–10 bar,
+   sunlight and gravity. 3-D (5 years, 2.5k cells): global mean ~287 K,
+   planetary albedo ~0.29, equator 300 K and poles ~245 K, and the planet's
+   energy budget closes to ~0.01 W/m².
+   Calibrated rather than resolved: O-19; no cloud or ice feedbacks yet: O-20.
 - [ ] 9. **Moisture**: positive-definite humidity advection, Clausius–Clapeyron
    saturation, large-scale condensation, moist convective adjustment, latent
-   heating, precipitation output.
+   heating, precipitation output. Replaces step 8's fixed-relative-humidity
+   water vapour and immediate condensation; diagnose clouds to replace the
+   fixed cloud deck ([OBSERVATIONS.md](OBSERVATIONS.md) O-20).
 - [ ] 10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
     bucket soil moisture, snow cover and albedo, orographic precipitation using the
     sub-grid terrain statistics. Needs a diagnosed surface wind, not the
-    lower-layer wind ([OBSERVATIONS.md](OBSERVATIONS.md) O-18).
+    lower-layer wind ([OBSERVATIONS.md](OBSERVATIONS.md) O-18), and should return
+    friction's dissipated energy as heat (O-21).
 - [ ] 11. **Slab ocean and sea ice**: mixed-layer heat budget coupled to the
     atmosphere; Semtner zero-layer sea ice with ice-albedo feedback.
 - [ ] 12. **Ocean currents**: currents driven by wind stress through Ekman/Sverdrup

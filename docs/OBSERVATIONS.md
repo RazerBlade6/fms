@@ -28,6 +28,9 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-16 | [No sponge layer](#o-16-no-sponge-layer) | Dynamics | Accepted |
 | O-17 | [Zig-zag vertex modes limit explicit hyperdiffusion](#o-17-zig-zag-vertex-modes-limit-explicit-hyperdiffusion) | Numerics | Accepted |
 | O-18 | [Two layers have no surface wind](#o-18-two-layers-have-no-surface-wind) | Dynamics | Scheduled: M2 step 10 |
+| O-19 | [Radiation is calibrated, not resolved](#o-19-radiation-is-calibrated-not-resolved) | Radiation | Accepted |
+| O-20 | [No cloud or ice feedbacks yet](#o-20-no-cloud-or-ice-feedbacks-yet) | Radiation | Scheduled: M2 steps 9–11 |
+| O-21 | [Dissipated kinetic energy leaks out of the planet](#o-21-dissipated-kinetic-energy-leaks-out-of-the-planet) | Energy | Scheduled: M2 step 10 |
 
 ---
 
@@ -323,4 +326,81 @@ orographic lift and step 12's wind-stress-driven currents all depend on it.
 Options: a boundary-layer profile below the lower layer, or a thin third
 (boundary) layer. Check the result against the sign of Held–Suarez's
 surface winds.
+
+### O-19: Radiation is calibrated, not resolved
+
+**Seen (M2.8):** a few of the radiation scheme's parameters are effective
+values, set so a single column reproduces Earth's global-mean column, not
+values from spectroscopy:
+
+- **CO₂ band growth** `l = 30` cm⁻¹ per e-fold, against the spectroscopic
+  ~10 cm⁻¹. Two layers can't resolve the stratosphere cooling and
+  readjusting when CO₂ rises, which adds about a third to the instantaneous
+  forcing. With l = 30 the model's forcing per doubling is 3.6 W/m², close to
+  the adjusted value (Myhre 3.7). Its instantaneous forcing at l = 20 was
+  2.5 W/m², close to Earth's real instantaneous value.
+- **Convective lapse rate** 4.4 K/km between the layer means, not 6.5: the
+  upper layer (0–500 hPa) includes the stratosphere, so Earth's observed
+  layer means (272 and 226 K, 10.5 km apart) sit at 4.4. It is fixed, so
+  there is no lapse-rate feedback (the moist adiabat flattening as the
+  surface warms, about −0.5 W/m²/K on Earth). Within the lower layer the
+  water-vapour profile and surface air follow 6.5 K/km.
+- **Water vapour's spectrum** is two regions (band cores, and weak edges
+  where CO₂'s wings lie), each a four-term k-distribution, plus a window
+  continuum. Calibrating this mattered more than anything else: one grey
+  water band gave a runaway (outgoing longwave collapses once it turns
+  opaque); a too-strong continuum cut the clear-sky feedback from ~2 to
+  ~0.5 W/m²/K.
+- **Cloud reflection** is a fixed deck at the layer interface (O-20).
+
+Also simplified: no Rayleigh scattering (thick atmospheres are too dark and
+so too warm), vapour pressure capped at a quarter of the air pressure (very
+hot planets), and latent heat released at once wherever water evaporates.
+
+**Why it's acceptable:** with them, the single column reproduces Earth's
+global mean: surface 287 K, layers 232/274 K, outgoing longwave 247 W/m²,
+21 kg/m² of water, sensible and latent heat 22 and 77 W/m². It also gives
+~2 W/m²/K clear-sky feedback, 3.6 W/m² and 2.4 K per CO₂ doubling, and
+monotonic, finite climates across the planet parameters' full ranges
+(`crates/atmos/tests/radiation.rs`).
+
+**Revisit if:** fantasy settings far from Earth (dense CO₂ atmospheres, hot
+or very thin ones) need to be quantitatively right. Then a correlated-k
+scheme fitted to line-by-line spectra would replace the effective
+parameters, and adding Rayleigh scattering would fix thick atmospheres.
+
+### O-20: No cloud or ice feedbacks yet
+
+**Seen (M2.8):** clouds are a fixed deck at the layer interface reflecting
+33% of the sunlight that reaches it (30% in the single column, which needs a
+lower value to reach the same global mean as the 3-D model). There is no sea ice or snow. So the
+model has the Planck, water-vapour and shortwave-absorption feedbacks only,
+and warms 2.4 K per CO₂ doubling in a single column. Earth's ~3 K includes
+ice-albedo and cloud feedbacks.
+
+**Why it's acceptable for now:** those need moisture (clouds) and surfaces
+(ice and snow), which are later steps; 2.4 K is in the plausible range.
+
+**Plan:** M2 step 9 diagnoses clouds from humidity and condensation and
+replaces the fixed deck; steps 10–11 add snow and sea ice with their albedo.
+
+### O-21: Dissipated kinetic energy leaks out of the planet
+
+**Seen (M2.8):** at M2 step 6 we chose to keep the kinetic energy that
+hyperdiffusion removes in the budget only, not return it as heat (and the
+Held–Suarez friction, now a placeholder for surface drag, does the same).
+With radiation running this is a permanent leak: in equilibrium, absorbed
+sunlight exceeds outgoing longwave by the energy friction and diffusion
+destroy: 1.3 W/m² (friction 1.1, diffusion 0.2) in the 3-D Earth run. Earth's
+frictional dissipation is ~2 W/m², all of it returned as heat. The budget still closes exactly; it just has this sink.
+
+**Why it's acceptable for now:** the leak is small next to the 240 W/m²
+flows and steady, so the climate is calibrated with it in place. It is,
+though, a third of the forcing from doubling CO₂, so fix it before
+interpreting small climate changes.
+
+**Plan:** M2 step 10 replaces the Rayleigh friction with surface drag; return
+the dissipated kinetic energy as heat there (frictional heating in the lower
+layer, and the diffusion's loss spread where it occurs), so the top of the
+atmosphere balances in equilibrium.
 

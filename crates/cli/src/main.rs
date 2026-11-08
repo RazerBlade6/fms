@@ -14,11 +14,13 @@
 //! fms williamson --case 5                     # shallow-water flow over a mountain
 //! fms baroclinic                              # two-layer core: storms on a sheared jet
 //! fms held-suarez --climate-frequency 32      # dynamical-core benchmark, 1200 days
+//! fms climate --climate-frequency 16 --co2 840  # radiative climate, final-year means
 //! ```
 
 mod arrows;
 mod baroclinic;
 mod chart;
+mod climate;
 mod colormap;
 mod font;
 mod held_suarez;
@@ -80,6 +82,11 @@ enum Command {
     /// idealized heating and friction, then average the zonal-mean climate;
     /// write profiles, a summary, maps and a GIF to `output/held_suarez/`.
     HeldSuarez(held_suarez::HeldSuarezArgs),
+    /// Run the two-layer model driven by radiation over a slab aquaplanet
+    /// on the world's planet; average the final year and write zonal means,
+    /// a summary with the energy budget, and annual-mean maps to
+    /// `output/climate/`.
+    Climate(climate::ClimateArgs),
 }
 
 #[derive(Args, Clone)]
@@ -101,6 +108,12 @@ struct WorldArgs {
     /// Elevations (m) of black and white in a PNG heightmap, `MIN,MAX`.
     #[arg(long, value_parser = parse_range, allow_hyphen_values = true)]
     heightmap_range: Option<(f64, f64)>,
+    /// Atmospheric CO₂ (ppm, 0–100,000). Default: Earth's 420.
+    #[arg(long)]
+    co2: Option<f64>,
+    /// Surface pressure (bar, 0.1–10). Default: Earth's 1.013.
+    #[arg(long)]
+    surface_pressure: Option<f64>,
 }
 
 #[derive(Args)]
@@ -230,6 +243,7 @@ fn main() -> ExitCode {
         Command::Williamson(args) => williamson::run(args),
         Command::Baroclinic(args) => baroclinic::run(args),
         Command::HeldSuarez(args) => held_suarez::run(args),
+        Command::Climate(args) => climate::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -242,12 +256,19 @@ fn main() -> ExitCode {
 
 fn build_world(args: &WorldArgs) -> Result<World, String> {
     let t = Instant::now();
-    let mut world = World::new(WorldConfig {
+    let mut config = WorldConfig {
         terrain_frequency: args.terrain_frequency,
         climate_frequency: args.climate_frequency,
         steps_per_day: args.steps_per_day,
         ..WorldConfig::default()
-    });
+    };
+    if let Some(co2) = args.co2 {
+        config.planet.co2_ppm = co2;
+    }
+    if let Some(bar) = args.surface_pressure {
+        config.planet.surface_pressure = bar * 1.0e5;
+    }
+    let mut world = World::new(config);
     eprintln!(
         "world: {} terrain cells, {} climate cells, dt = {} s (built in {:.1?}: terrain grid {:.1}s, \
          climate grid {:.1}s, mapping {:.2}s)",

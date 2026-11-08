@@ -562,6 +562,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         raw_filter(&self.previous, &mut current, next, nu, alpha);
         let old_previous = std::mem::replace(&mut self.previous, current);
         self.current = std::mem::replace(&mut self.next, old_previous);
+        self.model.advance_forcing(&self.current, dt);
 
         self.steps += 1;
         for r in reports {
