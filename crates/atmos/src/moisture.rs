@@ -116,8 +116,8 @@ impl Default for CloudParams {
             sigma: [0.3, 0.9],
             albedo: [0.4, 0.5],
             emissivity: [0.8, 1.0],
-            critical_humidity: [0.15, 0.3],
-            overcast_humidity: [0.7, 1.0],
+            critical_humidity: [0.45, 0.5],
+            overcast_humidity: [0.85, 1.0],
             convective: 0.15,
             max_convective: 0.6,
         }

@@ -517,7 +517,7 @@ top-of-atmosphere budgets.
 ### O-25: Clouds are calibrated from layer-mean humidity
 
 **Seen (M2.9):** the 3-D model's two cloud sheets (high at σ = 0.25, low at
-0.8) take their cover from each layer's mean relative humidity (linear
+0.8; now 0.3 and 0.9) take their cover from each layer's mean relative humidity (linear
 between two bounds) plus anvils from convective rain. The bounds,
 albedos, emissivities and the large-scale condensation thresholds are
 calibrated so that layer humidities match the radiation's calibration
@@ -529,6 +529,14 @@ planet with almost no circulation, through a feedback loop (cloud cools the
 surface, convection stops, the lower layer fills to its condensation
 threshold, more cloud). The linear ramp is gentler near saturation.
 The longwave effect is about half of Earth's (+28).
+
+**Recalibrated (M2.10.1), on four layers:** the high sheet now reads the
+moister σ 0.25–0.5 layer, so its humidity bounds rose to 0.45–0.85 and the low
+sheet's lower bound to 0.5. At fixed APE CONTROL sea temperatures (240 days):
+imbalance +14 W/m² (APE ~13), albedo 0.307, cloud effects −70 and +19 W/m²,
+cover 0.62. Clear-sky absorbed minus outgoing radiation is +65 W/m², so the
+net cloud effect has to be about −52 for that imbalance, which is what holds
+the longwave effect below Earth's.
 
 **Why it's acceptable:** a two-layer model can't resolve cloud layers; its
 cloud scheme is necessarily a calibrated diagnosis, and its cloud feedback
