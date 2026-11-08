@@ -235,7 +235,7 @@ impl HeldSuarez {
 }
 
 impl Forcing for HeldSuarez {
-    fn add_tendency(&self, state: &TwoLayerState, out: &mut TwoLayerState) {
+    fn add_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState) {
         let [t0, t1] = &mut out.theta_ps;
         t0.par_iter_mut()
             .with_min_len(MIN_CHUNK)

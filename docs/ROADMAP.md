@@ -105,20 +105,57 @@ Added after the M1 review: tooling the GCM work depends on.
    planetary albedo ~0.29, equator 300 K and poles ~245 K, and the planet's
    energy budget closes to ~0.01 W/m².
    Calibrated rather than resolved: O-19; no cloud or ice feedbacks yet: O-20.
-- [ ] 9. **Moisture**: positive-definite humidity advection, Clausius–Clapeyron
+- [x] 9. **Moisture**: positive-definite humidity advection, Clausius–Clapeyron
    saturation, large-scale condensation, moist convective adjustment, latent
    heating, precipitation output. Replaces step 8's fixed-relative-humidity
    water vapour and immediate condensation; diagnose clouds to replace the
-   fixed cloud deck ([OBSERVATIONS.md](OBSERVATIONS.md) O-20).
+   fixed cloud deck ([OBSERVATIONS.md](OBSERVATIONS.md) O-20). Done as
+   humidity per layer carried by flux-corrected transport (water exact to
+   round-off), Betts–Miller convection towards the moist adiabat,
+   large-scale condensation with re-evaporation, rain or snow, and two
+   diagnosed cloud sheets acting on sunlight and longwave, plus Rayleigh
+   scattering (PLAN §4.2). Aquaplanet (5 years, 2.5k cells): ~297 K
+   (ice-free, O-23), albedo ~0.29, cloud ~0.63, layer humidities as
+   calibrated, rain belt at the equator; water budget exact, energy budget
+   to ~0.1 W/m² (time stepping).
+   Known gaps: the subtropics rain out their own evaporation (O-22), the
+   water cycle is too strong (O-24), clouds are calibrated (O-25).
 - [ ] 10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
     bucket soil moisture, snow cover and albedo, orographic precipitation using the
     sub-grid terrain statistics. Needs a diagnosed surface wind, not the
     lower-layer wind ([OBSERVATIONS.md](OBSERVATIONS.md) O-18), and should return
-    friction's dissipated energy as heat (O-21).
-- [ ] 11. **Slab ocean and sea ice**: mixed-layer heat budget coupled to the
-    atmosphere; Semtner zero-layer sea ice with ice-albedo feedback.
-- [ ] 12. **Ocean currents**: currents driven by wind stress through Ekman/Sverdrup
-    balance, with western boundary intensification and heat advection.
+    friction's dissipated energy as heat (O-21). The boundary layer should
+    also hold evaporated water near the surface, so the subtropics stop
+    raining out their own evaporation (O-22).
+- [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
+    Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
+    over a 150 m deep layer per ocean cell, horizontal diffusion in both,
+    and convective adjustment when the surface layer is colder than the deep
+    one. Sea ice holds the mixed layer at freezing and grows or melts with
+    the excess energy; a prognostic ice surface temperature with a linear
+    profile, snow on ice with its own heat capacity, and an albedo that rises
+    with thickness from the ocean's, separately in visible and near-infrared
+    light. Ice-albedo feedback (O-20). Tests: energy conserved through
+    freezing and melting; the ice edge and seasonal cycle are plausible.
+- [ ] 12. **Ocean heat transport by currents**:
+    - Ekman transport from the surface wind stress, `M = (ετ + f k×τ)/(ε² + f²)`
+      at the edges, with the deep layer's return flow and the upwelling or
+      downwelling their divergence implies; blended near the equator into
+      the Sverdrup transport of the wind-stress curl. Needs step 10's
+      surface wind (O-18).
+    - Gent–McWilliams eddy transport, proportional to the isotherm slope
+      between the layers.
+    - A wind-driven barotropic gyre: a Stommel–Munk streamfunction from the
+      wind-stress curl, β and friction, solved over each basin with the
+      conjugate-gradient solver, whose currents carry mixed-layer heat:
+      western boundary currents for coastal climates, and the current map.
+    - Rotation-aware coefficients: cap the Sverdrup term for slow rotators
+      and scale the eddy coefficients with the deformation radius (the
+      paper's are calibrated for Earth).
+    - Tests: the aquaplanet benchmark of Bhatnagar et al. 2026 (heat
+      transport ~2–3 PW by component, an equatorial cold tongue, the ice
+      edge, against a run with transport off); the ocean's heat budget
+      closes; western intensification in a closed basin.
 - [ ] 13. **Multi-rate scheduling**:
     - derive `dt` from the CFL limit, rounded so it divides the solar day. Size
       it from a design maximum wind, not the current one: flows accelerate

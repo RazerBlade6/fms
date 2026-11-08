@@ -3,3 +3,5 @@
 .DS_Store
 /output
 /data
+# Papers read for the design: cited in REFERENCES.md, not stored in git.
+/docs/*.pdf

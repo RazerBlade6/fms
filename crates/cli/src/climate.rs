@@ -1,15 +1,14 @@
-//! `fms climate`: the two-layer model driven by radiation over a slab
-//! aquaplanet, on the world's planet (orbit, CO₂, surface pressure). Spins
-//! up, then averages the final year: zonal means, a global summary with the
-//! planet's energy budget, and annual-mean maps, in `output/climate/`.
+//! `fms climate`: the two-layer model driven by radiation and moist physics
+//! over a slab aquaplanet, on the world's planet (orbit, CO₂, surface
+//! pressure). Spins up, then averages the final year: zonal means, a global
+//! summary with the planet's energy and water budgets, and annual-mean maps,
+//! in `output/climate/`.
 
 use std::fmt::Write as _;
 
 use clap::Args;
-use fms_atmos::{
-    ColumnPhysics, PhysicsParams, SingleColumn, TwoLayerState, ZonalClimatology,
-    column_physics::layer_exner,
-};
+use fms_atmos::column_physics::{LATENT_HEAT, initial_state};
+use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_geo::LatitudeBands;
 
@@ -45,9 +44,6 @@ pub struct ClimateArgs {
     /// GIF frames per second.
     #[arg(long, default_value_t = 12)]
     fps: u16,
-    /// Albedo of the stand-in cloud deck (default: Earth-calibrated).
-    #[arg(long)]
-    cloud_albedo: Option<f64>,
     #[command(flatten)]
     dynamics: DynamicsArgs,
     #[command(flatten)]
@@ -61,15 +57,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let planet_params = *world.planet.params();
-    let mut params = PhysicsParams {
+    let params = PhysicsParams {
         co2: planet_params.co2_ppm,
         ..PhysicsParams::default()
     };
-    if let Some(a) = args.cloud_albedo {
-        params.radiation.cloud_albedo = a;
-    }
-    // Annual-mean maps of the physics' cell fields (in the order
-    // `ColumnPhysics::cell_fields` lists them).
+    // Annual-mean maps of these of the physics' cell fields
+    // (`ColumnPhysics::cell_fields`).
     let maps = [
         (
             "rad.surface_temperature",
@@ -90,18 +83,62 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Sequential,
         ),
         (
-            "rad.water_vapour",
+            "atm.water_vapour",
             "Water-vapour column",
             "kg m-2",
+            ColorScale::Moisture,
+        ),
+        (
+            "atm.precipitation",
+            "Precipitation",
+            "mm day-1",
+            ColorScale::Moisture,
+        ),
+        (
+            "atm.evaporation",
+            "Evaporation",
+            "mm day-1",
+            ColorScale::Moisture,
+        ),
+        (
+            "atm.cloud_cover",
+            "Total cloud cover",
+            "1",
             ColorScale::Sequential,
         ),
         (
-            "rad.latent_heat_flux",
-            "Surface latent heat flux",
+            "atm.relative_humidity_lower",
+            "Lower-layer relative humidity",
+            "1",
+            ColorScale::Moisture,
+        ),
+        (
+            "rad.shortwave_cloud_effect",
+            "Shortwave cloud radiative effect",
+            "W m-2",
+            ColorScale::Sequential,
+        ),
+        (
+            "rad.longwave_cloud_effect",
+            "Longwave cloud radiative effect",
             "W m-2",
             ColorScale::Sequential,
         ),
     ];
+    // Further global means for the summary.
+    let extra = [
+        "atm.convective_precipitation",
+        "atm.snowfall",
+        "atm.latent_heat_flux",
+        "atm.sensible_heat_flux",
+        "atm.high_cloud",
+        "atm.low_cloud",
+        "atm.relative_humidity_upper",
+        "rad.surface_shortwave",
+        "rad.surface_longwave",
+        "rad.clear_surface_longwave",
+    ];
+    let names: Vec<&str> = maps.iter().map(|m| m.0).chain(extra).collect();
     let mut ids: Vec<FieldId<f64>> = Vec::new();
     for (name, description, units, color_scale) in maps {
         let spec = FieldSpec {
@@ -119,45 +156,33 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     }
     let world = world;
 
-    // Start from the single column's equilibrium, at rest.
-    let mut column = SingleColumn::earth(world.planet.mean_flux());
-    column.params = PhysicsParams {
-        slab_depth: 1.0,
-        ..params
-    };
-    column.ps = planet_params.surface_pressure;
-    column.gravity = planet_params.gravity;
-    let eq = column.equilibrium();
-    eprintln!(
-        "climate: single-column start at {:.1} K (layers {:.1}/{:.1} K)",
-        eq.surface_temperature, eq.temperature[0], eq.temperature[1]
-    );
+    // Start from the single column's equilibrium, at rest, with its
+    // humidity.
     let setup = build_model(&world, &args.dynamics, MAX_WIND)?;
-    let model = setup.model;
+    let model = setup.model.with_humidity_profile(params.radiation);
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
-    let (nc, ne) = (mesh.n_cells(), mesh.n_edges());
-    let ps = planet_params.surface_pressure;
-    let exner = layer_exner(model.gas(), model.sigma(), ps);
-    let mut x = 0x2545_F491_4F6C_DD1Du64;
-    let theta: [Vec<f64>; 2] = std::array::from_fn(|k| {
-        (0..nc)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                eq.temperature[k] / exner[k] + 0.1 * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
-            })
-            .collect()
-    });
-    let state = TwoLayerState::new(vec![ps; nc], [vec![0.0; ne], vec![0.0; ne]], theta);
+    let nc = mesh.n_cells();
+    let (state, surface_temperature) = initial_state(&model, &world.planet, &params);
+    eprintln!("climate: single-column start at {surface_temperature:.1} K");
     let physics = ColumnPhysics::new(
         &model,
         &world.planet,
         params,
         0.0,
         &state,
-        vec![eq.surface_temperature; nc],
+        vec![surface_temperature; nc],
     );
+    // Where each wanted field sits in the physics' list.
+    let fields_now = physics.cell_fields();
+    let index: Vec<usize> = names
+        .iter()
+        .map(|n| {
+            fields_now
+                .iter()
+                .position(|f| f.name == *n)
+                .ok_or_else(|| format!("the physics has no field {n}"))
+        })
+        .collect::<Result<_, _>>()?;
     let model = model.with_forcing(Box::new(physics));
     let bands = args
         .bands
@@ -170,8 +195,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation over a {} m slab, CO₂ {} ppm, cloud albedo {}",
-            params.slab_depth, params.co2, params.radiation.cloud_albedo
+            "; radiation and moisture over a {} m slab, CO₂ {} ppm",
+            params.slab_depth, params.co2
         ),
     );
     eprintln!("climate: {description}");
@@ -194,7 +219,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         frames_from: movie_from,
     };
     let mut si = stepper(model, state, dt);
-    let mut sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; ids.len()];
+    let mut sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; names.len()];
     let mut samples = 0.0;
     let mut start = None;
     integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
@@ -204,12 +229,15 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 si.model().diagnostics(si.state()),
                 si.energy_budget(),
                 forcing.budget().expect("physics keeps a budget"),
+                si.water(),
+                si.water_budget(),
             ));
         }
         if si.steps() > stats_from {
             climate.sample(si.model(), si.state());
-            for (sum, field) in sums.iter_mut().zip(forcing.cell_fields()) {
-                for (s, v) in sum.iter_mut().zip(&field.values) {
+            let fields = forcing.cell_fields();
+            for (sum, &i) in sums.iter_mut().zip(&index) {
+                for (s, v) in sum.iter_mut().zip(&fields[i].values) {
                     *s += v;
                 }
             }
@@ -238,22 +266,28 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
 
     // Zonal means: CSV and chart.
     let mut csv = String::from(
-        "latitude_deg,wind_upper_m_s,wind_lower_m_s,temperature_upper_k,temperature_lower_k,surface_pressure_pa,surface_temperature_k,outgoing_longwave_w_m2,absorbed_shortwave_w_m2\n",
+        "latitude_deg,wind_upper_m_s,wind_lower_m_s,temperature_upper_k,temperature_lower_k,surface_pressure_pa",
     );
+    // Physics fields by name (units: `ColumnPhysics::cell_fields`).
+    for name in &names {
+        let _ = write!(csv, ",{name}");
+    }
+    csv.push('\n');
     for (i, latitude) in zonal.latitude.iter().enumerate() {
-        let _ = writeln!(
+        let _ = write!(
             csv,
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             latitude,
             zonal.wind[0][i],
             zonal.wind[1][i],
             zonal.temperature[0][i],
             zonal.temperature[1][i],
             zonal.surface_pressure[i],
-            zonal_physics[0][i],
-            zonal_physics[1][i],
-            zonal_physics[2][i]
         );
+        for z in &zonal_physics {
+            let _ = write!(csv, ",{}", z[i]);
+        }
+        csv.push('\n');
     }
     let path = out.dir.join("zonal_mean.csv");
     std::fs::write(&path, csv).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
@@ -281,8 +315,16 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             values: &net,
         },
         Series {
-            title: "WATER VAPOUR (KG/M2)".into(),
-            values: &zonal_physics[3],
+            title: "PRECIPITATION (MM/DAY)".into(),
+            values: &zonal_physics[4],
+        },
+        Series {
+            title: "EVAPORATION (MM/DAY)".into(),
+            values: &zonal_physics[5],
+        },
+        Series {
+            title: "CLOUD COVER".into(),
+            values: &zonal_physics[6],
         },
     ];
     let axis = TimeAxis {
@@ -307,44 +349,91 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             / area
     };
     let mut summary = format!("fms climate: {description}\n\n");
-    let (asr, olr) = (global(&means[2]), global(&means[1]));
+    let g =
+        |name: &str| global(&means[names.iter().position(|n| *n == name).expect("known field")]);
+    let (asr, olr) = (g("rad.absorbed_shortwave"), g("rad.outgoing_longwave"));
     let _ = writeln!(
         summary,
         "Final-year global means: surface temperature {:.2} K, absorbed sunlight {asr:.1} W/m², \
-         outgoing longwave {olr:.1} W/m², planetary albedo {:.3}, water vapour {:.1} kg/m², \
-         latent heat flux {:.1} W/m²",
-        global(&means[0]),
+         outgoing longwave {olr:.1} W/m², planetary albedo {:.3}",
+        g("rad.surface_temperature"),
         1.0 - asr / (world.planet.mean_flux() / 4.0),
-        global(&means[3]),
-        global(&means[4]),
     );
-    if let Some((d0, e0, b0)) = start {
+    let _ = writeln!(
+        summary,
+        "Clouds: cover {:.2} (high {:.2}, low {:.2}), radiative effect {:+.1} W/m² shortwave, {:+.1} longwave",
+        g("atm.cloud_cover"),
+        g("atm.high_cloud"),
+        g("atm.low_cloud"),
+        g("rad.shortwave_cloud_effect"),
+        g("rad.longwave_cloud_effect"),
+    );
+    let _ = writeln!(
+        summary,
+        "Water: vapour {:.1} kg/m², relative humidity {:.2} upper / {:.2} lower layer; precipitation {:.2} mm/day \
+         ({:.2} convective, {:.2} snow), evaporation {:.2} mm/day",
+        g("atm.water_vapour"),
+        g("atm.relative_humidity_upper"),
+        g("atm.relative_humidity_lower"),
+        g("atm.precipitation"),
+        g("atm.convective_precipitation"),
+        g("atm.snowfall"),
+        g("atm.evaporation"),
+    );
+    let _ = writeln!(
+        summary,
+        "Surface (W/m²): sunlight absorbed {:.1}, net longwave loss {:.1} ({:.1} under clear skies), \
+         latent heat {:.1}, sensible heat {:.1}",
+        g("rad.surface_shortwave"),
+        g("rad.surface_longwave"),
+        g("rad.clear_surface_longwave"),
+        g("atm.latent_heat_flux"),
+        g("atm.sensible_heat_flux"),
+    );
+    if let Some((d0, e0, b0, w0, wb0)) = start {
         let d1 = si.model().diagnostics(si.state());
-        let (e1, b1) = (
+        let (e1, b1, w1, wb1) = (
             si.energy_budget(),
             si.model()
                 .forcing()
                 .and_then(|f| f.budget())
                 .expect("budget"),
+            si.water(),
+            si.water_budget(),
         );
         let seconds = (si.steps() - stats_from) as f64 * dt;
         let r2 = si.model().operators().radius().powi(2);
         let wm2 = |j: f64| j / seconds / (area * r2);
         let toa = (b1.absorbed - b0.absorbed) - (b1.outgoing - b0.outgoing);
-        let atmosphere = d1.energy - d0.energy;
+        // Latent energy of the water the budget closes on (the mean of the two
+        // leapfrog levels).
+        let atmosphere = (d1.energy - d0.energy) + LATENT_HEAT * (w1 - w0);
         let slab = b1.stored - b0.stored;
         let friction = e1.forcing.kinetic - e0.forcing.kinetic;
         let diffusion = e1.diffusion.total() - e0.diffusion.total();
         let _ = writeln!(
             summary,
             "Final-year energy budget (W/m²): net in at the top of the atmosphere {:+.3} = atmosphere uptake {:+.3} \
-             + slab uptake {:+.3} + kinetic energy removed by friction {:.3} and diffusion {:.3} + residual {:+.4}",
+             (enthalpy and latent) + slab uptake {:+.3} + kinetic energy removed by friction {:.3} and diffusion {:.3} \
+             + residual {:+.4}",
             wm2(toa),
             wm2(atmosphere),
             wm2(slab),
             -wm2(friction),
             -wm2(diffusion),
             wm2(toa - atmosphere - slab + friction + diffusion),
+        );
+        let exchanged = (b1.evaporated - b0.evaporated) - (b1.precipitated - b0.precipitated);
+        let (filter, fixer) = (wb1.filter - wb0.filter, wb1.fixer - wb0.fixer);
+        let _ = writeln!(
+            summary,
+            "Final-year water budget (kg): change {:+.4e} = evaporation − precipitation {:+.4e} + time filter {:+.2e} \
+             + fixer {:+.2e} + residual {:+.1e}",
+            w1 - w0,
+            exchanged,
+            filter,
+            fixer,
+            (w1 - w0) - exchanged - filter - fixer,
         );
     }
     let _ = writeln!(

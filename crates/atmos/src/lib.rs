@@ -17,10 +17,12 @@ pub mod diffusion;
 pub mod forcing;
 pub mod held_suarez;
 pub mod helmholtz;
+pub mod moisture;
 pub mod radiation;
 pub mod safety;
 pub mod semi_implicit;
 pub mod shallow_water;
+pub mod transport;
 pub mod two_layer;
 pub mod two_layer_si;
 pub mod williamson;
@@ -32,9 +34,12 @@ pub use diffusion::{Hyperdiffusion, HyperdiffusionOptions};
 pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};
 pub use helmholtz::{Helmholtz, SolveReport};
-pub use radiation::{Column, Fluxes, RadiationParams};
+pub use moisture::{CloudParams, MoistTendency, MoistureParams};
+pub use radiation::{Cloud, Column, Fluxes, Humidity, RadiationParams};
 pub use safety::{BlowUp, Fault, Health, Limits, Variable};
 pub use semi_implicit::{SemiImplicit, SemiImplicitOptions, SolverStats};
 pub use shallow_water::{Diagnostics, ShallowWater, State};
 pub use two_layer::{Gas, Linearization, TwoLayer, TwoLayerDiagnostics, TwoLayerState};
-pub use two_layer_si::{EnergyBudget, TwoLayerSemiImplicit, TwoLayerSemiImplicitOptions};
+pub use two_layer_si::{
+    EnergyBudget, TwoLayerSemiImplicit, TwoLayerSemiImplicitOptions, WaterBudget,
+};

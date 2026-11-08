@@ -4,15 +4,18 @@
 
 use crate::two_layer::TwoLayerState;
 
-/// A source of tendencies for the winds and `Θ`.
+/// A source of tendencies for the winds, `Θ` and humidity.
 ///
 /// Both steppers treat forcing explicitly: RK4 at every stage, the
 /// semi-implicit scheme lagged to the old time level. So rates must stay
 /// well below `1/Δt`.
 pub trait Forcing: Send + Sync {
-    /// Add the forcing tendencies of `state` to `out` (winds and `Θ`; leave
-    /// `out.ps` alone, so mass is conserved).
-    fn add_tendency(&self, state: &TwoLayerState, out: &mut TwoLayerState);
+    /// Add the forcing tendencies of `state` to `out` (winds, `Θ` and, for a
+    /// moist state, `Q`; leave `out.ps` alone, so mass is conserved). The
+    /// semi-implicit stepper calls this once per step, so a forcing may
+    /// record what it applied (e.g. precipitation) for
+    /// [`advance`](Self::advance) to account.
+    fn add_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState);
 
     /// Called once after every completed time step of `dt` seconds with the
     /// new state: for forcing with state of its own (a surface) or work done
@@ -42,6 +45,10 @@ pub struct ForcingBudget {
     /// Heat held outside the atmosphere now (e.g. a surface slab), relative
     /// to a fixed zero.
     pub stored: f64,
+    /// Water evaporated into the atmosphere (kg).
+    pub evaporated: f64,
+    /// Water precipitated out of the atmosphere (kg).
+    pub precipitated: f64,
 }
 
 /// A named cell field.

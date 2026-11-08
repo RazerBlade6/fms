@@ -38,7 +38,7 @@ fn column() -> SingleColumn {
 fn show(label: &str, e: &Equilibrium, insolation: f64) {
     let f = &e.fluxes;
     println!(
-        "{label:<22} T_s {:>6.1} K  T {:>5.1}/{:>5.1}  OLR {:>6.1}  ASR {:>6.1}  albedo {:.3}  SH {:>5.1} LH {:>5.1}  water {:>5.1} kg/m²  band {:>5.0} cm⁻¹  ({} h)",
+        "{label:<22} T_s {:>6.1} K  T {:>5.1}/{:>5.1}  OLR {:>6.1}  ASR {:>6.1}  albedo {:.3}  SH {:>5.1} LH {:>5.1}  water {:>5.1} kg/m²  band {:>5.0} cm⁻¹  surface SW {:>5.1} LW down {:>5.1} up {:>5.1} net {:>5.1}  ({} h)",
         e.surface_temperature,
         e.temperature[0],
         e.temperature[1],
@@ -49,6 +49,10 @@ fn show(label: &str, e: &Equilibrium, insolation: f64) {
         e.surface_fluxes.1,
         f.water[0] + f.water[1],
         f.co2_width,
+        f.surface_shortwave,
+        f.surface_down,
+        f.surface_up,
+        f.surface_up - f.surface_down,
         e.steps
     );
 }

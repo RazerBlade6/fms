@@ -20,3 +20,4 @@ cargo run -p fms-app                          # GUI (`fantasy-map`, placeholder)
 - [Benchmarks](docs/BENCHMARKS.md): how to run them, and baseline numbers
 - [Development](docs/DEVELOPMENT.md): setup, git workflow, determinism rules, conventions
 - [Observations](docs/OBSERVATIONS.md): known limitations and ideas parked for later
+- [References](REFERENCES.md): the papers and data the design cites, with DOIs

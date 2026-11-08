@@ -1,38 +1,37 @@
-//! Column physics for a radiatively driven planet: [`crate::radiation`], a
-//! temporary slab surface with bulk sensible and latent heat fluxes, and
-//! convective adjustment. Used by [`ColumnPhysics`] (the 3-D forcing) and
-//! [`SingleColumn`] (a 1-D radiative–convective model for calibration and
-//! quick experiments), so both run exactly the same physics.
+//! Column physics for a radiatively driven planet: [`crate::radiation`],
+//! [`crate::moisture`], and a temporary slab surface with bulk sensible and
+//! latent heat fluxes. [`ColumnPhysics`] is the 3-D forcing; [`SingleColumn`]
+//! is a 1-D radiative–convective model with fixed relative humidity, kept
+//! to check the radiation against Earth's global-mean column.
 //!
-//! # Pieces
+//! # Pieces (3-D)
 //!
 //! - **Surface**: one slab of water of fixed depth everywhere (an
 //!   aquaplanet; land and ocean come in M2 steps 10–11). It absorbs sunlight
-//!   and longwave, emits as a black body, and loses heat to the lower layer
-//!   by bulk formulas: sensible `ρ c_p C V (T_s − T_a)` and latent
-//!   `ρ L C V (q*(T_s) − RH_s q*(T_a))`, where `T_a` is the lower layer's
-//!   temperature extrapolated to the surface along the convective lapse rate
-//!   and `V` includes a gust speed.
-//! - **Latent heat**: with relative humidity fixed, evaporated water is
-//!   condensed at once. Its latent heat warms the whole column by the same
-//!   temperature change per unit mass, as deep convection does, so the
-//!   lapse rate is kept. Moisture becomes a model variable in M2 step 9.
-//! - **Convection**: when the layers are less stable than a critical lapse
-//!   rate (Manabe & Strickler 1964: the moist adiabat's effect until the
-//!   model has moisture), both layers relax towards it, conserving
-//!   enthalpy. Measured between the layer means, Earth's troposphere sits at
-//!   4.4 K/km (see [`PhysicsParams::lapse_rate`]).
+//!   and longwave, emits as a black body, and exchanges heat and water with
+//!   the lower layer by bulk formulas: sensible `ρ c_p C V (T_s − T_a)` and
+//!   evaporation `ρ C V (q*(T_s) − q_a)`, where `T_a` is the lower layer's
+//!   temperature extrapolated to the surface along
+//!   [`PhysicsParams::lapse_rate`], `q_a` the lower layer's humidity profile
+//!   at the surface ([`crate::moisture`]), and `V` includes a gust speed.
+//!   The slab pays the latent heat of what evaporates, and of fusion for the
+//!   snow that falls on it and melts.
+//! - **Moisture**: convection, large-scale condensation, re-evaporation,
+//!   rain or snow, and diagnosed clouds ([`crate::moisture`]).
 //! - **Friction**: the Held–Suarez boundary-layer drag on the lower layer,
 //!   until M2 step 10 adds surface drag.
 //!
 //! # Time stepping
 //!
 //! Radiation runs every [`PhysicsParams::radiation_interval`] with sunlight
-//! averaged over the coming interval; surface fluxes and the slab update
-//! every step ([`Forcing::advance`]). The atmosphere and the slab use the same
-//! stored fluxes, so the planet's energy budget closes exactly: what the
-//! atmosphere and slab gain is what was absorbed from the Sun minus what was
-//! emitted to space (and the kinetic energy friction and diffusion remove).
+//! averaged over the coming interval and the clouds of the latest moist
+//! physics; surface fluxes and the slab update every step
+//! ([`Forcing::advance`]). The atmosphere and the slab use the same stored
+//! fluxes and the same precipitation, so the planet's energy and water
+//! budgets close exactly: what the atmosphere and slab gain is what was
+//! absorbed from the Sun minus what was emitted to space (and the kinetic
+//! energy friction and diffusion remove), and the atmosphere's water
+//! changes by evaporation minus precipitation.
 
 use fms_geo::Operators;
 use fms_geo::operators::MIN_CHUNK;
@@ -41,14 +40,18 @@ use fms_planet::Planet;
 use rayon::prelude::*;
 
 use crate::forcing::{CellField, Forcing, ForcingBudget};
+use crate::moisture::{
+    FUSION_HEAT, MoistColumn, MoistTendency, MoistureParams, Setting, moist_physics,
+};
 use crate::radiation::{
-    Column, Fluxes, RadiationParams, column_fluxes, saturation_pressure, specific_humidity,
+    Cloud, Column, Fluxes, Humidity, RadiationParams, STEFAN_BOLTZMANN, column_fluxes,
+    saturation_humidity, saturation_pressure, specific_humidity,
 };
 use crate::two_layer::{Gas, REFERENCE_PRESSURE, TwoLayer, TwoLayerState};
 
+pub use crate::moisture::LATENT_HEAT;
+
 const DAY: f64 = 86_400.0;
-/// Latent heat of vaporization (J kg⁻¹).
-pub const LATENT_HEAT: f64 = 2.5e6;
 /// Volumetric heat capacity of water (J m⁻³ K⁻¹).
 const WATER_HEAT_CAPACITY: f64 = 1000.0 * 4186.0;
 
@@ -57,6 +60,8 @@ const WATER_HEAT_CAPACITY: f64 = 1000.0 * 4186.0;
 pub struct PhysicsParams {
     /// Radiation.
     pub radiation: RadiationParams,
+    /// Moisture (3-D only).
+    pub moisture: MoistureParams,
     /// CO₂ (ppm).
     pub co2: f64,
     /// Slab depth (m of water).
@@ -65,12 +70,13 @@ pub struct PhysicsParams {
     pub transfer: f64,
     /// Gust speed added in quadrature to the wind (m s⁻¹).
     pub gust: f64,
-    /// Critical lapse rate for convection between the layer means (K m⁻¹).
-    /// Earth's observed layer means (272 and 226 K, 10.5 km apart) sit at
-    /// 4.4 K/km: less than the tropospheric 6.5 K/km because the upper layer
-    /// includes the stratosphere.
+    /// Lapse rate (K m⁻¹) from the lower layer's mean down to the surface
+    /// air, and the single column's critical lapse rate for convection
+    /// between the layer means. Earth's observed layer means (272 and 226 K,
+    /// 10.5 km apart) sit at 4.4 K/km: less than the tropospheric 6.5 K/km
+    /// because the upper layer includes the stratosphere.
     pub lapse_rate: f64,
-    /// Convective relaxation time (s).
+    /// The single column's convective relaxation time (s).
     pub convection_time: f64,
     /// Lower-layer Rayleigh friction (s⁻¹).
     pub friction: f64,
@@ -82,6 +88,7 @@ impl Default for PhysicsParams {
     fn default() -> Self {
         Self {
             radiation: RadiationParams::default(),
+            moisture: MoistureParams::default(),
             co2: 420.0,
             slab_depth: 10.0,
             transfer: 1.3e-3,
@@ -183,8 +190,26 @@ fn theta_tendency(gas: Gas, gravity: f64, dsigma: f64, exner: f64, q: f64) -> f6
     gravity * q / (gas.heat_capacity * dsigma * exner)
 }
 
-/// The radiative–convective forcing of the two-layer model: radiation, a
-/// slab surface, surface heat fluxes, convection and boundary-layer friction.
+/// Bulk exchange `ρ C V` (kg m⁻² s⁻¹) over the surface for surface air at
+/// temperature `air` and wind speed `wind`.
+fn exchange(params: &PhysicsParams, gas: Gas, ps: f64, air: f64, wind: f64) -> f64 {
+    let density = ps / (gas.gas_constant * air);
+    let speed = (wind * wind + params.gust * params.gust).sqrt();
+    density * params.transfer * speed
+}
+
+/// Fluxes between the surface and the lower layer in one cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SurfaceFlux {
+    /// Sensible heat (W m⁻², upward).
+    sensible: f64,
+    /// Evaporation (kg m⁻² s⁻¹).
+    evaporation: f64,
+}
+
+/// The radiative–convective forcing of the two-layer model: radiation, moist
+/// physics, a slab surface, surface fluxes and boundary-layer friction. Needs
+/// a moist state.
 pub struct ColumnPhysics<'a> {
     params: PhysicsParams,
     gas: Gas,
@@ -196,17 +221,25 @@ pub struct ColumnPhysics<'a> {
     time: f64,
     next_radiation: f64,
     surface_temperature: Vec<f64>,
-    /// Last radiation call.
+    /// Last radiation call, all-sky and clear-sky.
     radiation: Vec<Fluxes>,
-    /// Sensible and latent heat flux per cell, from the last step.
-    surface: Vec<(f64, f64)>,
+    clear: Vec<Fluxes>,
+    /// Surface fluxes, from the last step.
+    surface: Vec<SurfaceFlux>,
+    /// The moist physics of the last tendency evaluation.
+    moist: Vec<MoistTendency>,
     absorbed: f64,
     outgoing: f64,
+    evaporated: f64,
+    precipitated: f64,
 }
 
 impl<'a> ColumnPhysics<'a> {
     /// Physics for `model` on `planet`, starting at time `time` (s) from
     /// `state` with surface temperatures `surface_temperature` (K).
+    ///
+    /// # Panics
+    /// If `state` is dry.
     pub fn new(
         model: &TwoLayer<'a>,
         planet: &'a Planet,
@@ -215,6 +248,7 @@ impl<'a> ColumnPhysics<'a> {
         state: &TwoLayerState,
         surface_temperature: Vec<f64>,
     ) -> Self {
+        assert!(state.is_moist(), "column physics needs a moist state");
         let n = state.ps.len();
         assert_eq!(surface_temperature.len(), n);
         let mut physics = Self {
@@ -228,12 +262,20 @@ impl<'a> ColumnPhysics<'a> {
             next_radiation: time,
             surface_temperature,
             radiation: vec![Fluxes::default(); n],
-            surface: vec![(0.0, 0.0); n],
+            clear: vec![Fluxes::default(); n],
+            surface: vec![SurfaceFlux::default(); n],
+            moist: vec![MoistTendency::default(); n],
             absorbed: 0.0,
             outgoing: 0.0,
+            evaporated: 0.0,
+            precipitated: 0.0,
         };
-        physics.update_surface_fluxes(state);
+        // Clouds for the first radiation call; radiation (clear sky) for the
+        // first convection's stratosphere temperature.
         physics.radiate(state);
+        physics.update_moisture(state);
+        physics.radiate(state);
+        physics.update_surface_fluxes(state);
         physics
     }
 
@@ -252,31 +294,96 @@ impl<'a> ColumnPhysics<'a> {
         &self.radiation
     }
 
+    /// The last moist physics per cell.
+    pub fn moisture(&self) -> &[MoistTendency] {
+        &self.moist
+    }
+
     /// Model time (s).
     pub fn time(&self) -> f64 {
         self.time
+    }
+
+    fn setting(&self) -> Setting<'_> {
+        Setting {
+            params: &self.params.moisture,
+            radiation: &self.params.radiation,
+            gas: self.gas,
+            sigma: self.sigma,
+            gravity: self.gravity,
+        }
+    }
+
+    /// One column's view for the moist physics.
+    fn moist_column(&self, state: &TwoLayerState, i: usize) -> MoistColumn {
+        let ps = state.ps[i];
+        let exner = layer_exner(self.gas, self.sigma, ps);
+        let theta = [state.theta_ps[0][i] / ps, state.theta_ps[1][i] / ps];
+        // The stratosphere sits near the skin temperature of the column's
+        // outgoing longwave.
+        let olr = self.radiation[i].outgoing.max(1.0);
+        MoistColumn {
+            ps,
+            temperature: [theta[0] * exner[0], theta[1] * exner[1]],
+            humidity: [state.q_ps[0][i] / ps, state.q_ps[1][i] / ps],
+            surface_air: surface_air_temperature(
+                &self.params,
+                self.gas,
+                self.sigma,
+                self.gravity,
+                ps,
+                theta[1],
+            ),
+            stratosphere: fms_math::pow(olr / (2.0 * STEFAN_BOLTZMANN), 0.25),
+        }
+    }
+
+    fn update_moisture(&mut self, state: &TwoLayerState) {
+        let moist: Vec<MoistTendency> = (0..state.ps.len())
+            .into_par_iter()
+            .with_min_len(MIN_CHUNK / 16)
+            .map(|i| moist_physics(&self.setting(), &self.moist_column(state, i)))
+            .collect();
+        self.moist = moist;
     }
 
     fn update_surface_fluxes(&mut self, state: &TwoLayerState) {
         let (mesh, geometry) = (self.ops.mesh(), self.ops.geometry());
         let winds = geometry.reconstruct_vectors(mesh, &state.u[1]);
         let centers = mesh.cell_centers();
-        let (params, gas, sigma, gravity) = (&self.params, self.gas, self.sigma, self.gravity);
-        let ts = &self.surface_temperature;
-        self.surface
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, f)| {
+        let surface: Vec<SurfaceFlux> = (0..state.ps.len())
+            .into_par_iter()
+            .with_min_len(MIN_CHUNK / 16)
+            .map(|i| {
                 let (e, n) = east_north(centers[i], winds[i]);
-                let theta = state.theta_ps[1][i] / state.ps[i];
-                let air = surface_air_temperature(params, gas, sigma, gravity, state.ps[i], theta);
-                *f = surface_fluxes(params, gas, state.ps[i], ts[i], air, (e * e + n * n).sqrt());
-            });
+                let column = self.moist_column(state, i);
+                let ps = column.ps;
+                let k = exchange(
+                    &self.params,
+                    self.gas,
+                    ps,
+                    column.surface_air,
+                    (e * e + n * n).sqrt(),
+                );
+                let q_air = crate::moisture::surface_humidity(
+                    &self.setting(),
+                    ps,
+                    column.temperature,
+                    column.humidity[1],
+                    column.surface_air,
+                );
+                let ts = self.surface_temperature[i];
+                SurfaceFlux {
+                    sensible: k * self.gas.heat_capacity * (ts - column.surface_air),
+                    evaporation: k * (saturation_humidity(ts, ps) - q_air),
+                }
+            })
+            .collect();
+        self.surface = surface;
     }
 
     /// Radiation for the interval starting now, with sunlight averaged over
-    /// it.
+    /// it, all-sky and clear-sky.
     fn radiate(&mut self, state: &TwoLayerState) {
         const SAMPLES: usize = 6;
         let centers = self.ops.mesh().cell_centers();
@@ -292,58 +399,69 @@ impl<'a> ColumnPhysics<'a> {
             }
         }
         let (params, gas, sigma, gravity) = (&self.params, self.gas, self.sigma, self.gravity);
-        let ts = &self.surface_temperature;
-        self.radiation
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, f)| {
-                *f = column_fluxes(
-                    &params.radiation,
-                    gas,
-                    &Column {
-                        ps: state.ps[i],
-                        surface_temperature: ts[i],
-                        theta: [
-                            state.theta_ps[0][i] / state.ps[i],
-                            state.theta_ps[1][i] / state.ps[i],
-                        ],
-                        sigma,
-                        gravity,
-                        insolation: insolation[i],
-                        co2: params.co2,
-                    },
-                );
-            });
+        let clouds = &params.moisture.clouds;
+        let moist = &self.moist;
+        let both: Vec<(Fluxes, Fluxes)> = (0..n)
+            .into_par_iter()
+            .with_min_len(MIN_CHUNK / 16)
+            .map(|i| {
+                let ps = state.ps[i];
+                let cover = moist[i].clouds;
+                let mut column = Column {
+                    ps,
+                    surface_temperature: self.surface_temperature[i],
+                    theta: [state.theta_ps[0][i] / ps, state.theta_ps[1][i] / ps],
+                    sigma,
+                    gravity,
+                    insolation: insolation[i],
+                    co2: params.co2,
+                    humidity: Humidity::Layers([state.q_ps[0][i] / ps, state.q_ps[1][i] / ps]),
+                    clouds: std::array::from_fn(|c| Cloud {
+                        sigma: clouds.sigma[c],
+                        reflectance: cover[c] * clouds.albedo[c],
+                        emissivity: cover[c] * clouds.emissivity[c],
+                    }),
+                };
+                let all = column_fluxes(&params.radiation, gas, &column);
+                column.clouds = [Cloud::NONE; 2];
+                (all, column_fluxes(&params.radiation, gas, &column))
+            })
+            .collect();
+        (self.radiation, self.clear) = both.into_iter().unzip();
         self.next_radiation = self.time + self.params.radiation_interval;
     }
 }
 
 impl Forcing for ColumnPhysics<'_> {
-    fn add_tendency(&self, state: &TwoLayerState, out: &mut TwoLayerState) {
-        let (params, gas, sigma, gravity) = (&self.params, self.gas, self.sigma, self.gravity);
+    fn add_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState) {
+        assert!(
+            state.is_moist() && out.is_moist(),
+            "column physics needs a moist state"
+        );
+        self.update_moisture(state);
+        let (gas, sigma, gravity) = (self.gas, self.sigma, self.gravity);
         let ds = [sigma, 1.0 - sigma];
+        let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
         let [t0, t1] = &mut out.theta_ps;
+        let [q0, q1] = &mut out.q_ps;
         t0.par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .zip(t1.par_iter_mut())
+            .zip(q0.par_iter_mut())
+            .zip(q1.par_iter_mut())
             .enumerate()
-            .for_each(|(i, (d0, d1))| {
+            .for_each(|(i, (((d0, d1), dq0), dq1))| {
                 let ps = state.ps[i];
                 let exner = layer_exner(gas, sigma, ps);
-                let f = &self.radiation[i];
-                let (sensible, latent) = self.surface[i];
-                let heating = [
-                    f.layers[0] + ds[0] * latent,
-                    f.layers[1] + sensible + ds[1] * latent,
-                ];
-                *d0 += theta_tendency(gas, gravity, ds[0], exner[0], heating[0]);
-                *d1 += theta_tendency(gas, gravity, ds[1], exner[1], heating[1]);
-                let theta = [state.theta_ps[0][i] / ps, state.theta_ps[1][i] / ps];
-                if let Some(target) = convective_target(params, gas, sigma, gravity, ps, theta) {
-                    *d0 += ps * (target[0] - theta[0]) / params.convection_time;
-                    *d1 += ps * (target[1] - theta[1]) / params.convection_time;
-                }
+                let f = &radiation[i];
+                let m = &moist[i];
+                let heating = [f.layers[0], f.layers[1] + surface[i].sensible];
+                *d0 += theta_tendency(gas, gravity, ds[0], exner[0], heating[0])
+                    + ps * m.temperature[0] / exner[0];
+                *d1 += theta_tendency(gas, gravity, ds[1], exner[1], heating[1])
+                    + ps * m.temperature[1] / exner[1];
+                *dq0 += ps * m.humidity[0];
+                *dq1 += ps * m.humidity[1] + gravity * surface[i].evaporation / ds[1];
             });
         let rate = self.params.friction;
         if rate > 0.0 {
@@ -356,27 +474,33 @@ impl Forcing for ColumnPhysics<'_> {
     }
 
     fn advance(&mut self, state: &TwoLayerState, dt: f64) {
-        // The slab and the budget use the same stored fluxes the atmosphere
-        // was heated with.
+        // The slab and the budgets use the same stored fluxes and
+        // precipitation the atmosphere was given.
         let areas = &self.ops.geometry().cell_areas;
         let r2 = self.ops.radius() * self.ops.radius();
         let capacity = self.params.heat_capacity();
-        let (radiation, surface) = (&self.radiation, &self.surface);
+        let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
         self.surface_temperature
             .par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .enumerate()
             .for_each(|(i, t)| {
-                let (sensible, latent) = surface[i];
-                *t += dt * (radiation[i].surface() - sensible - latent) / capacity;
+                let s = surface[i];
+                let loss = s.sensible + LATENT_HEAT * s.evaporation + FUSION_HEAT * moist[i].snow;
+                *t += dt * (radiation[i].surface() - loss) / capacity;
             });
-        let (mut absorbed, mut outgoing) = (0.0, 0.0);
-        for (f, a) in radiation.iter().zip(areas) {
-            absorbed += a * f.absorbed;
-            outgoing += a * f.outgoing;
+        let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
+        for i in 0..areas.len() {
+            let a = areas[i];
+            absorbed += a * radiation[i].absorbed;
+            outgoing += a * radiation[i].outgoing;
+            evaporated += a * surface[i].evaporation;
+            precipitated += a * (moist[i].rain + moist[i].snow);
         }
         self.absorbed += dt * r2 * absorbed;
         self.outgoing += dt * r2 * outgoing;
+        self.evaporated += dt * r2 * evaporated;
+        self.precipitated += dt * r2 * precipitated;
         self.time += dt;
         self.update_surface_fluxes(state);
         if self.time >= self.next_radiation - 1e-6 {
@@ -397,44 +521,222 @@ impl Forcing for ColumnPhysics<'_> {
             absorbed: self.absorbed,
             outgoing: self.outgoing,
             stored,
+            evaporated: self.evaporated,
+            precipitated: self.precipitated,
         })
     }
 
     fn cell_fields(&self) -> Vec<CellField> {
-        let pick = |f: fn(&Fluxes) -> f64| self.radiation.iter().map(f).collect();
+        let rad = |f: fn(&Fluxes) -> f64| self.radiation.iter().map(f).collect();
+        let moist = |f: fn(&MoistTendency) -> f64| self.moist.iter().map(f).collect();
+        let field = |name, description, units, values| CellField {
+            name,
+            description,
+            units,
+            values,
+        };
         vec![
-            CellField {
-                name: "rad.surface_temperature",
-                description: "Surface temperature",
-                units: "K",
-                values: self.surface_temperature.clone(),
-            },
-            CellField {
-                name: "rad.outgoing_longwave",
-                description: "Outgoing longwave radiation",
-                units: "W m-2",
-                values: pick(|f| f.outgoing),
-            },
-            CellField {
-                name: "rad.absorbed_shortwave",
-                description: "Absorbed sunlight",
-                units: "W m-2",
-                values: pick(|f| f.absorbed),
-            },
-            CellField {
-                name: "rad.water_vapour",
-                description: "Water-vapour column (fixed relative humidity)",
-                units: "kg m-2",
-                values: pick(|f| f.water[0] + f.water[1]),
-            },
-            CellField {
-                name: "rad.latent_heat_flux",
-                description: "Surface latent heat flux",
-                units: "W m-2",
-                values: self.surface.iter().map(|s| s.1).collect(),
-            },
+            field(
+                "rad.surface_temperature",
+                "Surface temperature",
+                "K",
+                self.surface_temperature.clone(),
+            ),
+            field(
+                "rad.outgoing_longwave",
+                "Outgoing longwave radiation",
+                "W m-2",
+                rad(|f| f.outgoing),
+            ),
+            field(
+                "rad.absorbed_shortwave",
+                "Absorbed sunlight",
+                "W m-2",
+                rad(|f| f.absorbed),
+            ),
+            field(
+                "rad.surface_shortwave",
+                "Sunlight absorbed by the surface",
+                "W m-2",
+                rad(|f| f.surface_shortwave),
+            ),
+            field(
+                "rad.surface_longwave",
+                "Net longwave loss of the surface",
+                "W m-2",
+                rad(|f| f.surface_up - f.surface_down),
+            ),
+            field(
+                "rad.clear_surface_longwave",
+                "Net longwave loss of the surface under clear skies",
+                "W m-2",
+                self.clear
+                    .iter()
+                    .map(|f| f.surface_up - f.surface_down)
+                    .collect(),
+            ),
+            field(
+                "rad.shortwave_cloud_effect",
+                "Shortwave cloud radiative effect",
+                "W m-2",
+                self.radiation
+                    .iter()
+                    .zip(&self.clear)
+                    .map(|(a, c)| a.absorbed - c.absorbed)
+                    .collect(),
+            ),
+            field(
+                "rad.longwave_cloud_effect",
+                "Longwave cloud radiative effect",
+                "W m-2",
+                self.radiation
+                    .iter()
+                    .zip(&self.clear)
+                    .map(|(a, c)| c.outgoing - a.outgoing)
+                    .collect(),
+            ),
+            field(
+                "atm.water_vapour",
+                "Water-vapour column",
+                "kg m-2",
+                rad(|f| f.water[0] + f.water[1]),
+            ),
+            field(
+                "atm.precipitation",
+                "Precipitation",
+                "mm day-1",
+                moist(|m| (m.rain + m.snow) * DAY),
+            ),
+            field(
+                "atm.snowfall",
+                "Snowfall (water equivalent)",
+                "mm day-1",
+                moist(|m| m.snow * DAY),
+            ),
+            field(
+                "atm.convective_precipitation",
+                "Convective precipitation",
+                "mm day-1",
+                moist(|m| m.convective * DAY),
+            ),
+            field(
+                "atm.evaporation",
+                "Evaporation",
+                "mm day-1",
+                self.surface.iter().map(|s| s.evaporation * DAY).collect(),
+            ),
+            field(
+                "atm.latent_heat_flux",
+                "Surface latent heat flux",
+                "W m-2",
+                self.surface
+                    .iter()
+                    .map(|s| s.evaporation * LATENT_HEAT)
+                    .collect(),
+            ),
+            field(
+                "atm.sensible_heat_flux",
+                "Surface sensible heat flux",
+                "W m-2",
+                self.surface.iter().map(|s| s.sensible).collect(),
+            ),
+            field(
+                "atm.high_cloud",
+                "High cloud cover",
+                "1",
+                moist(|m| m.clouds[0]),
+            ),
+            field(
+                "atm.low_cloud",
+                "Low cloud cover",
+                "1",
+                moist(|m| m.clouds[1]),
+            ),
+            field(
+                "atm.cloud_cover",
+                "Total cloud cover (random overlap)",
+                "1",
+                moist(|m| 1.0 - (1.0 - m.clouds[0]) * (1.0 - m.clouds[1])),
+            ),
+            field(
+                "atm.relative_humidity_upper",
+                "Upper-layer relative humidity",
+                "1",
+                moist(|m| m.relative_humidity[0]),
+            ),
+            field(
+                "atm.relative_humidity_lower",
+                "Lower-layer relative humidity",
+                "1",
+                moist(|m| m.relative_humidity[1]),
+            ),
         ]
     }
+}
+
+/// A moist start for the 3-D model on `planet`: everywhere the single
+/// column's equilibrium (with `params`' CO₂) at rest, with its fixed-profile
+/// humidity, plus 0.1 K of seeded noise in θ to break the symmetry. Returns
+/// the state and the surface temperature (K).
+pub fn initial_state(
+    model: &TwoLayer,
+    planet: &Planet,
+    params: &PhysicsParams,
+) -> (TwoLayerState, f64) {
+    let mut column = SingleColumn::earth(planet.mean_flux());
+    column.params.co2 = params.co2;
+    column.ps = planet.params().surface_pressure;
+    column.gravity = model.gravity();
+    let eq = column.equilibrium();
+    let (gas, sigma, ps) = (model.gas(), model.sigma(), column.ps);
+    let exner = layer_exner(gas, sigma, ps);
+    let theta0 = [eq.temperature[0] / exner[0], eq.temperature[1] / exner[1]];
+    let q = fixed_humidity(params, gas, sigma, model.gravity(), ps, theta0);
+    let mesh = model.operators().mesh();
+    let (nc, ne) = (mesh.n_cells(), mesh.n_edges());
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let theta: [Vec<f64>; 2] = std::array::from_fn(|k| {
+        (0..nc)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                theta0[k] + 0.1 * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
+            })
+            .collect()
+    });
+    let state = TwoLayerState::new(vec![ps; nc], [vec![0.0; ne], vec![0.0; ne]], theta)
+        .with_humidity([vec![q[0]; nc], vec![q[1]; nc]]);
+    (state, eq.surface_temperature)
+}
+
+/// Initial humidity (kg kg⁻¹, per layer) for a column at fixed relative
+/// humidity: the Manabe–Wetherald profile of the single column.
+pub fn fixed_humidity(
+    params: &PhysicsParams,
+    gas: Gas,
+    sigma: f64,
+    gravity: f64,
+    ps: f64,
+    theta: [f64; 2],
+) -> [f64; 2] {
+    let f = column_fluxes(
+        &params.radiation,
+        gas,
+        &Column {
+            ps,
+            surface_temperature: 288.0,
+            theta,
+            sigma,
+            gravity,
+            insolation: 0.0,
+            co2: params.co2,
+            humidity: Humidity::Fixed,
+            clouds: [Cloud::NONE; 2],
+        },
+    );
+    let ds = [sigma, 1.0 - sigma];
+    [0, 1].map(|k| f.water[k] * gravity / (ds[k] * ps))
 }
 
 /// A single-column radiative–convective model: the same physics as
@@ -478,13 +780,14 @@ pub struct Equilibrium {
 }
 
 impl SingleColumn {
-    /// Cloud albedo for a single global-mean column: lower than the 3-D
-    /// model's (0.33) because one column under the planet's mean sunlight
-    /// isn't the planet's mean. The physics is nonlinear in temperature
-    /// (water vapour, `σT⁴`), and the 3-D model's warm tropics hold more
-    /// water. With it, the column reaches Earth's global mean as the 3-D
-    /// model does.
-    pub const SINGLE_COLUMN_CLOUD_ALBEDO: f64 = 0.30;
+    /// Albedo of the single column's fixed cloud deck, calibrated so the
+    /// column reaches Earth's global-mean climate (with the clear air's
+    /// Rayleigh scattering, [`RadiationParams::rayleigh`], on top). One
+    /// column under the planet's mean sunlight isn't the planet's mean (the
+    /// physics is nonlinear in temperature), so this is not the 3-D model's
+    /// cloud albedo; the 3-D model diagnoses its clouds
+    /// ([`crate::moisture`]).
+    pub const SINGLE_COLUMN_CLOUD_ALBEDO: f64 = 0.27;
 
     /// An Earth-like column under the global-mean sunlight of a planet with
     /// mean stellar flux `s0`, with [`Self::SINGLE_COLUMN_CLOUD_ALBEDO`].
@@ -520,6 +823,11 @@ impl SingleColumn {
                 gravity: self.gravity,
                 insolation: self.insolation,
                 co2: self.params.co2,
+                humidity: Humidity::Fixed,
+                clouds: [
+                    Cloud::deck(self.sigma, self.params.radiation.cloud_albedo),
+                    Cloud::NONE,
+                ],
             },
         )
     }

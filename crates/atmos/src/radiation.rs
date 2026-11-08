@@ -120,9 +120,12 @@ pub struct RadiationParams {
     pub mu: f64,
     /// Surface albedo.
     pub albedo: f64,
-    /// Albedo of a cloud deck at the layer interface: a fixed stand-in for
-    /// clouds until the model diagnoses them.
+    /// Albedo of the fixed cloud deck at the layer interface that the
+    /// single column (fixed relative humidity) uses in place of clouds.
     pub cloud_albedo: f64,
+    /// Reflectance of the clear air (Rayleigh scattering), applied as a
+    /// non-absorbing sheet at the atmosphere's mass centre (σ = ½).
+    pub rayleigh: f64,
 }
 
 impl Default for RadiationParams {
@@ -150,6 +153,7 @@ impl Default for RadiationParams {
             mu: 0.5,
             albedo: 0.08,
             cloud_albedo: 0.33,
+            rayleigh: 0.06,
         }
     }
 }
@@ -171,6 +175,58 @@ pub struct Column {
     pub insolation: f64,
     /// CO₂ (ppm).
     pub co2: f64,
+    /// Water vapour.
+    pub humidity: Humidity,
+    /// Cloud sheets (unused ones have zero reflectance and emissivity).
+    pub clouds: [Cloud; 2],
+}
+
+/// Where a column's water vapour comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Humidity {
+    /// Fixed relative humidity: the Manabe–Wetherald profile
+    /// `RH(σ) = RH_s (σ − 0.02)/0.98` with
+    /// [`RadiationParams::surface_humidity`].
+    Fixed,
+    /// Each layer's mean specific humidity (kg kg⁻¹), distributed within the
+    /// layer with the same profile shape.
+    Layers([f64; 2]),
+}
+
+/// A cloud sheet: an infinitely thin, grey layer of partial cloud at one
+/// level, reflecting sunlight (without absorbing it) and absorbing and
+/// emitting longwave at the local air temperature.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cloud {
+    /// Level σ.
+    pub sigma: f64,
+    /// Share of sunlight reflected (cloud fraction × cloud albedo).
+    pub reflectance: f64,
+    /// Longwave emissivity (cloud fraction × cloud emissivity).
+    pub emissivity: f64,
+}
+
+impl Cloud {
+    /// No cloud.
+    pub const NONE: Self = Self {
+        sigma: 0.5,
+        reflectance: 0.0,
+        emissivity: 0.0,
+    };
+
+    /// A deck at `sigma` reflecting `albedo` of sunlight, transparent to
+    /// longwave (the fixed stand-in for clouds of M2 step 8).
+    pub fn deck(sigma: f64, albedo: f64) -> Self {
+        Self {
+            sigma,
+            reflectance: albedo,
+            emissivity: 0.0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.reflectance == 0.0 && self.emissivity == 0.0
+    }
 }
 
 /// One column's fluxes (W m⁻²) and water (kg m⁻²).
@@ -188,7 +244,7 @@ pub struct Fluxes {
     pub surface_down: f64,
     /// Upward longwave from the surface.
     pub surface_up: f64,
-    /// Water vapour in each layer.
+    /// Water vapour in each layer (kg m⁻²).
     pub water: [f64; 2],
     /// Width of the opaque CO₂ band (cm⁻¹).
     pub co2_width: f64,
@@ -370,104 +426,361 @@ const GAUSS: [(f64, f64); 4] = [
     (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
 ];
 
-/// Per layer: water (kg m⁻²), pressure-weighted water and continuum
-/// absorber amount.
-fn water_columns(
+/// Shape of relative humidity in σ (Manabe & Wetherald 1967): moistest at
+/// the surface, dry at the top.
+fn humidity_shape(sigma: f64) -> f64 {
+    ((sigma - 0.02) / 0.98).max(0.0)
+}
+
+/// Layer-mean Exner functions `(p/p₀)^κ` for surface pressure `ps` and
+/// interface `sigma`.
+fn layer_exner(gas: Gas, sigma: f64, ps: f64) -> [f64; 2] {
+    let kappa = gas.kappa();
+    let pi = sigma * ps;
+    let (ei, es) = (gas.exner(pi), gas.exner(ps));
+    [
+        ei / (1.0 + kappa),
+        (ps * es - pi * ei) / ((1.0 + kappa) * (1.0 - sigma) * ps),
+    ]
+}
+
+/// The temperature profile within the layers: each follows the lapse rate
+/// `Γ` through its mean temperature `Tₖ` at `pₖ` (the pressure whose Exner
+/// function is the layer mean): `T(p) = Tₖ (p/pₖ)^{RΓ/g}`.
+#[derive(Clone, Copy, Debug)]
+struct Profile {
+    temperature: [f64; 2],
+    p_mean: [f64; 2],
+    beta: f64,
+    ps: f64,
+    sigma: f64,
+}
+
+impl Profile {
+    fn new(
+        params: &RadiationParams,
+        gas: Gas,
+        ps: f64,
+        sigma: f64,
+        gravity: f64,
+        t: [f64; 2],
+    ) -> Self {
+        let exner = layer_exner(gas, sigma, ps);
+        Self {
+            temperature: t,
+            p_mean: exner.map(|e| REFERENCE_PRESSURE * fms_math::pow(e, 1.0 / gas.kappa())),
+            beta: gas.gas_constant * params.lapse_rate / gravity,
+            ps,
+            sigma,
+        }
+    }
+
+    fn layer_of(&self, s: f64) -> usize {
+        usize::from(s > self.sigma)
+    }
+
+    fn at(&self, s: f64) -> f64 {
+        self.in_layer(self.layer_of(s), s)
+    }
+
+    /// Layer `k`'s profile at `s` (extended beyond the layer if need be).
+    fn in_layer(&self, k: usize, s: f64) -> f64 {
+        self.temperature[k] * fms_math::pow(s * self.ps / self.p_mean[k], self.beta)
+    }
+}
+
+/// Saturation specific humidity (kg kg⁻¹) at temperature `t` and pressure
+/// `p`.
+pub fn saturation_humidity(t: f64, p: f64) -> f64 {
+    specific_humidity(saturation_pressure(t), p)
+}
+
+/// Each layer's saturation, for the moist physics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerSaturation {
+    /// Mass-weighted mean saturation specific humidity `q̄*` (kg kg⁻¹).
+    pub mean: f64,
+    /// Mass-weighted mean of the humidity profile shape times saturation:
+    /// a layer holding `qₖ` has relative humidity `(qₖ / shaped) ·
+    /// shape(σ)` at each level.
+    pub shaped: f64,
+}
+
+/// Saturation of each layer at layer-mean temperatures `t` (K, upper first),
+/// along the in-layer temperature profile (by Gauss–Legendre quadrature).
+pub fn layer_saturation(
     params: &RadiationParams,
     gas: Gas,
-    column: &Column,
-    exner: [f64; 2],
-) -> [(f64, f64, f64); 2] {
-    let kappa = gas.kappa();
-    let p0 = REFERENCE_PRESSURE;
-    let beta = gas.gas_constant * params.lapse_rate / column.gravity;
-    let bounds = [(0.0, column.sigma), (column.sigma, 1.0)];
+    ps: f64,
+    sigma: f64,
+    gravity: f64,
+    t: [f64; 2],
+) -> [LayerSaturation; 2] {
+    let profile = Profile::new(params, gas, ps, sigma, gravity, t);
+    let bounds = [(0.0, sigma), (sigma, 1.0)];
     std::array::from_fn(|k| {
         let (a, b) = bounds[k];
-        let t_mean = column.theta[k] * exner[k];
-        let p_mean = p0 * fms_math::pow(exner[k], 1.0 / kappa);
-        let (mut w, mut wp, mut wc) = (0.0, 0.0, 0.0);
-        for (x, g) in GAUSS {
-            let sigma = 0.5 * (a + b) + 0.5 * (b - a) * x;
-            let p = sigma * column.ps;
-            let t = t_mean * fms_math::pow(p / p_mean, beta);
-            let rh = (params.surface_humidity * (sigma - 0.02) / 0.98).max(0.0);
-            let e = rh * saturation_pressure(t);
-            let q = specific_humidity(e, p);
-            let mass = 0.5 * g * (b - a) * column.ps / column.gravity;
-            w += mass * q;
-            wp += mass * q * p / p0;
-            wc += mass * q * e.min(0.25 * p) / 1000.0;
+        let (mut mean, mut shaped) = (0.0, 0.0);
+        for (x, w) in GAUSS {
+            let s = 0.5 * (a + b) + 0.5 * (b - a) * x;
+            let q = saturation_humidity(profile.at(s), s * ps);
+            mean += 0.5 * w * q;
+            shaped += 0.5 * w * humidity_shape(s) * q;
         }
-        (w, wp, wc)
+        LayerSaturation { mean, shaped }
     })
+}
+
+/// Specific humidity at the interface relative to each layer's mean, along
+/// each layer's own profile: `[upper layer at its bottom, lower layer at its
+/// top]`. Water is concentrated low in each layer, so the lower layer's air
+/// at the interface holds far less than its mean, and the upper layer's far
+/// more. The dynamics carries humidity across the interface at these values.
+pub fn interface_humidity_ratios(
+    params: &RadiationParams,
+    gas: Gas,
+    ps: f64,
+    sigma: f64,
+    gravity: f64,
+    t: [f64; 2],
+) -> [f64; 2] {
+    let profile = Profile::new(params, gas, ps, sigma, gravity, t);
+    let sat = layer_saturation(params, gas, ps, sigma, gravity, t);
+    std::array::from_fn(|k| {
+        let at =
+            humidity_shape(sigma) * saturation_humidity(profile.in_layer(k, sigma), sigma * ps);
+        if sat[k].shaped > 0.0 {
+            at / sat[k].shaped
+        } else {
+            1.0
+        }
+    })
+}
+
+/// A slab of gas between two levels, within one layer.
+#[derive(Clone, Copy, Debug, Default)]
+struct Slab {
+    layer: usize,
+    top: f64,
+    bottom: f64,
+    /// Water (kg m⁻²), pressure-weighted water and continuum absorber.
+    water: f64,
+    weighted: f64,
+    continuum: f64,
+}
+
+/// One element of the column, top to bottom.
+#[derive(Clone, Copy, Debug)]
+enum Element {
+    Slab(usize),
+    Sheet(usize),
+}
+
+/// The column cut into slabs at the interface and the cloud levels, with
+/// each slab's water: `q(p) = Aₖ · shape(σ) · q*(T(p), p)`, where `Aₖ` is
+/// fixed ([`Humidity::Fixed`]) or set so the layer holds its humidity.
+fn slabs(
+    params: &RadiationParams,
+    column: &Column,
+    sheets: &[Cloud],
+    profile: &Profile,
+) -> (Vec<Slab>, Vec<Element>) {
+    let mut cuts = vec![0.0, column.sigma, 1.0];
+    for c in sheets {
+        if !c.is_empty() && c.sigma > 0.0 && c.sigma < 1.0 {
+            cuts.push(c.sigma);
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup();
+    let mut slabs: Vec<Slab> = cuts
+        .windows(2)
+        .map(|w| Slab {
+            layer: usize::from(w[0] >= column.sigma),
+            top: w[0],
+            bottom: w[1],
+            ..Slab::default()
+        })
+        .collect();
+    // Nodes: (slab, mass, σ, shape × q*).
+    let p0 = REFERENCE_PRESSURE;
+    let mut nodes = Vec::with_capacity(4 * slabs.len());
+    let mut shaped = [0.0; 2];
+    for (j, slab) in slabs.iter().enumerate() {
+        let (a, b) = (slab.top, slab.bottom);
+        for (x, w) in GAUSS {
+            let s = 0.5 * (a + b) + 0.5 * (b - a) * x;
+            let mass = 0.5 * w * (b - a) * column.ps / column.gravity;
+            let q = humidity_shape(s) * saturation_humidity(profile.at(s), s * column.ps);
+            shaped[slab.layer] += mass * q;
+            nodes.push((j, mass, s, q));
+        }
+    }
+    let ds = [column.sigma, 1.0 - column.sigma];
+    let amplitude: [f64; 2] = match column.humidity {
+        Humidity::Fixed => [params.surface_humidity; 2],
+        Humidity::Layers(q) => std::array::from_fn(|k| {
+            let water = q[k].max(0.0) * ds[k] * column.ps / column.gravity;
+            if shaped[k] > 0.0 {
+                water / shaped[k]
+            } else {
+                0.0
+            }
+        }),
+    };
+    for (j, mass, s, q) in nodes {
+        let slab = &mut slabs[j];
+        let q = amplitude[slab.layer] * q;
+        let p = s * column.ps;
+        let e = (q * p / (EPSILON + (1.0 - EPSILON) * q)).min(0.25 * p);
+        slab.water += mass * q;
+        slab.weighted += mass * q * p / p0;
+        slab.continuum += mass * q * e / 1000.0;
+    }
+    // Elements: slabs, with each cloud sheet at its level.
+    let mut elements = Vec::with_capacity(slabs.len() + sheets.len());
+    let mut order: Vec<usize> = (0..sheets.len())
+        .filter(|&c| !sheets[c].is_empty())
+        .collect();
+    order.sort_by(|&a, &b| sheets[a].sigma.total_cmp(&sheets[b].sigma));
+    let mut next = order.into_iter().peekable();
+    for (j, slab) in slabs.iter().enumerate() {
+        while let Some(&c) = next.peek() {
+            if sheets[c].sigma <= slab.top {
+                elements.push(Element::Sheet(c));
+                next.next();
+            } else {
+                break;
+            }
+        }
+        elements.push(Element::Slab(j));
+    }
+    elements.extend(next.map(Element::Sheet));
+    (slabs, elements)
 }
 
 /// Radiative fluxes of one column.
 pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Fluxes {
-    let dsigma = [column.sigma, 1.0 - column.sigma];
-    let kappa = gas.kappa();
-    let p0 = REFERENCE_PRESSURE;
-    // Layer temperatures: θ times the layer-mean Exner function.
-    let exner = {
-        let pi = column.sigma * column.ps;
-        let (ei, es) = (gas.exner(pi), gas.exner(column.ps));
-        [
-            ei / (1.0 + kappa),
-            (column.ps * es - pi * ei) / ((1.0 + kappa) * (1.0 - column.sigma) * column.ps),
-        ]
-    };
-    let water = water_columns(params, gas, column, exner);
+    let exner = layer_exner(gas, column.sigma, column.ps);
     let temperature = [column.theta[0] * exner[0], column.theta[1] * exner[1]];
-
-    // Shortwave: transmissivity of each layer along a path of `m` air masses.
-    let transmit = |k: usize, m: f64| {
-        let ozone = if k == 0 { params.ozone_absorption } else { 0.0 };
-        let vapour = params.near_infrared
-            * (1.0 - fms_math::exp(-m * params.water_absorption * water[k].0.sqrt()));
-        fms_math::exp(-m * ozone) * (1.0 - vapour)
-    };
-    let down = [transmit(0, 1.0 / params.mu), transmit(1, 1.0 / params.mu)];
-    let up = [transmit(0, 1.66), transmit(1, 1.66)];
-    let s = column.insolation.max(0.0);
+    let profile = Profile::new(
+        params,
+        gas,
+        column.ps,
+        column.sigma,
+        column.gravity,
+        temperature,
+    );
+    // The clouds, then the clear air's Rayleigh scattering.
+    let sheets = [
+        column.clouds[0],
+        column.clouds[1],
+        Cloud {
+            sigma: 0.5,
+            reflectance: params.rayleigh,
+            emissivity: 0.0,
+        },
+    ];
+    let (slabs, elements) = slabs(params, column, &sheets, &profile);
+    let mut water = [0.0; 2];
+    for slab in &slabs {
+        water[slab.layer] += slab.water;
+    }
+    let sheet_layer = |c: usize| profile.layer_of(sheets[c].sigma);
     let mut layers = [0.0; 2];
-    // Through the upper layer to the cloud deck at the interface.
-    layers[0] += s * (1.0 - down[0]);
-    let at_cloud = s * down[0];
-    let (ac, as_) = (params.cloud_albedo, params.albedo);
-    // Below the cloud: the direct beam through the lower layer, then
-    // reflections between surface and cloud base (diffuse transmissivity
-    // `up[1]` each pass), summed as a geometric series.
-    let below = (1.0 - ac) * at_cloud;
-    let first = below * down[1];
-    let surface_in = first / (1.0 - as_ * ac * up[1] * up[1]);
-    let rising = as_ * surface_in * up[1];
-    layers[1] +=
-        below * (1.0 - down[1]) + as_ * surface_in * (1.0 - up[1]) + ac * rising * (1.0 - up[1]);
-    let surface_shortwave = (1.0 - as_) * surface_in;
-    // Upward through the upper layer: the cloud's reflection of the beam
-    // from above plus what gets back through the cloud from below.
-    let leaving = ac * at_cloud + (1.0 - ac) * rising;
-    layers[0] += leaving * (1.0 - up[0]);
-    let escaped = leaving * up[0];
 
-    // Longwave, interval by interval.
+    // Shortwave. Each layer's transmissivity along a path of `m` air masses
+    // (ozone in its top slab, saturating near-infrared water absorption),
+    // shared among its slabs in proportion to their water.
+    let layer_transmit = |k: usize, m: f64| {
+        let vapour = params.near_infrared
+            * (1.0 - fms_math::exp(-m * params.water_absorption * water[k].sqrt()));
+        1.0 - vapour
+    };
+    let slab_transmit = |j: usize, m: f64| {
+        let slab = &slabs[j];
+        let share = if water[slab.layer] > 0.0 {
+            slab.water / water[slab.layer]
+        } else {
+            (slab.bottom - slab.top)
+                / if slab.layer == 0 {
+                    column.sigma
+                } else {
+                    1.0 - column.sigma
+                }
+        };
+        let ozone = if j == 0 { params.ozone_absorption } else { 0.0 };
+        fms_math::exp(-m * ozone) * fms_math::pow(layer_transmit(slab.layer, m), share)
+    };
+    // Per element: reflectance and direct and diffuse transmissivities.
+    let optics: Vec<(f64, f64, f64)> = elements
+        .iter()
+        .map(|e| match *e {
+            Element::Slab(j) => (
+                0.0,
+                slab_transmit(j, 1.0 / params.mu),
+                slab_transmit(j, 1.66),
+            ),
+            Element::Sheet(c) => {
+                let r = sheets[c].reflectance;
+                (r, 1.0 - r, 1.0 - r)
+            }
+        })
+        .collect();
+    let n = elements.len();
+    let s = column.insolation.max(0.0);
+    // Adding method. Direct beam down; diffuse reflectance R̃ of everything
+    // below each interface, and the diffuse light U leaving each interface
+    // upward that the direct beam generates below it.
+    let mut direct = vec![0.0; n + 1];
+    direct[0] = s;
+    for (j, &(_, t_dir, _)) in optics.iter().enumerate() {
+        direct[j + 1] = direct[j] * t_dir;
+    }
+    let albedo = params.albedo;
+    let mut reflect = vec![0.0; n + 1];
+    let mut rising = vec![0.0; n + 1];
+    reflect[n] = albedo;
+    rising[n] = albedo * direct[n];
+    for j in (0..n).rev() {
+        let (r, _, t) = optics[j];
+        let denom = 1.0 - r * reflect[j + 1];
+        reflect[j] = r + t * t * reflect[j + 1] / denom;
+        rising[j] = t * rising[j + 1] / denom + r * direct[j];
+    }
+    let mut down = vec![0.0; n + 1];
+    for j in 0..n {
+        let (r, _, t) = optics[j];
+        down[j + 1] = (t * down[j] + r * rising[j + 1]) / (1.0 - r * reflect[j + 1]);
+    }
+    let up = |j: usize, down: &[f64]| reflect[j] * down[j] + rising[j];
+    for (j, e) in elements.iter().enumerate() {
+        if let Element::Slab(i) = *e {
+            let (_, _, t) = optics[j];
+            let absorbed = (direct[j] - direct[j + 1]) + (1.0 - t) * (down[j] + up(j + 1, &down));
+            layers[slabs[i].layer] += absorbed;
+        }
+    }
+    let surface_shortwave = (1.0 - albedo) * (down[n] + direct[n]);
+    let escaped = up(0, &down);
+
+    // Longwave, interval by interval. Edge temperatures: the lower layer
+    // follows the convective lapse rate through its mean, up to the
+    // interface and down to the surface air; the upper layer's top is at
+    // its own mean temperature (an isothermal, stratosphere-like cap).
     let width = co2_band_width(params, column);
     let ts = column.surface_temperature;
     let black = |t: f64| STEFAN_BOLTZMANN * t * t * t * t;
     let (mut outgoing, mut surface_down) = (0.0, 0.0);
     let mut surface_up = 0.0;
-    // Edge temperatures: the lower layer follows the convective lapse rate
-    // through its mean, up to the interface and down to the surface air; the
-    // upper layer's top is at its own mean temperature (an isothermal,
-    // stratosphere-like cap).
-    let lower_profile = |p: f64| {
-        let p_mean = p0 * fms_math::pow(exner[1], 1.0 / kappa);
-        let beta = gas.gas_constant * params.lapse_rate / column.gravity;
-        temperature[1] * fms_math::pow(p / p_mean, beta)
-    };
-    let interface = lower_profile(column.sigma * column.ps);
-    let surface_air = lower_profile(column.ps);
+    let interface = profile.in_layer(1, column.sigma);
+    let surface_air = profile.in_layer(1, 1.0);
+    let cloud_temperature = sheets.map(|c| profile.at(c.sigma));
+    let ds = [column.sigma, 1.0 - column.sigma];
+    let mut tau = vec![0.0; slabs.len()];
+    let mut emit = vec![(0.0, 0.0); n];
+    let mut rise = vec![0.0; n + 1];
+    let mut fall = vec![0.0; n + 1];
     for (a, b, kind) in intervals(width) {
         let terms: &[(f64, f64)] = match kind {
             Kind::Water | Kind::WaterEdge => &WATER_TERMS,
@@ -476,41 +789,84 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
         // Planck emission of the interval at each layer's edges.
         let planck = |t: f64| black(t) * planck_fraction(a, b, t);
         let middle = planck(interface);
-        // (upper edge, lower edge) of each layer.
         let edges = [
             (planck(temperature[0]), middle),
             (middle, planck(surface_air)),
         ];
+        let sheet_planck = cloud_temperature.map(planck);
         let u_planck = planck(ts);
         for &(share, scale) in terms {
-            let tau: [f64; 2] = std::array::from_fn(|k| match kind {
-                Kind::Co2 => params.co2_opacity * dsigma[k],
-                Kind::Window => params.continuum_opacity * water[k].2,
-                Kind::Water => scale * params.water_opacity * water[k].1,
-                Kind::WaterEdge => scale * params.water_edge * params.water_opacity * water[k].1,
-            });
-            let trans = tau.map(|t| fms_math::exp(-t));
-            // Emission up (from the layer top) and down (from its bottom) for
-            // a source linear in optical depth.
-            let emit: [(f64, f64); 2] = std::array::from_fn(|k| {
-                let (b_top, b_bottom) = edges[k];
-                let slope = linear_source_term(tau[k], trans[k]) * (b_bottom - b_top);
-                (
-                    share * ((1.0 - trans[k]) * b_top + slope),
-                    share * ((1.0 - trans[k]) * b_bottom - slope),
-                )
-            });
+            let mut layer_tau = [0.0; 2];
+            for (t, slab) in tau.iter_mut().zip(&slabs) {
+                *t = match kind {
+                    Kind::Co2 => params.co2_opacity * (slab.bottom - slab.top),
+                    Kind::Window => params.continuum_opacity * slab.continuum,
+                    Kind::Water => scale * params.water_opacity * slab.weighted,
+                    Kind::WaterEdge => {
+                        scale * params.water_edge * params.water_opacity * slab.weighted
+                    }
+                };
+                layer_tau[slab.layer] += *t;
+            }
+            // Emission of each element up (from its top) and down (from its
+            // bottom). A slab's source is linear in optical depth across its
+            // layer, so its edges' values are interpolated in τ.
+            let mut above = [0.0; 2];
+            for (j, e) in elements.iter().enumerate() {
+                emit[j] = match *e {
+                    Element::Slab(i) => {
+                        let slab = &slabs[i];
+                        let k = slab.layer;
+                        let (b_top, b_bottom) = edges[k];
+                        // Position of the slab's edges within its layer, in
+                        // optical depth (or σ, if the layer is transparent).
+                        let (x0, x1) = if layer_tau[k] > 1e-12 {
+                            (above[k] / layer_tau[k], (above[k] + tau[i]) / layer_tau[k])
+                        } else {
+                            let top = if k == 0 { 0.0 } else { column.sigma };
+                            ((slab.top - top) / ds[k], (slab.bottom - top) / ds[k])
+                        };
+                        above[k] += tau[i];
+                        let (top, bottom) = (
+                            b_top + (b_bottom - b_top) * x0,
+                            b_top + (b_bottom - b_top) * x1,
+                        );
+                        let t = fms_math::exp(-tau[i]);
+                        let slope = linear_source_term(tau[i], t) * (bottom - top);
+                        (
+                            share * ((1.0 - t) * top + slope),
+                            share * ((1.0 - t) * bottom - slope),
+                        )
+                    }
+                    Element::Sheet(c) => {
+                        let e = sheets[c].emissivity * share * sheet_planck[c];
+                        (e, e)
+                    }
+                };
+            }
+            let transmit = |j: usize| match elements[j] {
+                Element::Slab(i) => fms_math::exp(-tau[i]),
+                Element::Sheet(c) => 1.0 - sheets[c].emissivity,
+            };
+            // Upward: surface → … → space; downward: space → … → surface.
             let u_surface = share * u_planck;
-            // Upward: surface → lower layer → upper layer → space.
-            let u_mid = u_surface * trans[1] + emit[1].0;
-            let u_top = u_mid * trans[0] + emit[0].0;
-            // Downward: space → upper → lower → surface.
-            let d_mid = emit[0].1;
-            let d_surface = d_mid * trans[1] + emit[1].1;
-            layers[0] += (1.0 - trans[0]) * u_mid - emit[0].0 - emit[0].1;
-            layers[1] += (1.0 - trans[1]) * (u_surface + d_mid) - emit[1].0 - emit[1].1;
-            outgoing += u_top;
-            surface_down += d_surface;
+            rise[n] = u_surface;
+            for j in (0..n).rev() {
+                rise[j] = rise[j + 1] * transmit(j) + emit[j].0;
+            }
+            fall[0] = 0.0;
+            for j in 0..n {
+                fall[j + 1] = fall[j] * transmit(j) + emit[j].1;
+            }
+            for (j, e) in elements.iter().enumerate() {
+                let k = match *e {
+                    Element::Slab(i) => slabs[i].layer,
+                    Element::Sheet(c) => sheet_layer(c),
+                };
+                layers[k] += (1.0 - transmit(j)) * (rise[j + 1] + fall[j]) - emit[j].0 - emit[j].1;
+            }
+            outgoing += rise[0];
+            surface_down += fall[n];
             surface_up += u_surface;
         }
     }
@@ -521,7 +877,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
         surface_shortwave,
         surface_down,
         surface_up,
-        water: [water[0].0, water[1].0],
+        water,
         co2_width: width,
     }
 }
@@ -539,6 +895,8 @@ mod tests {
             gravity: 9.81,
             insolation: 340.0,
             co2: 400.0,
+            humidity: Humidity::Fixed,
+            clouds: [Cloud::deck(0.5, 0.33), Cloud::NONE],
         }
     }
 
@@ -630,5 +988,65 @@ mod tests {
         // nearly equal steps per doubling.
         let (a, b, c) = (olr(200.0), olr(400.0), olr(800.0));
         assert!(((a - b) / (b - c) - 1.0).abs() < 0.1, "{a} {b} {c}");
+    }
+
+    #[test]
+    fn an_invisible_sheet_changes_nothing() {
+        // Cutting the layers at extra levels changes only the quadrature of
+        // the water profile: the slabs' sources are linear in optical depth
+        // across each layer either way.
+        let params = RadiationParams::default();
+        let mut c = earthlike();
+        c.humidity = Humidity::Layers([3e-4, 6e-3]);
+        c.clouds = [Cloud::NONE; 2];
+        let plain = column_fluxes(&params, Gas::EARTH_AIR, &c);
+        let faint = |sigma| Cloud {
+            sigma,
+            reflectance: 1e-300,
+            emissivity: 1e-300,
+        };
+        c.clouds = [faint(0.25), faint(0.8)];
+        let cut = column_fluxes(&params, Gas::EARTH_AIR, &c);
+        for (a, b) in [
+            (plain.outgoing, cut.outgoing),
+            (plain.absorbed, cut.absorbed),
+            (plain.surface_down, cut.surface_down),
+            (plain.layers[0], cut.layers[0]),
+            (plain.layers[1], cut.layers[1]),
+            (plain.water[1], cut.water[1]),
+        ] {
+            assert!((a - b).abs() < 0.05 + 1e-3 * a.abs(), "{a} vs {b}");
+        }
+        // The layer holds exactly the water it was given.
+        assert!((cut.water[1] - 6e-3 * 0.5 * c.ps / c.gravity).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clouds_reflect_trap_and_keep_the_budget() {
+        let params = RadiationParams::default();
+        let mut c = earthlike();
+        c.humidity = Humidity::Layers([3e-4, 6e-3]);
+        c.clouds = [Cloud::NONE; 2];
+        let clear = column_fluxes(&params, Gas::EARTH_AIR, &c);
+        c.clouds = [
+            Cloud {
+                sigma: 0.25,
+                reflectance: 0.2,
+                emissivity: 0.6,
+            },
+            Cloud {
+                sigma: 0.8,
+                reflectance: 0.3,
+                emissivity: 0.7,
+            },
+        ];
+        let cloudy = column_fluxes(&params, Gas::EARTH_AIR, &c);
+        assert!(cloudy.absorbed < clear.absorbed - 50.0);
+        assert!(cloudy.outgoing < clear.outgoing - 10.0);
+        // Low cloud radiates down onto the surface.
+        assert!(cloudy.surface_down > clear.surface_down);
+        let net = cloudy.absorbed - cloudy.outgoing;
+        let heating = cloudy.layers[0] + cloudy.layers[1] + cloudy.surface();
+        assert!((net - heating).abs() < 1e-10, "{net} vs {heating}");
     }
 }

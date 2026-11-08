@@ -32,7 +32,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 | Sphere grid | Icosahedral geodesic grid (Voronoi hexagons + 12 pentagons) | Cells are nearly uniform with no pole singularity; standard for finite-volume models (ICON, MPAS) |
 | Climate fidelity | Simplified GCM ("GCM-lite"): actual fluid dynamics | Weather emerges from the physics instead of being scripted |
 | Atmosphere | 2-layer primitive-equation model | Smallest model that produces Hadley and Ferrel cells, jets and storms on its own |
-| Ocean | Slab mixed layer + wind-driven surface currents + thermodynamic sea ice | Ocean heat transport (western boundary currents) matters for coastal climates |
+| Ocean | Two-layer dynamical slab (Ekman/Sverdrup, eddy and diffusive heat transport) + wind-driven gyres + thermodynamic sea ice | Ocean heat transport (western boundary currents) matters for coastal climates |
 | Compute | CPU with rayon first, GPU (wgpu compute) later | Easier to debug the physics; data is laid out as struct-of-arrays so it can be ported |
 | Time stepping | Semi-implicit GCM; base step derived from the CFL limit (~20–30 min at default resolution); slower subsystems run every N steps | Stable and affordable; resolves the day/night cycle |
 | Day length | "1 day" = the planet's solar day (one day/night cycle) | Speed 1 always shows one day/night cycle per second |
@@ -229,15 +229,44 @@ crates never depend on `app`. Everything except `app` runs headless.
   cloud deck at the layer interface, and the surface albedo. Calibrated in a
   single column against Earth's global-mean column; see `crates/atmos/src/radiation.rs`
   and [OBSERVATIONS.md](OBSERVATIONS.md) O-19, O-20.
+- **Moisture** (decided at M2.9): each layer carries its mean specific
+  humidity (mass-weighted, like θ), moved by flux-corrected transport
+  (Zalesak 1979) around the leapfrog step, so it stays positive and water is
+  conserved to round-off. Within a layer, relative humidity has the
+  Manabe–Wetherald shape scaled to the layer's water, and humidity crosses
+  the interface at the profiles' values there. Physics: Betts–Miller
+  convection relaxing towards the moist adiabat of a surface-air parcel
+  (deep, raining, or shallow, redistributing), large-scale condensation
+  above calibrated layer humidities, re-evaporation of falling rain, rain or
+  snow by surface air temperature, and evaporation from the slab by bulk
+  formula. Two cloud sheets (high and low) from the layers' relative
+  humidity plus convective anvils, acting on sunlight and longwave. See
+  `crates/atmos/src/moisture.rs` and [OBSERVATIONS.md](OBSERVATIONS.md)
+  O-22–O-26.
 - **Semi-implicit time stepping** (as in SPEEDY): fast gravity waves are solved
   implicitly, so the timestep is limited by advection (winds) rather than wave speed.
   At the default resolution this gives a base step of ~20–30 min. See §4.6.
 
 ### 4.3 Ocean
-- Mixed-layer heat budget, with a mixed-layer depth that can vary by region.
-- Wind-driven surface currents from wind stress and Coriolis (Ekman/Sverdrup-style
-  balance), with heat carried along by the currents.
-- Thermodynamic sea ice: grows and melts, and its albedo feeds back into climate.
+(Decided at M2.9.) A dynamical slab ocean after Codron (2012) and Bhatnagar
+et al. (2026), plus a wind-driven gyre:
+- **Two layers** per ocean cell: a mixed layer (50 m) exchanging heat with the
+  atmosphere, over a deep layer (150 m), both prognostic temperatures. A
+  fixed mixed-layer depth to start (regional depths are a later refinement).
+- **Heat transport**, all as mass or heat fluxes across cell edges so the
+  ocean's budget closes exactly: Ekman transport from the surface wind
+  stress (frictional, blending into Sverdrup near the equator) with the deep
+  layer's return flow and the vertical exchange it implies; Gent–McWilliams
+  eddy transport along the isotherm slope; horizontal diffusion; convective
+  adjustment. Coefficients follow the paper for Earth's rotation and scale
+  with the deformation radius on other planets.
+- **Gyres**: a barotropic Stommel–Munk streamfunction from the wind-stress
+  curl over each basin, for western boundary currents (which shape coastal
+  climates) and the ocean-current map. Beyond the paper, which has none.
+- **Sea ice**: thermodynamic (no drift); a prognostic surface temperature with
+  a linear profile, snow on ice, and a thickness-dependent albedo in visible
+  and near-infrared light. Salinity only sets the freezing point; no
+  density-driven overturning.
 
 ### 4.4 Hydrology (fine grid)
 - Precipitation minus evaporation gives runoff, which is routed downhill along

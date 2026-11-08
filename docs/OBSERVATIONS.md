@@ -29,8 +29,13 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-17 | [Zig-zag vertex modes limit explicit hyperdiffusion](#o-17-zig-zag-vertex-modes-limit-explicit-hyperdiffusion) | Numerics | Accepted |
 | O-18 | [Two layers have no surface wind](#o-18-two-layers-have-no-surface-wind) | Dynamics | Scheduled: M2 step 10 |
 | O-19 | [Radiation is calibrated, not resolved](#o-19-radiation-is-calibrated-not-resolved) | Radiation | Accepted |
-| O-20 | [No cloud or ice feedbacks yet](#o-20-no-cloud-or-ice-feedbacks-yet) | Radiation | Scheduled: M2 steps 9–11 |
+| O-20 | [No cloud or ice feedbacks yet](#o-20-no-cloud-or-ice-feedbacks-yet) | Radiation | Scheduled: M2 steps 10–11 (clouds done in step 9) |
 | O-21 | [Dissipated kinetic energy leaks out of the planet](#o-21-dissipated-kinetic-energy-leaks-out-of-the-planet) | Energy | Scheduled: M2 step 10 |
+| O-22 | [The subtropics rain out their own evaporation](#o-22-the-subtropics-rain-out-their-own-evaporation) | Moisture | Scheduled: M2 step 10 |
+| O-23 | [An ice-free aquaplanet runs ~9 K warmer than Earth](#o-23-an-ice-free-aquaplanet-runs-9-k-warmer-than-earth) | Climate | Scheduled: M2 steps 11–12, 15 |
+| O-24 | [The water cycle is too strong](#o-24-the-water-cycle-is-too-strong) | Moisture | Scheduled: M2 step 15 |
+| O-25 | [Clouds are calibrated from layer-mean humidity](#o-25-clouds-are-calibrated-from-layer-mean-humidity) | Clouds | Accepted |
+| O-26 | [Strong easterlies aloft at the equator](#o-26-strong-easterlies-aloft-at-the-equator) | Dynamics | Watching |
 
 ---
 
@@ -342,20 +347,32 @@ values from spectroscopy:
 - **Convective lapse rate** 4.4 K/km between the layer means, not 6.5: the
   upper layer (0–500 hPa) includes the stratosphere, so Earth's observed
   layer means (272 and 226 K, 10.5 km apart) sit at 4.4. It is fixed, so
-  there is no lapse-rate feedback (the moist adiabat flattening as the
-  surface warms, about −0.5 W/m²/K on Earth). Within the lower layer the
-  water-vapour profile and surface air follow 6.5 K/km.
+  the single column has no lapse-rate feedback (the moist adiabat
+  flattening as the surface warms, about −0.5 W/m²/K on Earth). Since M2
+  step 9 the 3-D model convects towards the moist adiabat instead, and has
+  it; 4.4 K/km still extrapolates the lower layer to the surface air.
+- **In-layer lapse rate** 6.5 K/km for the radiation's temperature and
+  water-vapour profiles. Through the lower layer's mean this puts its
+  radiating bottom ~5 K above the surface air (extrapolated at 4.4 K/km).
+  Making the two consistent (M2 step 9 check) cuts downward longwave at the
+  surface by 26 W/m², well below Earth's; restoring it needs more
+  continuum, which makes the surface's longwave even more sensitive to
+  warming (O-24). So 6.5 K/km is effectively a calibrated value too.
 - **Water vapour's spectrum** is two regions (band cores, and weak edges
   where CO₂'s wings lie), each a four-term k-distribution, plus a window
   continuum. Calibrating this mattered more than anything else: one grey
   water band gave a runaway (outgoing longwave collapses once it turns
   opaque); a too-strong continuum cut the clear-sky feedback from ~2 to
   ~0.5 W/m²/K.
-- **Cloud reflection** is a fixed deck at the layer interface (O-20).
+- **Cloud reflection** in the single column is a fixed deck at the layer
+  interface (albedo 0.27); the 3-D model diagnoses its clouds (O-25).
+- **Rayleigh scattering** (added at M2 step 9) is one non-absorbing sheet
+  at the atmosphere's mass centre reflecting 6% of sunlight: an aquaplanet's
+  clear sky then has an albedo of ~0.08, as Earth's oceans do. It doesn't
+  yet scale with the column's mass.
 
-Also simplified: no Rayleigh scattering (thick atmospheres are too dark and
-so too warm), vapour pressure capped at a quarter of the air pressure (very
-hot planets), and latent heat released at once wherever water evaporates.
+Also simplified: vapour pressure capped at a quarter of the air pressure
+(very hot planets).
 
 **Why it's acceptable:** with them, the single column reproduces Earth's
 global mean: surface 287 K, layers 232/274 K, outgoing longwave 247 W/m²,
@@ -367,7 +384,8 @@ monotonic, finite climates across the planet parameters' full ranges
 **Revisit if:** fantasy settings far from Earth (dense CO₂ atmospheres, hot
 or very thin ones) need to be quantitatively right. Then a correlated-k
 scheme fitted to line-by-line spectra would replace the effective
-parameters, and adding Rayleigh scattering would fix thick atmospheres.
+parameters, and Rayleigh scattering would scale with the air's mass (thick
+atmospheres are now too dark, and so too warm).
 
 ### O-20: No cloud or ice feedbacks yet
 
@@ -383,6 +401,11 @@ ice-albedo and cloud feedbacks.
 
 **Plan:** M2 step 9 diagnoses clouds from humidity and condensation and
 replaces the fixed deck; steps 10–11 add snow and sea ice with their albedo.
+
+**Update (M2.9):** done for clouds: the 3-D model's clouds now come from
+humidity and convection and act on both sunlight and longwave (O-25). Snow
+falls (and is reported) but doesn't yet lie anywhere; ice and snow cover
+remain for steps 10–11.
 
 ### O-21: Dissipated kinetic energy leaks out of the planet
 
@@ -403,4 +426,121 @@ interpreting small climate changes.
 the dissipated kinetic energy as heat there (frictional heating in the lower
 layer, and the diffusion's loss spread where it occurs), so the top of the
 atmosphere balances in equilibrium.
+
+### O-22: The subtropics rain out their own evaporation
+
+**Seen (M2.9):** in the aquaplanet the Hadley circulation is about Earth's
+strength (lower-layer flow toward the equator of ~0.35 m/s at 15°, an
+overturning of ~70×10⁹ kg/s per hemisphere), and the equator rains
+~6.5 mm/day, near Earth's zonal mean. But the subtropics rain 4.4 mm/day
+(Earth: ~2) and so do the midlatitudes: rain is nearly flat from 45° S to
+45° N, and the subtropics rain out ~75% of their own evaporation instead of
+exporting it to the rain belt. Neither the convection scheme nor its
+humidity settings change this (four variants tried: faster convection, a
+diluted (entraining) parcel, higher condensation thresholds, a moister
+convective reference).
+
+**Why:** on Earth the subtropics' water stays in a ~1.5 km boundary layer
+under the trade-wind inversion, where it makes shallow, barely raining
+cumulus, and the trades carry it to the equator. The model's lower layer is
+the whole 500–1000 hPa slab, so evaporation is mixed through half the
+atmosphere at once and condenses where it rose; the same missing boundary
+layer gives the weak surface winds of O-18.
+
+**Why it's acceptable for now:** the water budget and the large-scale
+circulation are right; this is where rain falls, and land (M2 step 10)
+reshapes it anyway. But without a fix the world has no subtropical deserts.
+
+**Plan:** M2 step 10, together with O-18: a boundary layer (a profile
+under the lower layer, or a thin third layer) that holds the evaporated
+water near the surface. Check that the subtropics then rain ≲2 mm/day.
+
+### O-23: An ice-free aquaplanet runs ~9 K warmer than Earth
+
+**Seen (M2.9):** with Earth's orbit and CO₂ and Earth-like clouds and
+humidity, the 3-D aquaplanet settles at ~297 K after 5 years (Earth: 288;
+still warming ~0.1 K/year), with the tropics at ~301 K (Earth's oceans
+~300) and the poles at ~279 K (Earth's ~250 under ice). Its planetary albedo
+is Earth's (0.29), but its clear
+sky is a dark ocean everywhere (albedo ~0.08, Earth's ~0.15 with ice, snow
+and deserts), and without ice there is no ice–albedo feedback to cool the
+high latitudes.
+
+**Why it's acceptable for now:** it is what an ice-free Earth-like
+aquaplanet should do, and the cloud parameters were calibrated for
+realistic clouds, humidity and cloud radiative effects rather than to force
+288 K. Forcing it now would leave the clouds wrong once land and ice
+arrive.
+
+Without ocean heat transport the slab also can't cool the tropics or warm
+the poles.
+
+**Plan:** M2 steps 10–12 add land, snow, sea ice and ocean heat transport
+(which cools an aquaplanet's equator by ~8 K and moves its ice edge
+10–15° poleward; Bhatnagar et al. 2026); M2 step 15's tuning pass then
+checks the global mean against Earth's 288 K.
+
+### O-24: The water cycle is too strong
+
+**Seen (M2.9):** the aquaplanet evaporates and rains ~4.7 mm/day (latent
+heat ~138 W/m²; Earth ~2.7–3 mm/day, ~85 W/m²) and its sensible heat flux
+is small (~9 W/m²; Earth ~20). The surface absorbs Earth's ~160 W/m² of
+sunlight, but loses only ~13 W/m² of net longwave (Earth: ~55; ~30 under
+clear skies, so the clear sky is most of it), and the rest must leave by
+evaporation. Partly that is the warm, moist aquaplanet
+(O-23); partly the radiation: in the single column, downward longwave at
+the surface rises ~8 W/m² per kelvin of warming at fixed relative humidity,
+~30% more than Earth-like models (~6), mostly through the window
+continuum, and evaporation rises ~5.5%/K (models: 2–3%/K). The single
+column's clear-sky surface budget itself matches Earth's (downward 299 W/m²
+and net loss 82 W/m² at 286 K; Earth ~314 and ~84 at 288 K).
+
+**Why it's acceptable for now:** the budgets close, and the excess is
+largest in the warm aquaplanet that land and ice will cool.
+
+**Plan:** M2 step 15's tuning pass. Options: a boundary-layer sublayer in the
+radiation (which would let the continuum act on the near-surface air
+alone), or recalibrating the continuum against both the surface and
+top-of-atmosphere budgets.
+
+### O-25: Clouds are calibrated from layer-mean humidity
+
+**Seen (M2.9):** the 3-D model's two cloud sheets (high at σ = 0.25, low at
+0.8) take their cover from each layer's mean relative humidity (linear
+between two bounds) plus anvils from convective rain. The bounds,
+albedos, emissivities and the large-scale condensation thresholds are
+calibrated so that layer humidities match the radiation's calibration
+(0.31 upper, 0.63 lower) and cover (~0.64), planetary albedo (~0.30) and
+cloud radiative effects (−70 shortwave, +15 longwave W/m²) are Earth-like
+for an aquaplanet. Cover was very sensitive to the formula: SPEEDY's
+quadratic, with the overcast bound at 0.8, gave a cold (277 K), 89%-cloudy
+planet with almost no circulation, through a feedback loop (cloud cools the
+surface, convection stops, the lower layer fills to its condensation
+threshold, more cloud). The linear ramp is gentler near saturation.
+The longwave effect is about half of Earth's (+28).
+
+**Why it's acceptable:** a two-layer model can't resolve cloud layers; its
+cloud scheme is necessarily a calibrated diagnosis, and its cloud feedback
+under climate change follows the layers' humidity, so it is not a
+prediction.
+
+**Revisit if:** the climate's response to CO₂ or orbit matters
+quantitatively (cloud feedback), or M2 step 15's benchmark shows the
+cloud pattern off. Low stratocumulus under subsidence inversions (absent:
+they need a boundary layer, O-22) would be the first addition.
+
+### O-26: Strong easterlies aloft at the equator
+
+**Seen (M2.9):** the aquaplanet's upper layer blows from the east at
+~26 m/s over the equator (Earth: ~5). The jets (24 m/s at 45°) and the
+lower layer's trades and westerlies are reasonable.
+
+**Why it's acceptable for now:** it doesn't visibly affect the rain belt
+or temperatures. A likely cause is that convection mixes heat and water
+between the layers but not momentum (convective momentum transport, which
+brakes upper-level winds in the tropics on Earth).
+
+**Revisit if:** the equatorial winds start to matter (tropical waves,
+monsoons, M2 step 15), by mixing momentum between the layers along with
+the convective mass exchange.
 

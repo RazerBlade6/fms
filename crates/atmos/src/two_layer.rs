@@ -14,8 +14,11 @@
 //! - `p_s` surface pressure at cells (Pa)
 //! - `uₖ` normal wind at edges in each layer (m s⁻¹)
 //! - `Θₖ = p_s θₖ`, mass-weighted potential temperature at cells (Pa K)
+//! - optionally `Qₖ = p_s qₖ`, mass-weighted specific humidity at cells (Pa),
+//!   carried like `Θ` (see [`crate::transport`] for the semi-implicit
+//!   stepper's positive-definite scheme)
 //!
-//! Mass and `Θ` are linear invariants of the equations, so RK4 conserves
+//! Mass, `Θ` and `Q` are linear invariants of the equations, so RK4 conserves
 //! their totals to round-off.
 //!
 //! # Equations (per layer k)
@@ -25,6 +28,7 @@
 //! ∂p_s/∂t      = −(D₀ + D₁)
 //! W            = σᵢ D₁ − (1 − σᵢ) D₀           (p_s σ̇ at the interface, downward)
 //! δσₖ ∂Θₖ/∂t   = −∇·(Fₖ θₖ,ₑ) ∓ W θ̂             (− for the upper layer)
+//! δσₖ ∂Qₖ/∂t   = −∇·(Fₖ qₖ,ₑ) ∓ W q̂             (q̂: see below)
 //! ∂uₖ/∂t       = qₖ F⊥ₖ − ∇(Kₖ + Φₖ) − c_p θₖ,ₑ ∇Pₖ + Vₖ
 //! V₀ = −Wₑ (u₁ − u₀) / (2 δp₀,ₑ),   V₁ = Wₑ (u₀ − u₁) / (2 δp₁,ₑ)
 //! ```
@@ -39,7 +43,12 @@
 //! P₀ = Πᵢ / (1 + κ),   P₁ = (p_s Π_s − pᵢ Πᵢ) / ((1 + κ) δp₁)
 //! ```
 //!
-//! and the geopotentials are
+//! Humidity is concentrated low in each layer, so across the interface it is
+//! carried at the interface values of the layers' own profiles
+//! ([`crate::radiation::interface_humidity_ratios`]): the mean of the two
+//! here, the upwind one in the semi-implicit stepper's positive scheme.
+//!
+//! The geopotentials are
 //!
 //! ```text
 //! X  = (c_p κ / p_s) Σₖ δpₖ θₖ Pₖ
@@ -59,6 +68,7 @@ use rayon::prelude::*;
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};
 use crate::forcing::{EnergyTerms, Forcing};
 use crate::helmholtz::dot;
+use crate::radiation::{RadiationParams, interface_humidity_ratios};
 
 /// Reference pressure for potential temperature (Pa).
 pub const REFERENCE_PRESSURE: f64 = 1.0e5;
@@ -99,13 +109,55 @@ pub struct TwoLayerState {
     pub u: [Vec<f64>; 2],
     /// Mass-weighted potential temperature `p_s θ` at cells, per layer (Pa K).
     pub theta_ps: [Vec<f64>; 2],
+    /// Mass-weighted specific humidity `p_s q` at cells, per layer (Pa);
+    /// empty for a dry atmosphere.
+    pub q_ps: [Vec<f64>; 2],
 }
 
 impl TwoLayerState {
-    /// A state from surface pressure, winds and potential temperatures.
+    /// A dry state from surface pressure, winds and potential temperatures.
     pub fn new(ps: Vec<f64>, u: [Vec<f64>; 2], theta: [Vec<f64>; 2]) -> Self {
         let theta_ps = theta.map(|t| t.iter().zip(&ps).map(|(t, p)| t * p).collect());
-        Self { ps, u, theta_ps }
+        Self {
+            ps,
+            u,
+            theta_ps,
+            q_ps: [Vec::new(), Vec::new()],
+        }
+    }
+
+    /// The state with specific humidity `q` per layer (kg kg⁻¹).
+    ///
+    /// # Panics
+    /// If a layer's length doesn't match the cells.
+    pub fn with_humidity(mut self, q: [Vec<f64>; 2]) -> Self {
+        for q in &q {
+            assert_eq!(q.len(), self.ps.len(), "one humidity per cell");
+        }
+        self.q_ps = q.map(|q| q.iter().zip(&self.ps).map(|(q, p)| q * p).collect());
+        self
+    }
+
+    /// Whether the state carries humidity.
+    pub fn is_moist(&self) -> bool {
+        !self.q_ps[0].is_empty()
+    }
+
+    /// Specific humidity of layer `k` (kg kg⁻¹; empty when dry).
+    pub fn humidity(&self, k: usize) -> Vec<f64> {
+        self.q_ps[k]
+            .iter()
+            .zip(&self.ps)
+            .map(|(q, p)| q / p)
+            .collect()
+    }
+
+    /// The same state without humidity.
+    pub fn dry(&self) -> Self {
+        Self {
+            q_ps: [Vec::new(), Vec::new()],
+            ..self.clone()
+        }
     }
 
     /// Potential temperature of layer `k` (K).
@@ -117,28 +169,42 @@ impl TwoLayerState {
             .collect()
     }
 
-    fn zeros(n_cells: usize, n_edges: usize) -> Self {
+    fn dry_zeros(n_cells: usize, n_edges: usize) -> Self {
+        Self::new(
+            vec![0.0; n_cells],
+            [vec![0.0; n_edges], vec![0.0; n_edges]],
+            [vec![0.0; n_cells], vec![0.0; n_cells]],
+        )
+    }
+
+    /// Zeros shaped like `like` (moist if it is).
+    pub(crate) fn zeros_like(like: &Self) -> Self {
+        let z = |v: &Vec<f64>| vec![0.0; v.len()];
         Self {
-            ps: vec![0.0; n_cells],
-            u: [vec![0.0; n_edges], vec![0.0; n_edges]],
-            theta_ps: [vec![0.0; n_cells], vec![0.0; n_cells]],
+            ps: z(&like.ps),
+            u: [z(&like.u[0]), z(&like.u[1])],
+            theta_ps: [z(&like.theta_ps[0]), z(&like.theta_ps[1])],
+            q_ps: [z(&like.q_ps[0]), z(&like.q_ps[1])],
         }
     }
 
-    pub(crate) fn parts(&self) -> [&[f64]; 5] {
+    pub(crate) fn parts(&self) -> [&[f64]; 7] {
         [
             &self.ps,
             &self.u[0],
             &self.u[1],
             &self.theta_ps[0],
             &self.theta_ps[1],
+            &self.q_ps[0],
+            &self.q_ps[1],
         ]
     }
 
-    pub(crate) fn parts_mut(&mut self) -> [&mut [f64]; 5] {
+    pub(crate) fn parts_mut(&mut self) -> [&mut [f64]; 7] {
         let [u0, u1] = &mut self.u;
         let [t0, t1] = &mut self.theta_ps;
-        [&mut self.ps, u0, u1, t0, t1]
+        let [q0, q1] = &mut self.q_ps;
+        [&mut self.ps, u0, u1, t0, t1, q0, q1]
     }
 
     /// `self = base + a · tendency`.
@@ -183,6 +249,8 @@ pub struct TwoLayerDiagnostics {
     /// Total energy: kinetic + enthalpy + surface potential (J). Conserved by
     /// the spatial scheme.
     pub energy: f64,
+    /// Total water vapour `Σₖ Σ Aᵢ δσₖ Qₖ / g` (kg; 0 when dry).
+    pub water: f64,
 }
 
 /// Diagnostic fields for one layer.
@@ -234,6 +302,8 @@ pub struct TwoLayer<'a> {
     stage_state: TwoLayerState,
     diffusion: Option<Hyperdiffusion>,
     forcing: Option<Box<dyn Forcing + 'a>>,
+    /// Profile within the layers that sets humidity at the interface.
+    humidity_profile: RadiationParams,
 }
 
 impl<'a> TwoLayer<'a> {
@@ -291,11 +361,38 @@ impl<'a> TwoLayer<'a> {
                 cell_scratch: vec![0.0; nc],
                 edge_scratch: vec![0.0; ne],
             },
-            stages: std::array::from_fn(|_| TwoLayerState::zeros(nc, ne)),
-            stage_state: TwoLayerState::zeros(nc, ne),
+            stages: std::array::from_fn(|_| TwoLayerState::dry_zeros(nc, ne)),
+            stage_state: TwoLayerState::dry_zeros(nc, ne),
             diffusion: None,
             forcing: None,
+            humidity_profile: RadiationParams::default(),
         }
+    }
+
+    /// The model with humidity profiles within the layers following the
+    /// radiation's (its lapse rate and humidity shape): use the forcing's
+    /// radiation parameters. Default: [`RadiationParams::default`].
+    pub fn with_humidity_profile(mut self, radiation: RadiationParams) -> Self {
+        self.humidity_profile = radiation;
+        self
+    }
+
+    /// Per cell: humidity at the interface relative to each layer's mean
+    /// (`[upper at its bottom, lower at its top]`;
+    /// [`crate::radiation::interface_humidity_ratios`]).
+    pub fn interface_ratios(&self, state: &TwoLayerState) -> [Vec<f64>; 2] {
+        interface_ratios(
+            &Parameters {
+                ops: &self.ops,
+                gas: self.gas,
+                sigma: self.sigma,
+                gravity: self.gravity,
+                coriolis: &self.coriolis,
+                surface_geopotential: &self.surface_geopotential,
+                humidity_profile: &self.humidity_profile,
+            },
+            state,
+        )
     }
 
     /// The model with hyperdiffusion ([`crate::diffusion`]). Without it the
@@ -484,8 +581,10 @@ impl<'a> TwoLayer<'a> {
             ops: &self.ops,
             gas: self.gas,
             sigma: self.sigma,
+            gravity: self.gravity,
             coriolis: &self.coriolis,
             surface_geopotential: &self.surface_geopotential,
+            humidity_profile: &self.humidity_profile,
         };
         compute_tendency(params, &mut self.work, state, out);
     }
@@ -503,11 +602,11 @@ impl<'a> TwoLayer<'a> {
 
     /// Forcing tendencies of `state` into `out` (zero without forcing;
     /// `out.ps` is always zero).
-    pub fn forcing_tendency(&self, state: &TwoLayerState, out: &mut TwoLayerState) {
+    pub fn forcing_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState) {
         for x in out.parts_mut() {
             x.fill(0.0);
         }
-        if let Some(f) = &self.forcing {
+        if let Some(f) = &mut self.forcing {
             f.add_tendency(state, out);
         }
     }
@@ -562,10 +661,15 @@ impl<'a> TwoLayer<'a> {
     /// including hyperdiffusion and forcing (and [`Forcing::advance`] at the
     /// end).
     pub fn step(&mut self, state: &mut TwoLayerState, dt: f64) {
+        if self.stage_state.is_moist() != state.is_moist() {
+            self.stages = std::array::from_fn(|_| TwoLayerState::zeros_like(state));
+            self.stage_state = TwoLayerState::zeros_like(state);
+        }
         let Self {
             ops,
             gas,
             sigma,
+            gravity,
             coriolis,
             surface_geopotential,
             work,
@@ -573,21 +677,23 @@ impl<'a> TwoLayer<'a> {
             stage_state,
             diffusion,
             forcing,
-            ..
+            humidity_profile,
         } = self;
         let params = Parameters {
             ops,
             gas: *gas,
             sigma: *sigma,
+            gravity: *gravity,
             coriolis,
             surface_geopotential,
+            humidity_profile,
         };
         let mut full = |x: &TwoLayerState, out: &mut TwoLayerState| {
             compute_tendency(params, work, x, out);
             if let Some(d) = diffusion.as_mut() {
                 d.add_tendency(ops, x, out);
             }
-            if let Some(f) = forcing.as_ref() {
+            if let Some(f) = forcing.as_mut() {
                 f.add_tendency(x, out);
             }
         };
@@ -636,6 +742,7 @@ impl<'a> TwoLayer<'a> {
             ops.kinetic_energy(u, ke);
         }
         let (mut mass, mut th, mut ke, mut energy) = (0.0, 0.0, 0.0, 0.0);
+        let water = self.water(state);
         for i in 0..m.n_cells() {
             let a = g.cell_areas[i] * r2 / self.gravity;
             let ps = state.ps[i];
@@ -655,7 +762,29 @@ impl<'a> TwoLayer<'a> {
             theta: th,
             kinetic_energy: ke,
             energy,
+            water,
         }
+    }
+
+    /// Total water vapour of `state` (kg; 0 when dry).
+    pub fn water(&self, state: &TwoLayerState) -> f64 {
+        self.water_tendency(state)
+    }
+
+    /// Global integral `Σₖ Σ Aᵢ δσₖ xₖ / g` of a humidity field or tendency
+    /// (`x.q_ps`): water in kg, or its rate of change in kg s⁻¹.
+    pub fn water_tendency(&self, x: &TwoLayerState) -> f64 {
+        if !x.is_moist() {
+            return 0.0;
+        }
+        let ops = &self.ops;
+        let a = &ops.geometry().cell_areas;
+        let scale = ops.radius() * ops.radius() / self.gravity;
+        self.dsigma()
+            .iter()
+            .zip(&x.q_ps)
+            .map(|(ds, q)| ds * scale * dot(a, q))
+            .sum()
     }
 
     /// An RK4 time step (s) at Courant number `courant` for the fastest
@@ -685,8 +814,34 @@ struct Parameters<'p, 'a> {
     ops: &'p Operators<'a>,
     gas: Gas,
     sigma: f64,
+    gravity: f64,
     coriolis: &'p [f64],
     surface_geopotential: &'p [f64],
+    humidity_profile: &'p RadiationParams,
+}
+
+fn interface_ratios(params: &Parameters, state: &TwoLayerState) -> [Vec<f64>; 2] {
+    let ratios: Vec<[f64; 2]> = (0..state.ps.len())
+        .into_par_iter()
+        .with_min_len(MIN_CHUNK / 16)
+        .map(|i| {
+            let ps = state.ps[i];
+            let exner = layer_exner(params.gas, params.sigma, ps);
+            let t = [0, 1].map(|k| state.theta_ps[k][i] / ps * exner[k]);
+            interface_humidity_ratios(
+                params.humidity_profile,
+                params.gas,
+                ps,
+                params.sigma,
+                params.gravity,
+                t,
+            )
+        })
+        .collect();
+    [
+        ratios.iter().map(|r| r[0]).collect(),
+        ratios.iter().map(|r| r[1]).collect(),
+    ]
 }
 
 /// Layer Exner functions for surface pressure `ps`.
@@ -723,6 +878,7 @@ fn compute_tendency(
         sigma,
         coriolis,
         surface_geopotential,
+        ..
     } = params;
     let ds = [sigma, 1.0 - sigma];
     let cp = gas.heat_capacity;
@@ -842,6 +998,42 @@ fn compute_tendency(
             .for_each(|(v, q)| *q = (l.vorticity[v] + coriolis[v]) / l.dp_vertex[v]);
         ops.vertex_to_edge(&l.q_vertex, &mut l.q_edge);
         ops.pv_flux(&l.q_edge, &l.flux, &mut l.pv_flux);
+    }
+
+    // Humidity, centred like θ (only where both the state and the output
+    // carry it): δσₖ ∂Qₖ/∂t = −∇·(Fₖ qₖ,ₑ) ∓ W q̂.
+    if state.is_moist() && out.is_moist() {
+        let ratio = interface_ratios(&params, state);
+        let q: [Vec<f64>; 2] = std::array::from_fn(|k| {
+            state.q_ps[k]
+                .par_iter()
+                .with_min_len(MIN_CHUNK)
+                .zip(state.ps.par_iter())
+                .map(|(q, p)| q / p)
+                .collect()
+        });
+        for k in 0..2 {
+            let l = &mut layers[k];
+            ops.cell_to_edge(&q[k], &mut l.theta_edge);
+            edge_scratch
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(e, f)| *f = l.flux[e] * l.theta_edge[e]);
+            ops.divergence(edge_scratch, cell_scratch);
+            let sign = if k == 0 { -1.0 } else { 1.0 };
+            let (q, ratio) = (&q, &ratio);
+            out.q_ps[k]
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(i, d)| {
+                    let q_hat = 0.5 * (ratio[0][i] * q[0][i] + ratio[1][i] * q[1][i]);
+                    *d = (-cell_scratch[i] + sign * w[i] * q_hat) / ds[k];
+                });
+            // Restore θ at edges for the momentum equation below.
+            ops.cell_to_edge(&l.theta, &mut l.theta_edge);
+        }
     }
 
     // Assemble the wind tendencies, including vertical advection.

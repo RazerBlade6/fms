@@ -22,7 +22,7 @@ cargo build --release -p fms-cli
 | `fms williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
 | `fms held-suarez` | Run the Held–Suarez dynamical-core benchmark; write zonal-mean profiles (CSV and chart), a summary, maps and a GIF to `output/held_suarez/` |
-| `fms climate` | Run the model driven by radiation over a slab aquaplanet on the world's planet; write final-year zonal means, a summary with the energy budget, annual-mean maps and a GIF to `output/climate/` |
+| `fms climate` | Run the model driven by radiation and moisture over a slab aquaplanet on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
 
 ### Cell, edge and vertex fields
 
@@ -233,22 +233,22 @@ leaves a small upward drift in the energy budget. Outputs in
 The `--max-wind`, `--diffusion-order`, `--e-folding` and `--inviscid` options
 also apply to `fms baroclinic`, whose design wind defaults to 120 m/s.
 
-### Radiative climate
+### Climate
 
-`fms climate` runs the two-layer model driven by sunlight and radiation
+`fms climate` runs the two-layer model driven by sunlight, radiation and
+moisture (evaporation, convection, condensation, rain and snow, clouds)
 instead of an idealized forcing (PLAN §4.2), on the world's planet: its
 orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 `--surface-pressure`). Until land and ocean arrive (M2 steps 10–11) the
-surface is one 10 m slab of water everywhere. Water vapour is held at fixed
-relative humidity, and clouds are a fixed deck that reflects sunlight
-([OBSERVATIONS.md](OBSERVATIONS.md) O-19, O-20). The run starts at rest from
-a single-column radiative–convective equilibrium. It takes a few model years
-to settle and averages the final year.
+surface is one 10 m slab of water everywhere, an ice-free aquaplanet, which
+runs warmer than Earth ([OBSERVATIONS.md](OBSERVATIONS.md) O-23; see also
+O-22, O-24, O-25). The run starts at rest from a single-column
+radiative–convective equilibrium with its humidity. It takes a few model
+years to settle and averages the final year.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--years Y` | 4 | Simulated years; statistics from the last one |
-| `--cloud-albedo A` | Earth-calibrated | Reflectivity of the stand-in cloud deck |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
@@ -256,19 +256,26 @@ to settle and averages the final year.
 
 Outputs in `output/climate/`:
 - `summary.txt`: final-year global means (surface temperature, absorbed
-  sunlight, outgoing longwave, planetary albedo, water vapour, latent heat),
-  and the planet's energy budget: net input at the top of the atmosphere =
-  atmosphere uptake + slab uptake + kinetic energy removed by friction and
-  diffusion + a time-stepping residual;
-- `zonal_mean.csv` and `zonal_mean.png`: surface temperature, winds, net
-  radiation and water vapour by latitude;
+  sunlight, outgoing longwave, planetary albedo; clouds and their radiative
+  effects; water vapour, layer humidities, precipitation, evaporation; the
+  surface's energy budget), the planet's energy budget (net input at the top
+  of the atmosphere = atmosphere uptake, enthalpy and latent + slab uptake +
+  kinetic energy removed by friction and diffusion + a time-stepping
+  residual) and its water budget (change = evaporation − precipitation +
+  the time filter's trace + a round-off residual);
+- `zonal_mean.csv` and `zonal_mean.png`: winds, layer temperatures and
+  every summarised physics field by latitude; the chart shows surface
+  temperature, winds, net radiation, precipitation, evaporation and cloud;
 - final-year mean maps: `rad.surface_temperature`, `rad.outgoing_longwave`,
-  `rad.absorbed_shortwave`, `rad.water_vapour`, `rad.latent_heat_flux`;
+  `rad.absorbed_shortwave`, `atm.water_vapour`, `atm.precipitation`,
+  `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,
+  `rad.shortwave_cloud_effect`, `rad.longwave_cloud_effect`;
 - `diagnostics.csv`, the surface-pressure GIF, maps of the final state, and
   the blow-up dump, as for `fms baroclinic`.
 
-A year takes about a minute at 2.5k cells (`--climate-frequency 16`) and
-about 8 at 10k (`--climate-frequency 32`).
+A year takes about two minutes at 2.5k cells (`--climate-frequency 16`);
+cost grows with cells times steps, so the default 20k cells is far slower
+(use 2.5k for experiments).
 
 ### Point probes
 

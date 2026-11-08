@@ -91,8 +91,8 @@ fn layer_averages_of_the_forcing() {
 
 #[test]
 fn the_forcing_vanishes_at_equilibrium_and_at_rest() {
-    let model = model();
-    let hs = HeldSuarez::new(&model, HeldSuarezParams::default());
+    let mut model = model();
+    let mut hs = HeldSuarez::new(&model, HeldSuarezParams::default());
     let mut state = hs.initial_state(&model, 0.0);
     for i in 0..state.ps.len() {
         let eq = hs.equilibrium(i, state.ps[i]);
