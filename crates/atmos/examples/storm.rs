@@ -12,8 +12,8 @@
 
 use fms_atmos::williamson::{GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, HyperdiffusionOptions, ShearedFlow, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions,
+    Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions,
+    Levels, ShearedFlow,
 };
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -43,15 +43,15 @@ fn main() {
         if !diffuse && !inviscid {
             continue;
         }
-        let mut model = TwoLayer::new(
+        let mut model = LayeredModel::new(
             Operators::new(&mesh, &geometry, RADIUS),
             GRAVITY,
             Gas::EARTH_AIR,
-            0.5,
+            Levels::two(0.5),
             mesh.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect(),
             vec![0.0; mesh.n_cells()],
         );
-        let dt = TwoLayerSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 80.0), 0.6);
+        let dt = LayeredSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 80.0), 0.6);
         let dt = DAY / (DAY / dt).ceil();
         if diffuse {
             let options = match tau {
@@ -102,13 +102,8 @@ fn main() {
             }
         }
         let start = model.diagnostics(&state);
-        let mut si = TwoLayerSemiImplicit::new(
-            model,
-            state,
-            dt,
-            TwoLayerSemiImplicitOptions::default(),
-            0.5,
-        );
+        let mut si =
+            LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
         println!("dt {dt:.0} s, Courant limit {:.0} m/s", si.courant_limit());
         let per_day = (DAY / dt).round() as u64;
         let total = (days * per_day as f64).round() as u64;

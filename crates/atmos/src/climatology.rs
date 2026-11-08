@@ -3,17 +3,17 @@
 use fms_geo::LatitudeBands;
 use fms_geo::zonal::east_north;
 
-use crate::two_layer::{TwoLayer, TwoLayerState};
+use crate::layered::{LayeredModel, LayeredState};
 
 /// Time-mean zonal means, per latitude band (south to north).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ZonalMeans {
     /// Band-centre latitudes (degrees).
     pub latitude: Vec<f64>,
-    /// Eastward wind per layer, upper first (m s⁻¹).
-    pub wind: [Vec<f64>; 2],
-    /// Temperature per layer, upper first (K).
-    pub temperature: [Vec<f64>; 2],
+    /// Eastward wind per layer, top first (m s⁻¹).
+    pub wind: Vec<Vec<f64>>,
+    /// Temperature per layer, top first (K).
+    pub temperature: Vec<Vec<f64>>,
     /// Surface pressure (Pa).
     pub surface_pressure: Vec<f64>,
 }
@@ -25,8 +25,8 @@ impl ZonalMeans {
         let rev = |v: &Vec<f64>| v.iter().rev().copied().collect::<Vec<_>>();
         Self {
             latitude: self.latitude.clone(),
-            wind: [rev(&self.wind[0]), rev(&self.wind[1])],
-            temperature: [rev(&self.temperature[0]), rev(&self.temperature[1])],
+            wind: self.wind.iter().map(rev).collect(),
+            temperature: self.temperature.iter().map(rev).collect(),
             surface_pressure: rev(&self.surface_pressure),
         }
     }
@@ -42,14 +42,14 @@ pub struct ZonalClimatology {
 
 impl ZonalClimatology {
     /// Averages over `bands` equal-width latitude bands.
-    pub fn new(model: &TwoLayer, bands: usize) -> Self {
+    pub fn new(model: &LayeredModel, bands: usize) -> Self {
         let ops = model.operators();
         let bands = LatitudeBands::new(ops.mesh(), ops.geometry(), bands);
         let n = bands.len();
         let sums = ZonalMeans {
             latitude: bands.latitudes().iter().map(|l| l.to_degrees()).collect(),
-            wind: [vec![0.0; n], vec![0.0; n]],
-            temperature: [vec![0.0; n], vec![0.0; n]],
+            wind: vec![vec![0.0; n]; model.layers()],
+            temperature: vec![vec![0.0; n]; model.layers()],
             surface_pressure: vec![0.0; n],
         };
         Self {
@@ -60,7 +60,7 @@ impl ZonalClimatology {
     }
 
     /// Add one sample.
-    pub fn sample(&mut self, model: &TwoLayer, state: &TwoLayerState) {
+    pub fn sample(&mut self, model: &LayeredModel, state: &LayeredState) {
         let ops = model.operators();
         let (mesh, geometry) = (ops.mesh(), ops.geometry());
         let centers = mesh.cell_centers();
@@ -69,7 +69,7 @@ impl ZonalClimatology {
                 *s += m;
             }
         };
-        for k in 0..2 {
+        for k in 0..model.layers() {
             let vectors = geometry.reconstruct_vectors(mesh, &state.u[k]);
             let east: Vec<f64> = centers
                 .iter()
@@ -100,11 +100,8 @@ impl ZonalClimatology {
         let scale = |v: &Vec<f64>| v.iter().map(|x| x / n).collect::<Vec<_>>();
         ZonalMeans {
             latitude: self.sums.latitude.clone(),
-            wind: [scale(&self.sums.wind[0]), scale(&self.sums.wind[1])],
-            temperature: [
-                scale(&self.sums.temperature[0]),
-                scale(&self.sums.temperature[1]),
-            ],
+            wind: self.sums.wind.iter().map(scale).collect(),
+            temperature: self.sums.temperature.iter().map(scale).collect(),
             surface_pressure: scale(&self.sums.surface_pressure),
         }
     }

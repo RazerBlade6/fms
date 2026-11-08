@@ -1,4 +1,4 @@
-//! Scale-selective hyperdiffusion `∇²ⁿ` for the two-layer model: the
+//! Scale-selective hyperdiffusion `∇²ⁿ` for the layered model: the
 //! dissipation that stops the enstrophy cascade piling up at the grid scale
 //! (docs/OBSERVATIONS.md O-14).
 //!
@@ -42,14 +42,14 @@
 //! [`Hyperdiffusion::max_rate`].
 //!
 //! The kinetic energy removed is not returned as heat; see
-//! [`crate::TwoLayer::energy_tendency`] for the budget.
+//! [`crate::LayeredModel::energy_tendency`] for the budget.
 
 use fms_geo::Operators;
 use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::helmholtz::dot;
-use crate::two_layer::TwoLayerState;
+use crate::layered::LayeredState;
 
 /// Settings for [`Hyperdiffusion`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,14 +180,9 @@ impl Hyperdiffusion {
         self.nu * self.lambda[0].max(self.lambda[1]).powi(n)
     }
 
-    /// Adds the diffusion tendencies of `state` to `out` (both layers' winds
+    /// Adds the diffusion tendencies of `state` to `out` (every layer's winds
     /// and `Θ`; `out.ps` is untouched).
-    pub fn add_tendency(
-        &mut self,
-        ops: &Operators,
-        state: &TwoLayerState,
-        out: &mut TwoLayerState,
-    ) {
+    pub fn add_tendency(&mut self, ops: &Operators, state: &LayeredState, out: &mut LayeredState) {
         let n = self.options.order / 2;
         let sign = if n % 2 == 1 { 1.0 } else { -1.0 };
         let nu = self.nu;
@@ -199,7 +194,7 @@ impl Hyperdiffusion {
             ps_edge,
         } = &mut self.work;
         ops.cell_to_edge(&state.ps, ps_edge);
-        for k in 0..2 {
+        for k in 0..state.layers() {
             // Wind: divergent part into `edges`, rotational part into `edges2`.
             ops.divergence(&state.u[k], cells);
             for _ in 1..n {

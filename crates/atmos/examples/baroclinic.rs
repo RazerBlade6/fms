@@ -7,7 +7,7 @@
 //! ```
 
 use fms_atmos::williamson::{GRAVITY, OMEGA, RADIUS};
-use fms_atmos::{Gas, ShearedFlow, TwoLayer, TwoLayerState};
+use fms_atmos::{Gas, LayeredModel, LayeredState, Levels, ShearedFlow};
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
@@ -20,11 +20,11 @@ fn main() {
     println!("frequency {k}: {} cells", mesh.n_cells());
     let coriolis: Vec<f64> = mesh.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect();
     let model = || {
-        TwoLayer::new(
+        LayeredModel::new(
             Operators::new(&mesh, &geometry, RADIUS),
             GRAVITY,
             Gas::EARTH_AIR,
-            0.5,
+            Levels::two(0.5),
             coriolis.clone(),
             vec![0.0; mesh.n_cells()],
         )
@@ -108,7 +108,7 @@ const DAYS: u32 = 10;
 /// Seed amplitude (K).
 const SEED: f64 = 0.01;
 
-fn step(model: &TwoLayer, state: &TwoLayerState) -> f64 {
+fn step(model: &LayeredModel, state: &LayeredState) -> f64 {
     let dt = model.stable_dt(state, 0.5);
     DAY / (DAY / dt).ceil()
 }
@@ -117,7 +117,7 @@ fn step(model: &TwoLayer, state: &TwoLayerState) -> f64 {
 /// given, and return θ̂ every 6 hours.
 fn run(
     mesh: &SphereMesh,
-    mut model: TwoLayer,
+    mut model: LayeredModel,
     flow: ShearedFlow,
     wave: Option<u32>,
 ) -> Vec<Vec<f64>> {
@@ -135,7 +135,7 @@ fn run(
     }
     let dt = step(&model, &flow.state(&model));
     let per_sample = (DAY / f64::from(PER_DAY) / dt).round() as u32;
-    let theta_hat = |s: &TwoLayerState| -> Vec<f64> {
+    let theta_hat = |s: &LayeredState| -> Vec<f64> {
         (0..s.ps.len())
             .map(|i| 0.5 * (s.theta_ps[0][i] + s.theta_ps[1][i]) / s.ps[i])
             .collect()

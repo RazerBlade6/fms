@@ -1,7 +1,8 @@
-//! Shared machinery for commands that run the two-layer core (`fms
-//! baroclinic`, `fms held-suarez`): model setup from the command line, the
-//! checked time loop, the diagnostics log, the blow-up dump, and the maps and
-//! GIF of the dynamics fields.
+//! Shared machinery for commands that run the layered core (`fms
+//! baroclinic`, `fms held-suarez`, `fms climate`): model setup from the
+//! command line, the checked time loop, the diagnostics log, the blow-up
+//! dump, and the maps and GIF of the dynamics fields. "Upper" means the layer
+//! holding 250 hPa (the jets), "lower" the lowest layer.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -9,8 +10,8 @@ use std::time::Instant;
 
 use clap::Args;
 use fms_atmos::{
-    BlowUp, Gas, HyperdiffusionOptions, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions, TwoLayerState,
+    BlowUp, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
+    LayeredSemiImplicitOptions, LayeredState, Levels,
 };
 use fms_fields::{ColorScale, FieldId, FieldKey, FieldSpec, Location, Quantity};
 use fms_geo::Operators;
@@ -25,9 +26,13 @@ pub const DAY: f64 = 86_400.0;
 /// Diagnostics samples per day.
 pub const SAMPLES_PER_DAY: u64 = 4;
 
-/// Time step and dissipation options.
+/// Layers, time step and dissipation options.
 #[derive(Args)]
 pub struct DynamicsArgs {
+    /// Interior layer interfaces in σ = p/p_s, top down, comma-separated
+    /// (e.g. `0.4,0.85` for three layers with a thin bottom one).
+    #[arg(long, default_value = "0.5", value_delimiter = ',', num_args = 1..)]
+    pub levels: Vec<f64>,
     /// Design maximum wind for the time step (m s⁻¹). The run stops if a
     /// wind outruns the step (its Courant limit is this / 0.6).
     #[arg(long)]
@@ -44,9 +49,9 @@ pub struct DynamicsArgs {
     pub inviscid: bool,
 }
 
-/// A flat two-layer model on the world's climate grid, with its step.
+/// A flat layered model on the world's climate grid, with its step.
 pub struct Setup<'w> {
-    pub model: TwoLayer<'w>,
+    pub model: LayeredModel<'w>,
     pub dt: f64,
     pub steps_per_day: u64,
 }
@@ -61,11 +66,21 @@ pub fn build_model<'w>(
     let params = *world.planet.params();
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
     let omega = world.planet.rotation_rate();
-    let mut model = TwoLayer::new(
+    let interior = &args.levels;
+    if interior.len() + 1 > fms_atmos::levels::MAX_LAYERS
+        || !interior.windows(2).all(|w| w[0] < w[1])
+        || interior.iter().any(|&s| s <= 0.0 || s >= 1.0)
+    {
+        return Err(format!(
+            "--levels must increase strictly within (0, 1), at most {} layers",
+            fms_atmos::levels::MAX_LAYERS
+        ));
+    }
+    let mut model = LayeredModel::new(
         Operators::new(mesh, geometry, params.radius),
         params.gravity,
         Gas::EARTH_AIR,
-        0.5,
+        Levels::new(interior),
         mesh.vertices().iter().map(|p| 2.0 * omega * p.z).collect(),
         vec![0.0; mesh.n_cells()],
     );
@@ -73,7 +88,7 @@ pub fn build_model<'w>(
     if max_wind <= 0.0 {
         return Err("--max-wind must be positive".into());
     }
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, max_wind, 0.6);
+    let dt = LayeredSemiImplicit::stable_dt(&model, max_wind, 0.6);
     let steps_per_day = (DAY / dt).ceil() as u64;
     let dt = DAY / steps_per_day as f64;
     if !args.diffusion_order.is_multiple_of(2) || args.diffusion_order < 2 {
@@ -110,8 +125,8 @@ pub fn build_model<'w>(
 
 /// One line describing the run, for logs and reports.
 pub fn describe(
-    model: &TwoLayer,
-    state: &TwoLayerState,
+    model: &LayeredModel,
+    state: &LayeredState,
     dt: f64,
     days: f64,
     extra: &str,
@@ -127,8 +142,10 @@ pub fn describe(
         None => "inviscid".into(),
     };
     format!(
-        "{} cells, semi-implicit dt = {dt:.0} s ({:.1}× the explicit limit), {days} days; {diffusion}{extra}",
+        "{} cells, {} layers (interfaces σ = {:?}), semi-implicit dt = {dt:.0} s ({:.1}× the explicit limit), {days} days; {diffusion}{extra}",
         model.operators().mesh().n_cells(),
+        model.layers(),
+        model.levels().interior(),
         dt / model.stable_dt(state, 0.5),
     )
 }
@@ -179,7 +196,7 @@ impl Fields {
                 .register(
                     spec(
                         "dyn.theta_lower",
-                        "Lower-layer potential temperature",
+                        "Lowest-layer potential temperature",
                         "K",
                         Location::CLIMATE_CELLS,
                         ColorScale::Temperature,
@@ -191,7 +208,7 @@ impl Fields {
                 .register(
                     spec(
                         "dyn.vorticity_lower",
-                        "Lower-layer relative vorticity",
+                        "Lowest-layer relative vorticity",
                         "s-1",
                         Location::CLIMATE_VERTICES,
                         ColorScale::Diverging,
@@ -200,10 +217,10 @@ impl Fields {
                 )
                 .map_err(err)?,
             wind_upper: f
-                .register(wind("dyn.wind_upper", "Upper-layer wind"), 0.0)
+                .register(wind("dyn.wind_upper", "Wind of the layer at 250 hPa"), 0.0)
                 .map_err(err)?,
             wind_lower: f
-                .register(wind("dyn.wind_lower", "Lower-layer wind"), 0.0)
+                .register(wind("dyn.wind_lower", "Lowest-layer wind"), 0.0)
                 .map_err(err)?,
         })
     }
@@ -219,17 +236,42 @@ impl Fields {
     }
 
     /// Copy a state into the fields.
-    pub fn publish(&self, world: &World, state: &TwoLayerState, model: &TwoLayer) {
+    pub fn publish(&self, world: &World, state: &LayeredState, model: &LayeredModel) {
         let f = &world.fields;
         f.write(self.surface_pressure)
             .iter_mut()
             .zip(&state.ps)
             .for_each(|(o, p)| *o = p / 100.0);
-        f.write(self.theta_lower).copy_from_slice(&state.theta(1));
+        let (upper, lower) = upper_lower(model);
+        f.write(self.theta_lower)
+            .copy_from_slice(&state.theta(lower));
         f.write(self.vorticity_lower)
-            .copy_from_slice(&model.vorticity(state, 1));
-        f.write(self.wind_upper).copy_from_slice(&state.u[0]);
-        f.write(self.wind_lower).copy_from_slice(&state.u[1]);
+            .copy_from_slice(&model.vorticity(state, lower));
+        f.write(self.wind_upper).copy_from_slice(&state.u[upper]);
+        f.write(self.wind_lower).copy_from_slice(&state.u[lower]);
+    }
+}
+
+/// The layers reported as "upper" (the one holding 250 hPa) and "lower"
+/// (the lowest).
+pub fn upper_lower(model: &LayeredModel) -> (usize, usize) {
+    (model.levels().layer_of(0.25), model.layers() - 1)
+}
+
+/// Zonal means of just the "upper" and "lower" layers ([`upper_lower`]), as
+/// a two-layer table.
+pub fn upper_and_lower(
+    model: &LayeredModel,
+    means: fms_atmos::ZonalMeans,
+) -> fms_atmos::ZonalMeans {
+    let (upper, lower) = upper_lower(model);
+    fms_atmos::ZonalMeans {
+        wind: vec![means.wind[upper].clone(), means.wind[lower].clone()],
+        temperature: vec![
+            means.temperature[upper].clone(),
+            means.temperature[lower].clone(),
+        ],
+        ..means
     }
 }
 
@@ -258,11 +300,11 @@ pub struct Plan {
 pub fn integrate(
     world: &World,
     fields: &Fields,
-    si: &mut TwoLayerSemiImplicit,
+    si: &mut LayeredSemiImplicit,
     plan: &Plan,
     out: &Output,
     setup: &str,
-    mut on_sample: impl FnMut(&TwoLayerSemiImplicit),
+    mut on_sample: impl FnMut(&LayeredSemiImplicit),
 ) -> Result<RunLog, String> {
     ensure_dir(&out.dir)?;
     let dt = si.dt();
@@ -276,7 +318,7 @@ pub fn integrate(
     };
     let mut frames: Vec<Frame> = Vec::with_capacity(frame_count as usize);
     let mut next_frame = 0;
-    let capture_due = |si: &TwoLayerSemiImplicit, frames: &mut Vec<Frame>, next: &mut u64| {
+    let capture_due = |si: &LayeredSemiImplicit, frames: &mut Vec<Frame>, next: &mut u64| {
         while *next < frame_count && si.steps() >= frame_step(*next) {
             fields.publish(world, si.state(), si.model());
             let mut frame = capture(world, key, overlay);
@@ -433,8 +475,8 @@ fn write_dump(
     dir: &Path,
     world: &World,
     fields: &Fields,
-    si: &TwoLayerSemiImplicit,
-    last_good: &TwoLayerState,
+    si: &LayeredSemiImplicit,
+    last_good: &LayeredState,
     log: &RunLog,
     blow_up: &BlowUp,
     setup: &str,
@@ -514,12 +556,10 @@ fn write_dump(
 }
 
 /// The default semi-implicit options.
-pub fn stepper<'w>(model: TwoLayer<'w>, state: TwoLayerState, dt: f64) -> TwoLayerSemiImplicit<'w> {
-    TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    )
+pub fn stepper<'w>(
+    model: LayeredModel<'w>,
+    state: LayeredState,
+    dt: f64,
+) -> LayeredSemiImplicit<'w> {
+    LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5)
 }

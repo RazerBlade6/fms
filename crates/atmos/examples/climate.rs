@@ -19,8 +19,8 @@ use std::time::Instant;
 use fms_atmos::column_physics::{LATENT_HEAT, initial_state};
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
-    ColumnPhysics, Gas, HyperdiffusionOptions, PhysicsParams, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions,
+    ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
+    LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
 use fms_geo::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::Planet;
@@ -68,11 +68,11 @@ fn main() {
 
     // Start from the single-column equilibrium (fixed relative humidity),
     // at rest.
-    let model = TwoLayer::new(
+    let model = LayeredModel::new(
         Operators::new(&mesh, &geometry, RADIUS),
         GRAVITY,
         Gas::EARTH_AIR,
-        0.5,
+        Levels::two(0.5),
         mesh.vertices()
             .iter()
             .map(|p| 2.0 * planet.rotation_rate() * p.z)
@@ -83,7 +83,7 @@ fn main() {
     let nc = mesh.n_cells();
     let (state, surface_temperature) = initial_state(&model, &planet, &params);
     println!("single column: T_s {surface_temperature:.1} K");
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 120.0), 0.6);
+    let dt = LayeredSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 120.0), 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
     let physics = ColumnPhysics::new(
@@ -97,13 +97,8 @@ fn main() {
     let model = model
         .with_hyperdiffusion(diffusion)
         .with_forcing(Box::new(physics));
-    let mut si = TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    );
+    let mut si =
+        LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
     let start = si.model().diagnostics(si.state());
     let water0 = si.water();
     let budget0 = si.model().forcing().unwrap().budget().unwrap();

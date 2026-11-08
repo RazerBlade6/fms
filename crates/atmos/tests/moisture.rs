@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 
 use fms_atmos::williamson::{GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, HyperdiffusionOptions, ShearedFlow, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions, TwoLayerState,
+    Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions,
+    LayeredState, Levels, ShearedFlow,
 };
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -26,24 +26,24 @@ fn mesh() -> &'static (SphereMesh, MeshGeometry) {
 }
 
 /// A diffused model and its step (as in `dissipation.rs`).
-fn model() -> (TwoLayer<'static>, f64) {
+fn model() -> (LayeredModel<'static>, f64) {
     let (m, g) = mesh();
-    let model = TwoLayer::new(
+    let model = LayeredModel::new(
         Operators::new(m, g, RADIUS),
         GRAVITY,
         Gas::EARTH_AIR,
-        0.5,
+        Levels::two(0.5),
         m.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect(),
         vec![0.0; m.n_cells()],
     );
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, MAX_WIND, 0.6);
+    let dt = LayeredSemiImplicit::stable_dt(&model, MAX_WIND, 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let options = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
     (model.with_hyperdiffusion(options), dt)
 }
 
 /// The `fms baroclinic` storm: a 30 m/s-shear jet seeded with waves 4–8.
-fn storm(model: &TwoLayer) -> TwoLayerState {
+fn storm(model: &LayeredModel) -> LayeredState {
     let flow = ShearedFlow {
         speed: [40.0, 10.0],
         stability: 40.0,
@@ -66,15 +66,10 @@ fn storm(model: &TwoLayer) -> TwoLayerState {
     state
 }
 
-fn run(state: TwoLayerState, days: f64) -> TwoLayerSemiImplicit<'static> {
+fn run(state: LayeredState, days: f64) -> LayeredSemiImplicit<'static> {
     let (model, dt) = model();
-    let mut si = TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    );
+    let mut si =
+        LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
     let steps = (days * DAY / dt).round() as u64;
     while si.steps() < steps {
         si.step();
@@ -97,7 +92,7 @@ fn a_sharp_plume_stays_positive_and_water_is_conserved() {
             if inside { 0.015 } else { 0.0 }
         })
         .collect();
-    let state = state.with_humidity([q.iter().map(|q| 0.1 * q).collect(), q.clone()]);
+    let state = state.with_humidity(vec![q.iter().map(|q| 0.1 * q).collect(), q.clone()]);
     let mut si = run(state, 0.0);
     let start = si.water();
     let days = 12.0;

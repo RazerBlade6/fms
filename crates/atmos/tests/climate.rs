@@ -6,8 +6,8 @@
 use fms_atmos::column_physics::{LATENT_HEAT, initial_state};
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
-    ColumnPhysics, Gas, HyperdiffusionOptions, PhysicsParams, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions,
+    ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
+    LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::Planet;
@@ -16,16 +16,26 @@ const DAY: f64 = 86_400.0;
 
 /// Run `days` on frequency `k` from the single-column equilibrium, calling
 /// `each` after every step.
-fn run(k: u32, days: f64, mut each: impl FnMut(&TwoLayerSemiImplicit, &MeshGeometry, f64)) {
+fn run(k: u32, days: f64, each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64)) {
+    run_with(k, days, Levels::two(0.5), each);
+}
+
+/// [`run`] on other layers.
+fn run_with(
+    k: u32,
+    days: f64,
+    levels: Levels,
+    mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
+) {
     let planet = Planet::earth();
     let (mesh, _) = SphereMesh::centroidal(k, LloydOptions::default());
     let geometry = MeshGeometry::new(&mesh);
     let params = PhysicsParams::default();
-    let model = TwoLayer::new(
+    let model = LayeredModel::new(
         Operators::new(&mesh, &geometry, RADIUS),
         GRAVITY,
         Gas::EARTH_AIR,
-        0.5,
+        levels,
         mesh.vertices()
             .iter()
             .map(|p| 2.0 * planet.rotation_rate() * p.z)
@@ -34,7 +44,7 @@ fn run(k: u32, days: f64, mut each: impl FnMut(&TwoLayerSemiImplicit, &MeshGeome
     );
     let (state, ts) = initial_state(&model, &planet, &params);
     // Radiatively driven jets and storms reach ~100 m/s.
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, 120.0, 0.6);
+    let dt = LayeredSemiImplicit::stable_dt(&model, 120.0, 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
     let physics = ColumnPhysics::new(
@@ -48,13 +58,8 @@ fn run(k: u32, days: f64, mut each: impl FnMut(&TwoLayerSemiImplicit, &MeshGeome
     let model = model
         .with_hyperdiffusion(diffusion)
         .with_forcing(Box::new(physics));
-    let mut si = TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    );
+    let mut si =
+        LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
     while (si.steps() as f64) * dt < days * DAY {
         si.step();
         si.check().expect("the moist climate blew up");
@@ -126,6 +131,89 @@ fn the_planets_energy_and_water_budgets_close() {
         "water residual {water_residual:e} kg"
     );
     assert!(filter.abs() < 1e-3 * w1 && fixer.abs() < 1e-9 * w1);
+}
+
+#[test]
+fn more_layers_run_the_moist_aquaplanet() {
+    // Three layers (a thin bottom one) and five: 60 days from the single
+    // column's equilibrium without blowing up, with the water budget exact,
+    // no water conjured by the negative-humidity fixer, and the energy budget
+    // closed over days 30–60 (measured: −0.007 and −0.003 W/m²; two layers
+    // +0.023). The climate is calibrated for two layers only (O-25); step 10
+    // recalibrates on three.
+    for levels in [Levels::new(&[0.4, 0.85]), Levels::equal_mass(5)] {
+        let n = levels.count();
+        let mut first = None;
+        let mut last = None;
+        let mut fields: Vec<(String, f64)> = Vec::new();
+        run_with(16, 60.0, levels, |si, geometry, dt| {
+            let forcing = si.model().forcing().unwrap();
+            let row = (
+                si.model().diagnostics(si.state()),
+                si.energy_budget(),
+                forcing.budget().unwrap(),
+                si.steps() as f64 * dt,
+                si.water(),
+                si.water_budget(),
+            );
+            if first.is_none() || (si.steps() as f64 * dt - 30.0 * 86_400.0).abs() < 0.5 * dt {
+                first = Some(row);
+            }
+            last = Some(row);
+            let total: f64 = geometry.cell_areas.iter().sum();
+            fields = forcing
+                .cell_fields()
+                .into_iter()
+                .map(|f| {
+                    let mean = f
+                        .values
+                        .iter()
+                        .zip(&geometry.cell_areas)
+                        .map(|(v, a)| v * a)
+                        .sum::<f64>()
+                        / total;
+                    (f.name.to_string(), mean)
+                })
+                .collect();
+        });
+        let ((d0, e0, b0, t0, w0, wb0), (d1, e1, b1, t1, w1, wb1)) =
+            (first.unwrap(), last.unwrap());
+        let area = 4.0 * std::f64::consts::PI * RADIUS * RADIUS;
+        let wm2 = |j: f64| j / (t1 - t0) / area;
+        let toa = (b1.absorbed - b0.absorbed) - (b1.outgoing - b0.outgoing);
+        let uptake = (d1.energy - d0.energy) + (b1.stored - b0.stored) + LATENT_HEAT * (w1 - w0);
+        let removed = (e1.forcing.kinetic - e0.forcing.kinetic)
+            + (e1.diffusion.total() - e0.diffusion.total());
+        let residual = wm2(toa - uptake + removed);
+        let exchanged = (b1.evaporated - b0.evaporated) - (b1.precipitated - b0.precipitated);
+        let water_residual =
+            (w1 - w0) - exchanged - (wb1.filter - wb0.filter) - (wb1.fixer - wb0.fixer);
+        let get = |name: &str| fields.iter().find(|f| f.0 == name).unwrap().1;
+        eprintln!(
+            "{n} layers, day 60: T_s {:.1} K, OLR {:.1}, ASR {:.1} W/m², cloud {:.2}, water {:.1} kg/m², \
+             precipitation {:.2} mm/day; days 30–60: energy residual {residual:+.4} W/m², water residual {:+.1e}",
+            get("rad.surface_temperature"),
+            get("rad.outgoing_longwave"),
+            get("rad.absorbed_shortwave"),
+            get("atm.cloud_cover"),
+            get("atm.water_vapour"),
+            get("atm.precipitation"),
+            water_residual / w1
+        );
+        assert!(
+            water_residual.abs() < 1e-12 * w1,
+            "{n} layers: water residual {water_residual:e} kg"
+        );
+        assert!(
+            (wb1.fixer - wb0.fixer).abs() < 1e-9 * w1,
+            "{n} layers: fixer added water"
+        );
+        assert!(
+            residual.abs() < 0.05,
+            "{n} layers: energy residual {residual} W/m²"
+        );
+        assert!((d1.mass / d0.mass - 1.0).abs() < 1e-13);
+    }
 }
 
 #[test]

@@ -1,13 +1,14 @@
-//! Semi-implicit two-layer stepping: the RK4 acceptance tests (conservation,
+//! Semi-implicit layered stepping: the RK4 acceptance tests (conservation,
 //! rest over a mountain, baroclinic instability) rerun at a step several
-//! times the explicit limit, plus thread-count determinism.
+//! times the explicit limit, on two layers and on more, plus thread-count
+//! determinism.
 
 use std::sync::OnceLock;
 
 use fms_atmos::williamson::{Case, GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, HyperdiffusionOptions, ShearedFlow, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions, TwoLayerState,
+    Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions,
+    LayeredState, Levels, ShearedFlow,
 };
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -27,7 +28,11 @@ fn mesh() -> &'static (SphereMesh, MeshGeometry) {
     })
 }
 
-fn model(mountain: bool) -> TwoLayer<'static> {
+fn model(mountain: bool) -> LayeredModel<'static> {
+    model_with(mountain, Levels::two(0.5))
+}
+
+fn model_with(mountain: bool, levels: Levels) -> LayeredModel<'static> {
     let (m, g) = mesh();
     let phi_s = if mountain {
         m.cell_centers()
@@ -37,11 +42,11 @@ fn model(mountain: bool) -> TwoLayer<'static> {
     } else {
         vec![0.0; m.n_cells()]
     };
-    TwoLayer::new(
+    LayeredModel::new(
         Operators::new(m, g, RADIUS),
         GRAVITY,
         GAS,
-        0.5,
+        levels,
         m.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect(),
         phi_s,
     )
@@ -59,26 +64,20 @@ fn sheared(shear: f64) -> ShearedFlow {
 
 /// A semi-implicit stepper at the advective/inertial limit, with a whole
 /// number of steps per day.
-fn stepper(model: TwoLayer<'static>, state: TwoLayerState) -> TwoLayerSemiImplicit<'static> {
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
+fn stepper(model: LayeredModel<'static>, state: LayeredState) -> LayeredSemiImplicit<'static> {
+    let dt = LayeredSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
     let dt = DAY / (DAY / dt).ceil();
-    TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    )
+    LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5)
 }
 
-fn run_days(si: &mut TwoLayerSemiImplicit, days: f64) {
+fn run_days(si: &mut LayeredSemiImplicit, days: f64) {
     let target = (days * DAY / si.dt()).round() as u64;
     while si.steps() < target {
         si.step();
     }
 }
 
-fn max_wind(s: &TwoLayerState) -> f64 {
+fn max_wind(s: &LayeredState) -> f64 {
     s.u.iter().flatten().fold(0.0f64, |a, &u| a.max(u.abs()))
 }
 
@@ -110,9 +109,69 @@ fn conserves_mass_and_theta_at_a_long_step() {
     // no net source: exact whatever the solver tolerance.
     assert!(rel(start.mass, end.mass).abs() < 1e-13);
     assert!(rel(start.theta, end.theta).abs() < 1e-13);
-    // Leapfrog with the RAW filter isn't energy-conserving. Measured: −1.6e-5
-    // over 10 days (RK4: −3e-7).
+    // Leapfrog with the RAW filter isn't energy-conserving. Measured: −3.1e-5
+    // over 10 days with the default isothermal reference (−1.6e-5 with the
+    // state's own mean profile; RK4: −3e-7).
     assert!(rel(start.energy, end.energy).abs() < 5e-5);
+}
+
+#[test]
+fn more_layers_conserve_mass_and_theta_at_a_long_step() {
+    // A stratified flow, sheared from 10 m/s at the bottom to 40 m/s at the
+    // top, over the mountain for 10 days, on two, three (a thin bottom
+    // layer) and five layers. It starts out of balance, so gravity waves
+    // radiate and the RAW filter damps them: energy falls by 1.0e-4,
+    // 1.6e-4 and 1.4e-4 (the balanced two-layer flow above: 3.1e-5).
+    let (m, g) = mesh();
+    for levels in [
+        Levels::two(0.5),
+        Levels::new(&[0.4, 0.85]),
+        Levels::equal_mass(5),
+    ] {
+        let n = levels.count();
+        let model = model_with(true, levels);
+        let exner = model.layer_exner(1.0e5);
+        // T = 288 K (p/p₀)^{RΓ/g} for Γ = 6.5 K/km, no colder than 215 K.
+        let beta = GAS.gas_constant * 6.5e-3 / GRAVITY;
+        let theta: Vec<Vec<f64>> = (0..n)
+            .map(|k| {
+                let t = (288.0 * fms_math::pow(exner[k], beta / GAS.kappa())).max(215.0);
+                vec![t / exner[k]; m.n_cells()]
+            })
+            .collect();
+        let u = (0..n)
+            .map(|k| {
+                let speed = 10.0 + 30.0 * (n - 1 - k) as f64 / (n - 1) as f64;
+                m.edges()
+                    .iter()
+                    .zip(&g.edge_lengths)
+                    .map(|(e, &l)| {
+                        let psi = |v: u32| -RADIUS * speed * m.vertices()[v as usize].z;
+                        -(psi(e.vertices[1]) - psi(e.vertices[0])) / (l * RADIUS)
+                    })
+                    .collect()
+            })
+            .collect();
+        let state = LayeredState::new(vec![1.0e5; m.n_cells()], u, theta);
+        let explicit = model.stable_dt(&state, 0.5);
+        let start = model.diagnostics(&state);
+        let mut si = stepper(model, state);
+        run_days(&mut si, 10.0);
+        si.check().expect("the layered run blew up");
+        let end = si.model().diagnostics(si.state());
+        let rel = |a: f64, b: f64| b / a - 1.0;
+        eprintln!(
+            "{n} layers, step {:.1}× explicit, waves {:.0?} m/s: mass {:+.1e} θ {:+.1e} energy {:+.1e}",
+            si.dt() / explicit,
+            si.wave_speeds(),
+            rel(start.mass, end.mass),
+            rel(start.theta, end.theta),
+            rel(start.energy, end.energy),
+        );
+        assert!(rel(start.mass, end.mass).abs() < 1e-13);
+        assert!(rel(start.theta, end.theta).abs() < 1e-13);
+        assert!(rel(start.energy, end.energy).abs() < 5e-4);
+    }
 }
 
 #[test]
@@ -120,7 +179,18 @@ fn isentropic_rest_over_a_mountain_stays_at_rest() {
     // Balanced exactly by the spatial scheme; the semi-implicit split moves
     // the linear part of that balance into the Helmholtz solve, so rest is
     // kept to the solver tolerance.
-    let model = model(true);
+    for levels in [
+        Levels::two(0.5),
+        Levels::new(&[0.4, 0.85]),
+        Levels::equal_mass(5),
+    ] {
+        isentropic_rest(levels);
+    }
+}
+
+fn isentropic_rest(levels: Levels) {
+    let n = levels.count();
+    let model = model_with(true, levels);
     let theta0 = 300.0;
     let exner_ref = GAS.exner(1.0e5);
     let ps: Vec<f64> = model
@@ -135,41 +205,50 @@ fn isentropic_rest_over_a_mountain_stays_at_rest() {
         })
         .collect();
     let (nc, ne) = (ps.len(), mesh().0.n_edges());
-    let state = TwoLayerState::new(
-        ps,
-        [vec![0.0; ne], vec![0.0; ne]],
-        [vec![theta0; nc], vec![theta0; nc]],
-    );
+    let state = LayeredState::new(ps, vec![vec![0.0; ne]; n], vec![vec![theta0; nc]; n]);
     let mut si = stepper(model, state);
     run_days(&mut si, 5.0);
     let wind = max_wind(si.state());
-    eprintln!("isentropic rest, day 5: max |u| {wind:.1e} m/s");
-    assert!(wind < 1e-3, "spurious wind {wind} m/s");
+    eprintln!("{n} layers, isentropic rest, day 5: max |u| {wind:.1e} m/s");
+    assert!(wind < 1e-3, "{n} layers: spurious wind {wind} m/s");
 }
 
 #[test]
 fn isothermal_rest_over_a_mountain_stays_nearly_at_rest() {
-    // RK4 gives 0.105 m/s at this resolution (0.027 m/s at k = 32).
-    let model = model(true);
+    // RK4 gives 0.105 m/s at this resolution (0.027 m/s at k = 32), for
+    // two layers or more.
+    for levels in [
+        Levels::two(0.5),
+        Levels::new(&[0.4, 0.85]),
+        Levels::equal_mass(5),
+    ] {
+        isothermal_rest(levels);
+    }
+}
+
+fn isothermal_rest(levels: Levels) {
+    let n = levels.count();
+    let model = model_with(true, levels);
     let t0 = 260.0;
     let ps: Vec<f64> = model
         .surface_geopotential()
         .iter()
         .map(|phi| 1.0e5 * fms_math::exp(-phi / (GAS.gas_constant * t0)))
         .collect();
-    let mut theta = [vec![0.0; ps.len()], vec![0.0; ps.len()]];
+    let mut theta = vec![vec![0.0; ps.len()]; n];
     for (i, &p) in ps.iter().enumerate() {
         let e = model.layer_exner(p);
-        theta[0][i] = t0 / e[0];
-        theta[1][i] = t0 / e[1];
+        for k in 0..n {
+            theta[k][i] = t0 / e[k];
+        }
     }
     let ne = mesh().0.n_edges();
-    let state = TwoLayerState::new(ps, [vec![0.0; ne], vec![0.0; ne]], theta);
+    let state = LayeredState::new(ps, vec![vec![0.0; ne]; n], theta);
     let mut si = stepper(model, state);
     run_days(&mut si, 5.0);
     let wind = max_wind(si.state());
-    eprintln!("isothermal rest, day 5: max |u| {wind:.3} m/s");
-    assert!(wind < 0.2, "spurious wind {wind} m/s");
+    eprintln!("{n} layers, isothermal rest, day 5: max |u| {wind:.3} m/s");
+    assert!(wind < 0.2, "{n} layers: spurious wind {wind} m/s");
 }
 
 /// Growth rate (per day) of a 0.01 K wavenumber-6 θ seed at 45° N, against
@@ -181,7 +260,7 @@ fn growth(shear: f64, diffuse: bool) -> f64 {
     let seeded = |seed: f64| {
         let mut model = model(false);
         if diffuse {
-            let dt = TwoLayerSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
+            let dt = LayeredSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
             let dt = DAY / (DAY / dt).ceil();
             let options = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
             model = model.with_hyperdiffusion(options);
@@ -199,7 +278,7 @@ fn growth(shear: f64, diffuse: bool) -> f64 {
     };
     let (mut control, mut perturbed) = (seeded(0.0), seeded(0.01));
     let theta_hat =
-        |s: &TwoLayerState, i: usize| 0.5 * (s.theta_ps[0][i] + s.theta_ps[1][i]) / s.ps[i];
+        |s: &LayeredState, i: usize| 0.5 * (s.theta_ps[0][i] + s.theta_ps[1][i]) / s.ps[i];
     let mut samples = Vec::new();
     for day in 0..=8 {
         run_days(&mut control, f64::from(day));
@@ -234,8 +313,8 @@ fn growth(shear: f64, diffuse: bool) -> f64 {
 
 #[test]
 fn baroclinic_instability_at_a_long_step() {
-    // Same experiment as the RK4 test in two_layer.rs. RK4 measures 0.033 and
-    // 0.827 /day; the semi-implicit scheme 0.828 /day at 45 m/s.
+    // Same experiment as the RK4 test in layered.rs. RK4 measures 0.033 and
+    // 0.827 /day; the semi-implicit scheme −0.021 and 0.827 /day.
     let reference = model(false);
     let lat = 45f64.to_radians();
     let stable = growth(10.0, false);
@@ -281,7 +360,7 @@ fn results_do_not_depend_on_the_thread_count() {
         .build()
         .unwrap();
     let (a, b) = (one.install(simulate), four.install(simulate));
-    let bits = |s: &TwoLayerState| -> Vec<u64> {
+    let bits = |s: &LayeredState| -> Vec<u64> {
         s.ps.iter()
             .chain(s.u.iter().flatten())
             .chain(s.theta_ps.iter().flatten())

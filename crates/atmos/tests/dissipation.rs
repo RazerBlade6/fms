@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 
 use fms_atmos::williamson::{Case, GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Fault, Gas, HyperdiffusionOptions, Limits, ShearedFlow, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions, TwoLayerState, Variable, safety,
+    Fault, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
+    LayeredSemiImplicitOptions, LayeredState, Levels, Limits, ShearedFlow, Variable, safety,
 };
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -27,7 +27,7 @@ fn mesh() -> &'static (SphereMesh, MeshGeometry) {
     })
 }
 
-fn bare_model(mountain: bool) -> TwoLayer<'static> {
+fn bare_model(mountain: bool) -> LayeredModel<'static> {
     let (m, g) = mesh();
     let phi_s = if mountain {
         m.cell_centers()
@@ -37,25 +37,25 @@ fn bare_model(mountain: bool) -> TwoLayer<'static> {
     } else {
         vec![0.0; m.n_cells()]
     };
-    TwoLayer::new(
+    LayeredModel::new(
         Operators::new(m, g, RADIUS),
         GRAVITY,
         GAS,
-        0.5,
+        Levels::two(0.5),
         m.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect(),
         phi_s,
     )
 }
 
 /// The step for [`MAX_WIND`], a whole number per day.
-fn step_for(model: &TwoLayer) -> f64 {
-    let dt = TwoLayerSemiImplicit::stable_dt(model, MAX_WIND, 0.6);
+fn step_for(model: &LayeredModel) -> f64 {
+    let dt = LayeredSemiImplicit::stable_dt(model, MAX_WIND, 0.6);
     DAY / (DAY / dt).ceil()
 }
 
 /// A model with the default (strongest stable) ∇⁴ hyperdiffusion, and its
 /// step.
-fn diffused_model(mountain: bool) -> (TwoLayer<'static>, f64) {
+fn diffused_model(mountain: bool) -> (LayeredModel<'static>, f64) {
     let model = bare_model(mountain);
     let dt = step_for(&model);
     let options = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
@@ -64,7 +64,7 @@ fn diffused_model(mountain: bool) -> (TwoLayer<'static>, f64) {
 
 /// The storm setup of `fms baroclinic`: a 30 m/s-shear jet seeded with
 /// 0.5 K waves 4–8 at 45° N and S.
-fn storm_state(model: &TwoLayer) -> TwoLayerState {
+fn storm_state(model: &LayeredModel) -> LayeredState {
     let flow = ShearedFlow {
         speed: [40.0, 10.0],
         stability: 40.0,
@@ -88,17 +88,11 @@ fn storm_state(model: &TwoLayer) -> TwoLayerState {
 }
 
 fn stepper(
-    model: TwoLayer<'static>,
-    state: TwoLayerState,
+    model: LayeredModel<'static>,
+    state: LayeredState,
     dt: f64,
-) -> TwoLayerSemiImplicit<'static> {
-    TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    )
+) -> LayeredSemiImplicit<'static> {
+    LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5)
 }
 
 fn max_abs(x: &[f64]) -> f64 {
@@ -139,8 +133,8 @@ fn diffusion_conserves_theta_and_removes_kinetic_energy() {
         assert!(net.abs() < 1e-13 * scale, "layer {k}: net Θ source {net:e}");
     }
     // The wind part alone only removes energy.
-    let winds_only = TwoLayerState {
-        theta_ps: [vec![0.0; d.ps.len()], vec![0.0; d.ps.len()]],
+    let winds_only = LayeredState {
+        theta_ps: vec![vec![0.0; d.ps.len()]; 2],
         ..d.clone()
     };
     let rate = model.energy_tendency(&state, &winds_only).total();
@@ -167,11 +161,7 @@ fn isentropic_rest_over_a_mountain_is_untouched() {
         })
         .collect();
     let (nc, ne) = (ps.len(), mesh().0.n_edges());
-    let state = TwoLayerState::new(
-        ps,
-        [vec![0.0; ne], vec![0.0; ne]],
-        [vec![theta0; nc], vec![theta0; nc]],
-    );
+    let state = LayeredState::new(ps, vec![vec![0.0; ne]; 2], vec![vec![theta0; nc]; 2]);
     let mut si = stepper(model, state, dt);
     while si.steps() < (5.0 * DAY / dt) as u64 {
         si.step();
@@ -185,15 +175,15 @@ fn isentropic_rest_over_a_mountain_is_untouched() {
 /// peak wind, the largest lower- and upper-layer |ζ| seen, and the initial
 /// diagnostics; or the day it blew up.
 fn storm(
-    model: TwoLayer<'static>,
+    model: LayeredModel<'static>,
     dt: f64,
     days: f64,
 ) -> Result<
     (
-        TwoLayerSemiImplicit<'static>,
+        LayeredSemiImplicit<'static>,
         f64,
         f64,
-        fms_atmos::TwoLayerDiagnostics,
+        fms_atmos::LayeredDiagnostics,
     ),
     f64,
 > {
@@ -303,7 +293,7 @@ fn a_wind_beyond_the_courant_limit_is_reported_where_it_is() {
 fn a_runaway_is_caught_before_it_turns_into_nans() {
     // Inviscid, with the step sized for 45 m/s: the storms outrun it.
     let model = bare_model(false);
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, 45.0, 0.6);
+    let dt = LayeredSemiImplicit::stable_dt(&model, 45.0, 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let state = storm_state(&model);
     let mut si = stepper(model, state, dt);
@@ -322,7 +312,7 @@ fn a_runaway_is_caught_before_it_turns_into_nans() {
 fn out_of_range_values_are_reported() {
     let model = bare_model(false);
     let mut state = storm_state(&model);
-    let limits = Limits::around(200.0, 1.0e5, [330.0, 290.0]);
+    let limits = Limits::around(200.0, 1.0e5, &[330.0, 290.0]);
     assert!(safety::check(&state, &limits).is_ok());
     state.ps[7] = 2.0e4;
     let blow_up = safety::check(&state, &limits).unwrap_err();

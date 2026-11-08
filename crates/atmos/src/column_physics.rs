@@ -9,17 +9,17 @@
 //! - **Surface**: one slab of water of fixed depth everywhere (an
 //!   aquaplanet; land and ocean come in M2 steps 10–11). It absorbs sunlight
 //!   and longwave, emits as a black body, and exchanges heat and water with
-//!   the lower layer by bulk formulas: sensible `ρ c_p C V (T_s − T_a)` and
-//!   evaporation `ρ C V (q*(T_s) − q_a)`, where `T_a` is the lower layer's
+//!   the lowest layer by bulk formulas: sensible `ρ c_p C V (T_s − T_a)` and
+//!   evaporation `ρ C V (q*(T_s) − q_a)`, where `T_a` is the lowest layer's
 //!   temperature extrapolated to the surface along
-//!   [`PhysicsParams::lapse_rate`], `q_a` the lower layer's humidity profile
+//!   [`PhysicsParams::lapse_rate`], `q_a` the lowest layer's humidity profile
 //!   at the surface ([`crate::moisture`]), and `V` includes a gust speed.
 //!   The slab pays the latent heat of what evaporates, and of fusion for the
 //!   snow that falls on it and melts.
 //! - **Moisture**: convection, large-scale condensation, re-evaporation,
 //!   rain or snow, and diagnosed clouds ([`crate::moisture`]).
-//! - **Friction**: the Held–Suarez boundary-layer drag on the lower layer,
-//!   until M2 step 10 adds surface drag.
+//! - **Friction**: Rayleigh drag on the lowest layer, until M2 step 10 adds
+//!   surface drag.
 //!
 //! # Time stepping
 //!
@@ -40,14 +40,15 @@ use fms_planet::Planet;
 use rayon::prelude::*;
 
 use crate::forcing::{CellField, Forcing, ForcingBudget};
+use crate::layered::{Gas, LayeredModel, LayeredState, REFERENCE_PRESSURE};
+use crate::levels::{Levels, MAX_LAYERS};
 use crate::moisture::{
     FUSION_HEAT, MoistColumn, MoistTendency, MoistureParams, Setting, moist_physics,
 };
 use crate::radiation::{
-    Cloud, Column, Fluxes, Humidity, RadiationParams, STEFAN_BOLTZMANN, column_fluxes,
+    Cloud, Column, Fluxes, Humidity, Profile, RadiationParams, STEFAN_BOLTZMANN, column_fluxes,
     saturation_humidity, saturation_pressure, specific_humidity,
 };
-use crate::two_layer::{Gas, REFERENCE_PRESSURE, TwoLayer, TwoLayerState};
 
 pub use crate::moisture::LATENT_HEAT;
 
@@ -70,15 +71,15 @@ pub struct PhysicsParams {
     pub transfer: f64,
     /// Gust speed added in quadrature to the wind (m s⁻¹).
     pub gust: f64,
-    /// Lapse rate (K m⁻¹) from the lower layer's mean down to the surface
+    /// Lapse rate (K m⁻¹) from the lowest layer's mean down to the surface
     /// air, and the single column's critical lapse rate for convection
-    /// between the layer means. Earth's observed layer means (272 and 226 K,
-    /// 10.5 km apart) sit at 4.4 K/km: less than the tropospheric 6.5 K/km
-    /// because the upper layer includes the stratosphere.
+    /// between its two layer means. Earth's observed layer means (272 and
+    /// 226 K, 10.5 km apart) sit at 4.4 K/km: less than the tropospheric
+    /// 6.5 K/km because the upper layer includes the stratosphere.
     pub lapse_rate: f64,
     /// The single column's convective relaxation time (s).
     pub convection_time: f64,
-    /// Lower-layer Rayleigh friction (s⁻¹).
+    /// Rayleigh friction on the lowest layer (s⁻¹).
     pub friction: f64,
     /// Time between radiation calls (s).
     pub radiation_interval: f64,
@@ -108,31 +109,20 @@ impl PhysicsParams {
     }
 }
 
-/// Layer-mean Exner functions `(p/p₀)^κ` for surface pressure `ps`.
-pub fn layer_exner(gas: Gas, sigma: f64, ps: f64) -> [f64; 2] {
-    let kappa = gas.kappa();
-    let pi = sigma * ps;
-    let (ei, es) = (gas.exner(pi), gas.exner(ps));
-    [
-        ei / (1.0 + kappa),
-        (ps * es - pi * ei) / ((1.0 + kappa) * (1.0 - sigma) * ps),
-    ]
-}
-
-/// Air temperature at the surface (K): the lower layer's mean temperature
-/// extrapolated down the convective lapse rate.
+/// Air temperature at the surface (K): the lowest layer's mean temperature
+/// extrapolated down the convective lapse rate, given that layer's Exner
+/// function `exner` and potential temperature `theta_lowest`.
 pub fn surface_air_temperature(
     params: &PhysicsParams,
     gas: Gas,
-    sigma: f64,
     gravity: f64,
     ps: f64,
-    theta_lower: f64,
+    exner: f64,
+    theta_lowest: f64,
 ) -> f64 {
-    let exner = layer_exner(gas, sigma, ps)[1];
     let p_mean = REFERENCE_PRESSURE * fms_math::pow(exner, 1.0 / gas.kappa());
     let beta = gas.gas_constant * params.lapse_rate / gravity;
-    theta_lower * exner * fms_math::pow(ps / p_mean, beta)
+    theta_lowest * exner * fms_math::pow(ps / p_mean, beta)
 }
 
 /// Sensible and latent heat flux from the surface (W m⁻², positive upward)
@@ -157,9 +147,9 @@ pub fn surface_fluxes(
     (sensible, k * LATENT_HEAT * (q_surface - q_air))
 }
 
-/// Potential temperatures the column relaxes to if it is less stable than
-/// the critical lapse rate, else `None`. The adjusted column keeps its
-/// enthalpy `Σ δσₖ Πₖ θₖ`.
+/// Potential temperatures a two-layer column (interface `sigma`) relaxes to
+/// if it is less stable than the critical lapse rate, else `None`. The
+/// adjusted column keeps its enthalpy `Σ δσₖ Πₖ θₖ`.
 pub fn convective_target(
     params: &PhysicsParams,
     gas: Gas,
@@ -168,7 +158,8 @@ pub fn convective_target(
     ps: f64,
     theta: [f64; 2],
 ) -> Option<[f64; 2]> {
-    let exner = layer_exner(gas, sigma, ps);
+    let exner = Levels::two(sigma).layer_exner(gas, ps);
+    let exner = [exner[0], exner[1]];
     let t = [theta[0] * exner[0], theta[1] * exner[1]];
     // Thickness between the levels whose Exner functions are the layer means.
     let p = exner.map(|e| REFERENCE_PRESSURE * fms_math::pow(e, 1.0 / gas.kappa()));
@@ -198,7 +189,7 @@ fn exchange(params: &PhysicsParams, gas: Gas, ps: f64, air: f64, wind: f64) -> f
     density * params.transfer * speed
 }
 
-/// Fluxes between the surface and the lower layer in one cell.
+/// Fluxes between the surface and the lowest layer in one cell.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct SurfaceFlux {
     /// Sensible heat (W m⁻², upward).
@@ -207,13 +198,13 @@ struct SurfaceFlux {
     evaporation: f64,
 }
 
-/// The radiative–convective forcing of the two-layer model: radiation, moist
+/// The radiative–convective forcing of the layered model: radiation, moist
 /// physics, a slab surface, surface fluxes and boundary-layer friction. Needs
 /// a moist state.
 pub struct ColumnPhysics<'a> {
     params: PhysicsParams,
     gas: Gas,
-    sigma: f64,
+    levels: Levels,
     gravity: f64,
     ops: Operators<'a>,
     planet: &'a Planet,
@@ -241,11 +232,11 @@ impl<'a> ColumnPhysics<'a> {
     /// # Panics
     /// If `state` is dry.
     pub fn new(
-        model: &TwoLayer<'a>,
+        model: &LayeredModel<'a>,
         planet: &'a Planet,
         params: PhysicsParams,
         time: f64,
-        state: &TwoLayerState,
+        state: &LayeredState,
         surface_temperature: Vec<f64>,
     ) -> Self {
         assert!(state.is_moist(), "column physics needs a moist state");
@@ -254,7 +245,7 @@ impl<'a> ColumnPhysics<'a> {
         let mut physics = Self {
             params,
             gas: model.gas(),
-            sigma: model.sigma(),
+            levels: model.levels().clone(),
             gravity: model.gravity(),
             ops: *model.operators(),
             planet,
@@ -309,36 +300,38 @@ impl<'a> ColumnPhysics<'a> {
             params: &self.params.moisture,
             radiation: &self.params.radiation,
             gas: self.gas,
-            sigma: self.sigma,
+            levels: &self.levels,
             gravity: self.gravity,
         }
     }
 
     /// One column's view for the moist physics.
-    fn moist_column(&self, state: &TwoLayerState, i: usize) -> MoistColumn {
+    fn moist_column(&self, state: &LayeredState, i: usize) -> MoistColumn {
         let ps = state.ps[i];
-        let exner = layer_exner(self.gas, self.sigma, ps);
-        let theta = [state.theta_ps[0][i] / ps, state.theta_ps[1][i] / ps];
+        let n = self.levels.count();
+        let mut exner = [0.0; MAX_LAYERS];
+        self.levels.layer_exner_into(self.gas, ps, &mut exner[..n]);
+        let theta: Vec<f64> = (0..n).map(|k| state.theta_ps[k][i] / ps).collect();
         // The stratosphere sits near the skin temperature of the column's
         // outgoing longwave.
         let olr = self.radiation[i].outgoing.max(1.0);
         MoistColumn {
             ps,
-            temperature: [theta[0] * exner[0], theta[1] * exner[1]],
-            humidity: [state.q_ps[0][i] / ps, state.q_ps[1][i] / ps],
+            temperature: (0..n).map(|k| theta[k] * exner[k]).collect(),
+            humidity: (0..n).map(|k| state.q_ps[k][i] / ps).collect(),
             surface_air: surface_air_temperature(
                 &self.params,
                 self.gas,
-                self.sigma,
                 self.gravity,
                 ps,
-                theta[1],
+                exner[n - 1],
+                theta[n - 1],
             ),
             stratosphere: fms_math::pow(olr / (2.0 * STEFAN_BOLTZMANN), 0.25),
         }
     }
 
-    fn update_moisture(&mut self, state: &TwoLayerState) {
+    fn update_moisture(&mut self, state: &LayeredState) {
         let moist: Vec<MoistTendency> = (0..state.ps.len())
             .into_par_iter()
             .with_min_len(MIN_CHUNK / 16)
@@ -347,9 +340,10 @@ impl<'a> ColumnPhysics<'a> {
         self.moist = moist;
     }
 
-    fn update_surface_fluxes(&mut self, state: &TwoLayerState) {
+    fn update_surface_fluxes(&mut self, state: &LayeredState) {
         let (mesh, geometry) = (self.ops.mesh(), self.ops.geometry());
-        let winds = geometry.reconstruct_vectors(mesh, &state.u[1]);
+        let lowest = self.levels.count() - 1;
+        let winds = geometry.reconstruct_vectors(mesh, &state.u[lowest]);
         let centers = mesh.cell_centers();
         let surface: Vec<SurfaceFlux> = (0..state.ps.len())
             .into_par_iter()
@@ -368,8 +362,8 @@ impl<'a> ColumnPhysics<'a> {
                 let q_air = crate::moisture::surface_humidity(
                     &self.setting(),
                     ps,
-                    column.temperature,
-                    column.humidity[1],
+                    &column.temperature,
+                    column.humidity[lowest],
                     column.surface_air,
                 );
                 let ts = self.surface_temperature[i];
@@ -384,7 +378,7 @@ impl<'a> ColumnPhysics<'a> {
 
     /// Radiation for the interval starting now, with sunlight averaged over
     /// it, all-sky and clear-sky.
-    fn radiate(&mut self, state: &TwoLayerState) {
+    fn radiate(&mut self, state: &LayeredState) {
         const SAMPLES: usize = 6;
         let centers = self.ops.mesh().cell_centers();
         let n = centers.len();
@@ -398,7 +392,9 @@ impl<'a> ColumnPhysics<'a> {
                 *a += s / SAMPLES as f64;
             }
         }
-        let (params, gas, sigma, gravity) = (&self.params, self.gas, self.sigma, self.gravity);
+        let (params, gas, gravity) = (&self.params, self.gas, self.gravity);
+        let levels = &self.levels;
+        let layers = levels.count();
         let clouds = &params.moisture.clouds;
         let moist = &self.moist;
         let both: Vec<(Fluxes, Fluxes)> = (0..n)
@@ -407,23 +403,26 @@ impl<'a> ColumnPhysics<'a> {
             .map(|i| {
                 let ps = state.ps[i];
                 let cover = moist[i].clouds;
+                let theta: Vec<f64> = (0..layers).map(|k| state.theta_ps[k][i] / ps).collect();
+                let q: Vec<f64> = (0..layers).map(|k| state.q_ps[k][i] / ps).collect();
+                let sheets: [Cloud; 2] = std::array::from_fn(|c| Cloud {
+                    sigma: clouds.sigma[c],
+                    reflectance: cover[c] * clouds.albedo[c],
+                    emissivity: cover[c] * clouds.emissivity[c],
+                });
                 let mut column = Column {
                     ps,
                     surface_temperature: self.surface_temperature[i],
-                    theta: [state.theta_ps[0][i] / ps, state.theta_ps[1][i] / ps],
-                    sigma,
+                    theta: &theta,
+                    levels,
                     gravity,
                     insolation: insolation[i],
                     co2: params.co2,
-                    humidity: Humidity::Layers([state.q_ps[0][i] / ps, state.q_ps[1][i] / ps]),
-                    clouds: std::array::from_fn(|c| Cloud {
-                        sigma: clouds.sigma[c],
-                        reflectance: cover[c] * clouds.albedo[c],
-                        emissivity: cover[c] * clouds.emissivity[c],
-                    }),
+                    humidity: Humidity::Layers(&q),
+                    clouds: &sheets,
                 };
                 let all = column_fluxes(&params.radiation, gas, &column);
-                column.clouds = [Cloud::NONE; 2];
+                column.clouds = &[Cloud::NONE; 2];
                 (all, column_fluxes(&params.radiation, gas, &column))
             })
             .collect();
@@ -433,47 +432,58 @@ impl<'a> ColumnPhysics<'a> {
 }
 
 impl Forcing for ColumnPhysics<'_> {
-    fn add_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState) {
+    fn add_tendency(&mut self, state: &LayeredState, out: &mut LayeredState) {
         assert!(
             state.is_moist() && out.is_moist(),
             "column physics needs a moist state"
         );
         self.update_moisture(state);
-        let (gas, sigma, gravity) = (self.gas, self.sigma, self.gravity);
-        let ds = [sigma, 1.0 - sigma];
+        let (gas, gravity) = (self.gas, self.gravity);
+        let levels = &self.levels;
+        let n = levels.count();
+        let lowest = n - 1;
+        let ds = levels.dsigma();
+        let mut exner = vec![0.0; n * state.ps.len()];
+        exner
+            .par_chunks_mut(n)
+            .with_min_len(MIN_CHUNK / 16)
+            .zip(state.ps.par_iter())
+            .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
-        let [t0, t1] = &mut out.theta_ps;
-        let [q0, q1] = &mut out.q_ps;
-        t0.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(t1.par_iter_mut())
-            .zip(q0.par_iter_mut())
-            .zip(q1.par_iter_mut())
-            .enumerate()
-            .for_each(|(i, (((d0, d1), dq0), dq1))| {
-                let ps = state.ps[i];
-                let exner = layer_exner(gas, sigma, ps);
-                let f = &radiation[i];
-                let m = &moist[i];
-                let heating = [f.layers[0], f.layers[1] + surface[i].sensible];
-                *d0 += theta_tendency(gas, gravity, ds[0], exner[0], heating[0])
-                    + ps * m.temperature[0] / exner[0];
-                *d1 += theta_tendency(gas, gravity, ds[1], exner[1], heating[1])
-                    + ps * m.temperature[1] / exner[1];
-                *dq0 += ps * m.humidity[0];
-                *dq1 += ps * m.humidity[1] + gravity * surface[i].evaporation / ds[1];
-            });
+        for (k, (dt, dq)) in out.theta_ps.iter_mut().zip(&mut out.q_ps).enumerate() {
+            let exner = &exner;
+            dt.par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .zip(dq.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, (dt, dq))| {
+                    let ps = state.ps[i];
+                    let e = exner[i * n + k];
+                    let m = &moist[i];
+                    let mut heating = radiation[i].layers[k];
+                    if k == lowest {
+                        heating += surface[i].sensible;
+                    }
+                    *dt +=
+                        theta_tendency(gas, gravity, ds[k], e, heating) + ps * m.temperature[k] / e;
+                    *dq += if k == lowest {
+                        ps * m.humidity[k] + gravity * surface[i].evaporation / ds[k]
+                    } else {
+                        ps * m.humidity[k]
+                    };
+                });
+        }
         let rate = self.params.friction;
         if rate > 0.0 {
-            out.u[1]
+            out.u[lowest]
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
-                .zip(state.u[1].par_iter())
+                .zip(state.u[lowest].par_iter())
                 .for_each(|(d, &u)| *d -= rate * u);
         }
     }
 
-    fn advance(&mut self, state: &TwoLayerState, dt: f64) {
+    fn advance(&mut self, state: &LayeredState, dt: f64) {
         // The slab and the budgets use the same stored fluxes and
         // precipitation the atmosphere was given.
         let areas = &self.ops.geometry().cell_areas;
@@ -528,6 +538,7 @@ impl Forcing for ColumnPhysics<'_> {
 
     fn cell_fields(&self) -> Vec<CellField> {
         let rad = |f: fn(&Fluxes) -> f64| self.radiation.iter().map(f).collect();
+        let lowest = self.levels.count() - 1;
         let moist = |f: fn(&MoistTendency) -> f64| self.moist.iter().map(f).collect();
         let field = |name, description, units, values| CellField {
             name,
@@ -599,7 +610,7 @@ impl Forcing for ColumnPhysics<'_> {
                 "atm.water_vapour",
                 "Water-vapour column",
                 "kg m-2",
-                rad(|f| f.water[0] + f.water[1]),
+                self.radiation.iter().map(Fluxes::total_water).collect(),
             ),
             field(
                 "atm.precipitation",
@@ -660,15 +671,18 @@ impl Forcing for ColumnPhysics<'_> {
             ),
             field(
                 "atm.relative_humidity_upper",
-                "Upper-layer relative humidity",
+                "Top-layer relative humidity",
                 "1",
                 moist(|m| m.relative_humidity[0]),
             ),
             field(
                 "atm.relative_humidity_lower",
-                "Lower-layer relative humidity",
+                "Lowest-layer relative humidity",
                 "1",
-                moist(|m| m.relative_humidity[1]),
+                self.moist
+                    .iter()
+                    .map(|m| m.relative_humidity[lowest])
+                    .collect(),
             ),
         ]
     }
@@ -678,48 +692,95 @@ impl Forcing for ColumnPhysics<'_> {
 /// column's equilibrium (with `params`' CO₂) at rest, with its fixed-profile
 /// humidity, plus 0.1 K of seeded noise in θ to break the symmetry. Returns
 /// the state and the surface temperature (K).
+///
+/// The single column has two equal-mass layers; other layers take the mean
+/// temperature of its profile over their range (each layer's lapse rate
+/// through its mean, isothermal above the upper layer's mean level).
 pub fn initial_state(
-    model: &TwoLayer,
+    model: &LayeredModel,
     planet: &Planet,
     params: &PhysicsParams,
-) -> (TwoLayerState, f64) {
+) -> (LayeredState, f64) {
     let mut column = SingleColumn::earth(planet.mean_flux());
     column.params.co2 = params.co2;
     column.ps = planet.params().surface_pressure;
     column.gravity = model.gravity();
     let eq = column.equilibrium();
-    let (gas, sigma, ps) = (model.gas(), model.sigma(), column.ps);
-    let exner = layer_exner(gas, sigma, ps);
-    let theta0 = [eq.temperature[0] / exner[0], eq.temperature[1] / exner[1]];
-    let q = fixed_humidity(params, gas, sigma, model.gravity(), ps, theta0);
+    let (gas, levels, ps) = (model.gas(), model.levels(), column.ps);
+    let exner = levels.layer_exner(gas, ps);
+    let two = Levels::two(column.sigma);
+    let temperature: Vec<f64> = if *levels == two {
+        eq.temperature.to_vec()
+    } else {
+        let profile = Profile::new(
+            &params.radiation,
+            gas,
+            &two,
+            ps,
+            column.gravity,
+            &eq.temperature,
+        );
+        let cap = two.mean_pressures(gas, ps)[0];
+        (0..levels.count())
+            .map(|k| {
+                let (a, b) = levels.bounds(k);
+                GAUSS
+                    .iter()
+                    .map(|&(x, w)| {
+                        let s = 0.5 * (a + b) + 0.5 * (b - a) * x;
+                        let t = if s * ps < cap {
+                            eq.temperature[0]
+                        } else {
+                            profile.at(s)
+                        };
+                        0.5 * w * t
+                    })
+                    .sum()
+            })
+            .collect()
+    };
+    let theta0: Vec<f64> = temperature.iter().zip(&exner).map(|(t, e)| t / e).collect();
+    let q = fixed_humidity(params, gas, levels, model.gravity(), ps, &theta0);
     let mesh = model.operators().mesh();
     let (nc, ne) = (mesh.n_cells(), mesh.n_edges());
     let mut x = 0x2545_F491_4F6C_DD1Du64;
-    let theta: [Vec<f64>; 2] = std::array::from_fn(|k| {
-        (0..nc)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                theta0[k] + 0.1 * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
-            })
-            .collect()
-    });
-    let state = TwoLayerState::new(vec![ps; nc], [vec![0.0; ne], vec![0.0; ne]], theta)
-        .with_humidity([vec![q[0]; nc], vec![q[1]; nc]]);
+    let theta: Vec<Vec<f64>> = theta0
+        .iter()
+        .map(|&th| {
+            (0..nc)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    th + 0.1 * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
+                })
+                .collect()
+        })
+        .collect();
+    let n = levels.count();
+    let state = LayeredState::new(vec![ps; nc], vec![vec![0.0; ne]; n], theta)
+        .with_humidity(q.iter().map(|&q| vec![q; nc]).collect());
     (state, eq.surface_temperature)
 }
+
+/// Gauss–Legendre nodes on [−1, 1].
+const GAUSS: [(f64, f64); 4] = [
+    (-0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+    (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+    (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+    (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+];
 
 /// Initial humidity (kg kg⁻¹, per layer) for a column at fixed relative
 /// humidity: the Manabe–Wetherald profile of the single column.
 pub fn fixed_humidity(
     params: &PhysicsParams,
     gas: Gas,
-    sigma: f64,
+    levels: &Levels,
     gravity: f64,
     ps: f64,
-    theta: [f64; 2],
-) -> [f64; 2] {
+    theta: &[f64],
+) -> Vec<f64> {
     let f = column_fluxes(
         &params.radiation,
         gas,
@@ -727,16 +788,18 @@ pub fn fixed_humidity(
             ps,
             surface_temperature: 288.0,
             theta,
-            sigma,
+            levels,
             gravity,
             insolation: 0.0,
             co2: params.co2,
             humidity: Humidity::Fixed,
-            clouds: [Cloud::NONE; 2],
+            clouds: &[Cloud::NONE; 2],
         },
     );
-    let ds = [sigma, 1.0 - sigma];
-    [0, 1].map(|k| f.water[k] * gravity / (ds[k] * ps))
+    let ds = levels.dsigma();
+    (0..levels.count())
+        .map(|k| f.water[k] * gravity / (ds[k] * ps))
+        .collect()
 }
 
 /// A single-column radiative–convective model: the same physics as
@@ -765,7 +828,7 @@ pub struct SingleColumn {
 }
 
 /// A single column's equilibrium.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Equilibrium {
     /// Radiative fluxes.
     pub fluxes: Fluxes,
@@ -810,6 +873,11 @@ impl SingleColumn {
         }
     }
 
+    /// The column's two layers.
+    pub fn levels(&self) -> Levels {
+        Levels::two(self.sigma)
+    }
+
     /// Fluxes of the current state.
     pub fn fluxes(&self) -> Fluxes {
         column_fluxes(
@@ -818,13 +886,13 @@ impl SingleColumn {
             &Column {
                 ps: self.ps,
                 surface_temperature: self.surface_temperature,
-                theta: self.theta,
-                sigma: self.sigma,
+                theta: &self.theta,
+                levels: &self.levels(),
                 gravity: self.gravity,
                 insolation: self.insolation,
                 co2: self.params.co2,
                 humidity: Humidity::Fixed,
-                clouds: [
+                clouds: &[
                     Cloud::deck(self.sigma, self.params.radiation.cloud_albedo),
                     Cloud::NONE,
                 ],
@@ -832,14 +900,19 @@ impl SingleColumn {
         )
     }
 
+    fn layer_exner(&self) -> [f64; 2] {
+        let e = self.levels().layer_exner(self.gas, self.ps);
+        [e[0], e[1]]
+    }
+
     /// Sensible and latent heat flux (W m⁻²).
     pub fn surface_fluxes(&self) -> (f64, f64) {
         let air = surface_air_temperature(
             &self.params,
             self.gas,
-            self.sigma,
             self.gravity,
             self.ps,
+            self.layer_exner()[1],
             self.theta[1],
         );
         surface_fluxes(
@@ -854,7 +927,7 @@ impl SingleColumn {
 
     /// Set the layer temperatures (K, upper first).
     pub fn set_temperatures(&mut self, t: [f64; 2]) {
-        let exner = layer_exner(self.gas, self.sigma, self.ps);
+        let exner = self.layer_exner();
         self.theta = [t[0] / exner[0], t[1] / exner[1]];
     }
 
@@ -862,7 +935,7 @@ impl SingleColumn {
     pub fn step(&mut self, dt: f64) {
         let f = self.fluxes();
         let (sensible, latent) = self.surface_fluxes();
-        let exner = layer_exner(self.gas, self.sigma, self.ps);
+        let exner = self.layer_exner();
         let ds = [self.sigma, 1.0 - self.sigma];
         let heating = [
             f.layers[0] + ds[0] * latent,
@@ -910,7 +983,7 @@ impl SingleColumn {
                 break;
             }
         }
-        let exner = layer_exner(self.gas, self.sigma, self.ps);
+        let exner = self.layer_exner();
         Equilibrium {
             fluxes: self.fluxes(),
             surface_temperature: self.surface_temperature,

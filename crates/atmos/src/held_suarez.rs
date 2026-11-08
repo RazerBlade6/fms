@@ -15,7 +15,7 @@
 //! with `k_f = 1/day`, `k_a = 1/40 day`, `k_s = 1/4 day`, `σ_b = 0.7`,
 //! `ΔT_y = 60 K`, `Δθ_z = 10 K`, `p₀ = 1000 hPa`.
 //!
-//! # Two layers
+//! # Layers
 //!
 //! The model's layer values are mass-weighted means over σ, so the forcing is
 //! averaged the same way. Relaxing `T` at fixed `p` is relaxing θ toward
@@ -26,8 +26,8 @@
 //! ```
 //!
 //! where `⟨·⟩` is the mean over the layer's σ range. Friction acts only in
-//! the lower layer, at `⟨k_v⟩ = 0.3/day` for equal-mass layers; boundary-layer
-//! cooling likewise. The averages are computed by Gauss–Legendre quadrature
+//! layers reaching below `σ_b` (for two equal-mass layers, the lower at
+//! `⟨k_v⟩ = 0.3/day`); boundary-layer cooling likewise. The averages are computed by Gauss–Legendre quadrature
 //! in `x = σ^(1−κ)`, which makes the stratospheric branch `∝ σ^(−κ)` exact
 //! despite its singularity at the model top, with panel breaks at `σ_b`.
 //! Per node the dependence on `p_s` separates (`ln p = ln σ + ln p_s`), so
@@ -37,7 +37,7 @@ use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::forcing::Forcing;
-use crate::two_layer::{REFERENCE_PRESSURE, TwoLayer, TwoLayerState};
+use crate::layered::{LayeredModel, LayeredState, REFERENCE_PRESSURE};
 
 const DAY: f64 = 86_400.0;
 
@@ -112,16 +112,16 @@ pub struct HeldSuarez {
     kappa: f64,
     /// `sin²φ` per cell.
     sin2: Vec<f64>,
-    nodes: [Vec<Node>; 2],
+    nodes: Vec<Vec<Node>>,
     /// Layer-mean friction rate `⟨k_v⟩` (s⁻¹).
-    friction: [f64; 2],
+    friction: Vec<f64>,
 }
 
 impl HeldSuarez {
-    /// Forcing for `model` (its mesh, gas and interface σ).
-    pub fn new(model: &TwoLayer, params: HeldSuarezParams) -> Self {
+    /// Forcing for `model` (its mesh, gas and levels).
+    pub fn new(model: &LayeredModel, params: HeldSuarezParams) -> Self {
         let kappa = model.gas().kappa();
-        let sigma = model.sigma();
+        let levels = model.levels();
         let sin2 = model
             .operators()
             .mesh()
@@ -129,11 +129,16 @@ impl HeldSuarez {
             .iter()
             .map(|p| p.z * p.z)
             .collect();
-        let nodes = [(0.0, sigma), (sigma, 1.0)]
-            .map(|(a, b)| layer_nodes(a, b, params.sigma_boundary, kappa));
+        let nodes: Vec<Vec<Node>> = (0..levels.count())
+            .map(|k| {
+                let (a, b) = levels.bounds(k);
+                layer_nodes(a, b, params.sigma_boundary, kappa)
+            })
+            .collect();
         let friction = nodes
-            .clone()
-            .map(|n| params.friction * n.iter().map(|n| n.weight * n.boundary).sum::<f64>());
+            .iter()
+            .map(|n| params.friction * n.iter().map(|n| n.weight * n.boundary).sum::<f64>())
+            .collect();
         Self {
             params,
             kappa,
@@ -148,9 +153,9 @@ impl HeldSuarez {
         self.params
     }
 
-    /// Layer-mean friction rates `[upper, lower]` (s⁻¹).
-    pub fn friction(&self) -> [f64; 2] {
-        self.friction
+    /// Layer-mean friction rates, top first (s⁻¹).
+    pub fn friction(&self) -> &[f64] {
+        &self.friction
     }
 
     /// Radiative-equilibrium potential temperature (K) at latitude with
@@ -165,42 +170,44 @@ impl HeldSuarez {
         troposphere.max(stratosphere)
     }
 
-    /// Per layer, the relaxation rate `⟨k_T⟩` (s⁻¹) and `⟨k_T θ_eq⟩`
+    /// For layer `k`, the relaxation rate `⟨k_T⟩` (s⁻¹) and `⟨k_T θ_eq⟩`
     /// (K s⁻¹) for a column at `sin²φ = sin2` with surface pressure `ps`.
-    fn relaxation(&self, sin2: f64, ln_ps: f64, ps_pow: f64) -> [(f64, f64); 2] {
+    fn relaxation(&self, k: usize, sin2: f64, ln_ps: f64, ps_pow: f64) -> (f64, f64) {
         let hs = &self.params;
         let cos2 = 1.0 - sin2;
         let cos4 = cos2 * cos2;
         let troposphere = hs.t_surface - hs.delta_t_y * sin2;
         let strat = hs.t_stratosphere * ps_pow;
-        std::array::from_fn(|k| {
-            let (mut rate, mut forcing) = (0.0, 0.0);
-            for n in &self.nodes[k] {
-                let theta_eq = (troposphere - hs.delta_theta_z * (n.ln_sigma + ln_ps) * cos2)
-                    .max(strat * n.sigma_pow);
-                let k_t = hs.relaxation_free
-                    + (hs.relaxation_surface - hs.relaxation_free) * n.boundary * cos4;
-                rate += n.weight * k_t;
-                forcing += n.weight * k_t * theta_eq;
-            }
-            (rate, forcing)
-        })
+        let (mut rate, mut forcing) = (0.0, 0.0);
+        for n in &self.nodes[k] {
+            let theta_eq = (troposphere - hs.delta_theta_z * (n.ln_sigma + ln_ps) * cos2)
+                .max(strat * n.sigma_pow);
+            let k_t = hs.relaxation_free
+                + (hs.relaxation_surface - hs.relaxation_free) * n.boundary * cos4;
+            rate += n.weight * k_t;
+            forcing += n.weight * k_t * theta_eq;
+        }
+        (rate, forcing)
     }
 
     /// Layer-mean relaxation rates `⟨k_T⟩` (s⁻¹) and equilibrium potential
     /// temperatures `⟨k_T θ_eq⟩ / ⟨k_T⟩` (K) at a cell for surface pressure
-    /// `ps` (Pa).
-    pub fn equilibrium(&self, cell: usize, ps: f64) -> [(f64, f64); 2] {
+    /// `ps` (Pa), top layer first.
+    pub fn equilibrium(&self, cell: usize, ps: f64) -> Vec<(f64, f64)> {
         let (ln_ps, ps_pow) = self.surface_terms(ps);
-        self.relaxation(self.sin2[cell], ln_ps, ps_pow)
-            .map(|(rate, forcing)| (rate, forcing / rate))
+        (0..self.nodes.len())
+            .map(|k| {
+                let (rate, forcing) = self.relaxation(k, self.sin2[cell], ln_ps, ps_pow);
+                (rate, forcing / rate)
+            })
+            .collect()
     }
 
     /// The standard starting point: at rest, surface pressure `p₀`
     /// everywhere, each layer's θ the global mean of its equilibrium θ, plus
     /// deterministic noise of amplitude `noise` (K) to break the symmetry.
     /// For a flat planet.
-    pub fn initial_state(&self, model: &TwoLayer, noise: f64) -> TwoLayerState {
+    pub fn initial_state(&self, model: &LayeredModel, noise: f64) -> LayeredState {
         let ops = model.operators();
         let areas = &ops.geometry().cell_areas;
         let (nc, ne) = (ops.mesh().n_cells(), ops.mesh().n_edges());
@@ -212,19 +219,23 @@ impl HeldSuarez {
                 .sum::<f64>()
                 / total
         };
-        let means = [mean(0), mean(1)];
+        let n = model.layers();
+        let means: Vec<f64> = (0..n).map(mean).collect();
         let mut x = 0x2545_F491_4F6C_DD1Du64;
-        let theta = means.map(|m| {
-            (0..nc)
-                .map(|_| {
-                    x ^= x << 13;
-                    x ^= x >> 7;
-                    x ^= x << 17;
-                    m + noise * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
-                })
-                .collect()
-        });
-        TwoLayerState::new(vec![p0; nc], [vec![0.0; ne], vec![0.0; ne]], theta)
+        let theta = means
+            .iter()
+            .map(|&m| {
+                (0..nc)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        m + noise * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
+                    })
+                    .collect()
+            })
+            .collect();
+        LayeredState::new(vec![p0; nc], vec![vec![0.0; ne]; n], theta)
     }
 
     /// `ln(p_s/p₀)` and `(p₀/p_s)^κ`.
@@ -235,21 +246,21 @@ impl HeldSuarez {
 }
 
 impl Forcing for HeldSuarez {
-    fn add_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState) {
-        let [t0, t1] = &mut out.theta_ps;
-        t0.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(t1.par_iter_mut())
-            .enumerate()
-            .for_each(|(i, (d0, d1))| {
-                let ps = state.ps[i];
-                let (ln_ps, ps_pow) = self.surface_terms(ps);
-                let [(r0, f0), (r1, f1)] = self.relaxation(self.sin2[i], ln_ps, ps_pow);
-                // ∂Θ/∂t = p_s ∂θ/∂t at fixed p_s.
-                *d0 += ps * f0 - r0 * state.theta_ps[0][i];
-                *d1 += ps * f1 - r1 * state.theta_ps[1][i];
-            });
-        for k in 0..2 {
+    fn add_tendency(&mut self, state: &LayeredState, out: &mut LayeredState) {
+        let this = &*self;
+        for (k, out) in out.theta_ps.iter_mut().enumerate() {
+            out.par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(i, d)| {
+                    let ps = state.ps[i];
+                    let (ln_ps, ps_pow) = this.surface_terms(ps);
+                    let (r, f) = this.relaxation(k, this.sin2[i], ln_ps, ps_pow);
+                    // ∂Θ/∂t = p_s ∂θ/∂t at fixed p_s.
+                    *d += ps * f - r * state.theta_ps[k][i];
+                });
+        }
+        for k in 0..self.friction.len() {
             let rate = self.friction[k];
             if rate > 0.0 {
                 out.u[k]

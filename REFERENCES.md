@@ -37,6 +37,12 @@ confirmed, the entry says so.
 - **Robert, A. (1969).** The integration of a spectral model of the atmosphere
   by the implicit method. *Proc. WMO/IUGG Symposium on Numerical Weather
   Prediction*, Tokyo, VII-19–24. (No DOI.) — semi-implicit time stepping.
+- **Simmons, A. J., Hoskins, B. J. & Burridge, D. M. (1978).** Stability of
+  the semi-implicit method of time integration. *Mon. Wea. Rev.* 106,
+  405–412.
+  [doi:10.1175/1520-0493(1978)106<0405:SOTSIM>2.0.CO;2](https://doi.org/10.1175/1520-0493(1978)106<0405:SOTSIM>2.0.CO;2)
+  (DOI from citing papers' reference lists.) — why the semi-implicit
+  reference state is isothermal and warm.
 - **Williams, P. D. (2009).** A proposed modification to the Robert–Asselin
   time filter. *Mon. Wea. Rev.* 137, 2538–2546.
   [doi:10.1175/2009MWR2724.1](https://doi.org/10.1175/2009MWR2724.1)
@@ -52,7 +58,7 @@ confirmed, the entry says so.
 - **Arakawa, A. & Suarez, M. J. (1983).** Vertical differencing of the
   primitive equations in sigma coordinates. *Mon. Wea. Rev.* 111, 34–45.
   [doi:10.1175/1520-0493(1983)111<0034:VDOTPE>2.0.CO;2](https://doi.org/10.1175/1520-0493(1983)111<0034:VDOTPE>2.0.CO;2)
-  — the energy-conserving vertical discretization.
+  — the energy-conserving vertical discretization, for any number of layers.
 - **Holton, J. R.** *An Introduction to Dynamic Meteorology.* Academic Press.
   (Textbook.) — two-level quasi-geostrophic theory (§8.2).
 - **Williamson, D. L., Drake, J. B., Hack, J. J., Jakob, R. &

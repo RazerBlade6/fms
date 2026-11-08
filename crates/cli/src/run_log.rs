@@ -5,14 +5,14 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use fms_atmos::{EnergyBudget, Health, TwoLayerDiagnostics};
+use fms_atmos::{EnergyBudget, Health, LayeredDiagnostics};
 
 /// One sample.
 #[derive(Clone, Copy, Debug)]
 pub struct Record {
     pub step: u64,
     pub day: f64,
-    pub diagnostics: TwoLayerDiagnostics,
+    pub diagnostics: LayeredDiagnostics,
     /// Energy added by forcing and diffusion since the start of the run (J).
     pub budget: EnergyBudget,
     pub health: Health,

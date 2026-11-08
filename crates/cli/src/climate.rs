@@ -13,11 +13,11 @@ use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_geo::LatitudeBands;
 
 use crate::chart::{self, Series, TimeAxis};
-use crate::render::write_png;
-use crate::two_layer_run::{
+use crate::layered_run::{
     DynamicsArgs, Fields, Output, Plan, SAMPLES_PER_DAY, build_model, describe, integrate, stepper,
     write_map,
 };
+use crate::render::write_png;
 use crate::{ImageArgs, WorldArgs, build_world};
 
 /// Design wind for the step: radiatively driven jets and storms reach
@@ -248,7 +248,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .iter()
         .map(|s| s.iter().map(|v| v / samples).collect())
         .collect();
-    let zonal = climate.means();
+    let zonal = crate::layered_run::upper_and_lower(si.model(), climate.means());
     let zonal_physics: Vec<Vec<f64>> = means.iter().map(|m| lat_bands.mean(geometry, m)).collect();
 
     // Annual-mean maps.

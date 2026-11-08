@@ -1,12 +1,12 @@
-//! Semi-implicit leapfrog time stepping for the two-layer model, with the
-//! RAW filter: the two-layer version of [`crate::semi_implicit`].
+//! Semi-implicit leapfrog time stepping for the layered model, with the
+//! RAW filter: the layered version of [`crate::semi_implicit`].
 //!
 //! # Splitting
 //!
-//! About a resting, flat reference state (`p̄`, `θ̄₀`, `θ̄₁`; by default the
-//! initial global means), the gravity-wave terms are linear in
-//! `y = (p_s, θ₀ᴸ, θ₁ᴸ)` with `θₖᴸ = (Θₖ − θ̄ₖ p_s)/p̄`, and the layer divergences
-//! `δₖ = ∇·uₖ`:
+//! About a resting, flat reference state (`p̄` and `θ̄ₖ`; see [Reference
+//! state](#reference-state)), the gravity-wave terms are linear in
+//! `y = (p_s, θ₀ᴸ, …, θ_{N−1}ᴸ)` with `θₖᴸ = (Θₖ − θ̄ₖ p_s)/p̄`, and the layer
+//! divergences `δₖ = ∇·uₖ`:
 //!
 //! ```text
 //! ∂y/∂t = B δ,     ∂uₖ/∂t = −∇Mₖ,   M = J y
@@ -30,14 +30,28 @@
 //! (I + Δt² A ∇²) Mⁿ⁺¹ = J Y + Δt A ∇·U,     A = J B
 //! ```
 //!
-//! `A` has eigenvalues `−c²` for the external and internal gravity waves, so
-//! in its eigenvectors the system splits into two scalar Helmholtz problems
+//! `A` has eigenvalues `−c²` for the external and `N − 1` internal gravity
+//! waves, so in its eigenvectors the system splits into `N` scalar Helmholtz
+//! problems
 //! `(I − Δt² c² ∇²) M̃ = r̃`, each solved by conjugate gradient. Then
 //! `uⁿ⁺¹ = U − Δt ∇Mⁿ⁺¹` and `yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹`.
 //!
 //! Because the new surface pressure and `Θ` come from the divergence of the
 //! new winds, which has no net source, total mass and total `Θ` are conserved
 //! to round-off whatever the solver tolerance.
+//!
+//! # Reference state
+//!
+//! The split is stable only if the reference's gravity waves are at least as
+//! fast as the atmosphere's: otherwise the excess is stepped explicitly and
+//! grows at long steps (Simmons, Hoskins & Burridge 1978). So by default the
+//! reference is isothermal (more stable than any troposphere) and warm: at
+//! [`REFERENCE_TEMPERATURE`], or at the starting state's warmest layer if
+//! that is warmer, with `p̄` the global-mean surface pressure. The starting
+//! state's own mean profile would do for two layers, but with more, a
+//! weakly stratified start (Held–Suarez begins with the layers' mean
+//! equilibrium θ only a few kelvin apart near the ground) blows up within a
+//! month as the forcing stratifies it.
 //!
 //! # Diffusion
 //!
@@ -46,7 +60,7 @@
 //! `xⁿ⁺¹ = xⁿ⁻¹ + 2Δt D(xⁿ⁻¹) + …`. Centred in time, damping would be
 //! unstable under leapfrog; lagged, it is stable while `Δt` times the fastest
 //! damping rate is below 1. The energy each adds or removes is accumulated in
-//! [`TwoLayerSemiImplicit::energy_budget`].
+//! [`LayeredSemiImplicit::energy_budget`].
 //!
 //! # Humidity
 //!
@@ -55,10 +69,11 @@
 //! positive and consistent with the surface pressure; the physics sources
 //! (lagged, like the rest of the forcing) go in with it. The RAW filter acts
 //! on `Q` too, and can leave a trace of negative humidity, which is filled
-//! from the column's other layer where it can be and otherwise set to zero.
-//! [`TwoLayerSemiImplicit::water_budget`] accounts for every kilogram:
+//! from the column's other layers where they can spare it (the nearest
+//! first) and otherwise set to zero.
+//! [`LayeredSemiImplicit::water_budget`] accounts for every kilogram:
 //! because leapfrog advances two interleaved levels, the water it closes on
-//! is the mean of the two current levels ([`TwoLayerSemiImplicit::water`]).
+//! is the mean of the two current levels ([`LayeredSemiImplicit::water`]).
 
 use fms_geo::Operators;
 use fms_geo::operators::MIN_CHUNK;
@@ -66,17 +81,22 @@ use rayon::prelude::*;
 
 use crate::forcing::EnergyTerms;
 use crate::helmholtz::{Helmholtz, SolveReport, dot};
+use crate::layered::{LayeredModel, LayeredState, Linearization};
+use crate::levels::Eigen;
 use crate::safety::{self, BlowUp, Health, Limits};
 use crate::semi_implicit::SolverStats;
 use crate::transport::{Transport, TransportStep};
-use crate::two_layer::{Linearization, TwoLayer, TwoLayerState};
 
-/// Settings for [`TwoLayerSemiImplicit`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TwoLayerSemiImplicitOptions {
-    /// Reference `(p̄, [θ̄₀, θ̄₁])` for the linearization; `None` uses the
-    /// initial state's global means (area-weighted `p_s`, mass-weighted θ).
-    pub reference: Option<(f64, [f64; 2])>,
+/// Lowest temperature (K) of the default isothermal reference state (see
+/// the module docs).
+pub const REFERENCE_TEMPERATURE: f64 = 300.0;
+
+/// Settings for [`LayeredSemiImplicit`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayeredSemiImplicitOptions {
+    /// Reference `(p̄, θ̄ₖ)` for the linearization; `None` uses an isothermal
+    /// reference (see the module docs).
+    pub reference: Option<(f64, Vec<f64>)>,
     /// RAW filter strength `ν`.
     pub filter_strength: f64,
     /// RAW filter weight `α`.
@@ -85,7 +105,7 @@ pub struct TwoLayerSemiImplicitOptions {
     pub tolerance: f64,
 }
 
-impl Default for TwoLayerSemiImplicitOptions {
+impl Default for LayeredSemiImplicitOptions {
     fn default() -> Self {
         Self {
             reference: None,
@@ -110,7 +130,7 @@ pub struct EnergyBudget {
 
 /// Water added since the start (kg), by cause. With it,
 /// `water(now) − water(start) − sources − filter − fixer` is round-off
-/// ([`TwoLayerSemiImplicit::water`]).
+/// ([`LayeredSemiImplicit::water`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WaterBudget {
     /// The forcing's sources: evaporation minus precipitation.
@@ -127,83 +147,66 @@ pub struct WaterBudget {
     pub max_substeps: u32,
 }
 
-/// The vertical modes: `A = V diag(−c²) V⁻¹`.
-#[derive(Clone, Copy, Debug)]
+/// The vertical modes: `A = V diag(−c²) V⁻¹`, fastest (external) first.
+#[derive(Clone, Debug)]
 struct Modes {
-    /// Columns are the eigenvectors (external first).
-    v: [[f64; 2]; 2],
-    v_inv: [[f64; 2]; 2],
+    /// Columns are the eigenvectors.
+    v: Vec<Vec<f64>>,
+    v_inv: Vec<Vec<f64>>,
     /// `c²` per mode.
-    speed2: [f64; 2],
+    speed2: Vec<f64>,
 }
 
 impl Modes {
-    fn of(a: [[f64; 2]; 2]) -> Self {
-        let (tr, det) = (a[0][0] + a[1][1], a[0][0] * a[1][1] - a[0][1] * a[1][0]);
-        let disc = (0.25 * tr * tr - det).max(0.0).sqrt();
-        // Most negative eigenvalue (fastest wave, external) first.
-        let lambda = [0.5 * tr - disc, 0.5 * tr + disc];
-        let vector = |l: f64, fallback: [f64; 2]| -> [f64; 2] {
-            let (x, y) = if a[0][1].abs() >= a[1][0].abs() && a[0][1] != 0.0 {
-                (a[0][1], l - a[0][0])
-            } else if a[1][0] != 0.0 {
-                (l - a[1][1], a[1][0])
-            } else {
-                (fallback[0], fallback[1])
-            };
-            let n = (x * x + y * y).sqrt();
-            [x / n, y / n]
-        };
-        let (e0, e1) = (vector(lambda[0], [1.0, 0.0]), vector(lambda[1], [0.0, 1.0]));
-        let v = [[e0[0], e1[0]], [e0[1], e1[1]]];
-        let d = v[0][0] * v[1][1] - v[0][1] * v[1][0];
-        let v_inv = [[v[1][1] / d, -v[0][1] / d], [-v[1][0] / d, v[0][0] / d]];
+    fn of(a: &[Vec<f64>]) -> Self {
+        // Eigenvalues increase: the most negative (fastest wave) first.
+        let e = Eigen::of(a);
         Self {
-            v,
-            v_inv,
-            speed2: lambda.map(|l| (-l).max(0.0)),
+            v: e.vectors,
+            v_inv: e.inverse,
+            speed2: e.values.iter().map(|l| (-l).max(0.0)).collect(),
         }
     }
 }
 
-/// Two-layer model stepped semi-implicitly.
-pub struct TwoLayerSemiImplicit<'a> {
-    model: TwoLayer<'a>,
+/// The layered model stepped semi-implicitly.
+pub struct LayeredSemiImplicit<'a> {
+    model: LayeredModel<'a>,
     ops: Operators<'a>,
-    helmholtz: [Helmholtz<'a>; 2],
+    helmholtz: Vec<Helmholtz<'a>>,
     lin: Linearization,
     /// `A = J B`.
-    a: [[f64; 2]; 2],
+    a: Vec<Vec<f64>>,
     modes: Modes,
-    reference: (f64, [f64; 2]),
-    options: TwoLayerSemiImplicitOptions,
+    reference: (f64, Vec<f64>),
+    options: LayeredSemiImplicitOptions,
     dt: f64,
-    previous: TwoLayerState,
-    current: TwoLayerState,
+    previous: LayeredState,
+    current: LayeredState,
     steps: u64,
     stats: SolverStats,
     budget: EnergyBudget,
     water: WaterBudget,
     transport: Option<Transport>,
     // Scratch.
-    tendency: TwoLayerState,
+    tendency: LayeredState,
     /// Lagged tendencies: diffusion plus forcing.
-    physics: TwoLayerState,
-    forcing: TwoLayerState,
-    next: TwoLayerState,
-    big_u: [Vec<f64>; 2],
-    m: [Vec<f64>; 2],
-    modal: [Vec<f64>; 2],
-    rhs: [Vec<f64>; 2],
-    div: [Vec<f64>; 2],
-    div_prev: [Vec<f64>; 2],
+    physics: LayeredState,
+    forcing: LayeredState,
+    next: LayeredState,
+    big_u: Vec<Vec<f64>>,
+    m: Vec<Vec<f64>>,
+    modal: Vec<Vec<f64>>,
+    rhs: Vec<Vec<f64>>,
+    div: Vec<Vec<f64>>,
+    div_prev: Vec<Vec<f64>>,
     grad: Vec<f64>,
     cells: Vec<f64>,
-    mass_flux: [Vec<f64>; 2],
+    mass_flux: Vec<Vec<f64>>,
     zeros: Vec<f64>,
 }
 
-impl<'a> TwoLayerSemiImplicit<'a> {
+impl<'a> LayeredSemiImplicit<'a> {
     /// Start from `state` with step `dt` (s). Takes the first step at once,
     /// with RK4 substeps at Courant number `start_courant` (e.g. 0.5).
     ///
@@ -211,10 +214,10 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     /// If the model has hyperdiffusion too strong for `dt`:
     /// `dt · max_rate ≥ 1` ([`crate::Hyperdiffusion::max_rate`]).
     pub fn new(
-        mut model: TwoLayer<'a>,
-        state: TwoLayerState,
+        mut model: LayeredModel<'a>,
+        state: LayeredState,
         dt: f64,
-        options: TwoLayerSemiImplicitOptions,
+        options: LayeredSemiImplicitOptions,
         start_courant: f64,
     ) -> Self {
         if let Some(d) = model.hyperdiffusion() {
@@ -224,18 +227,25 @@ impl<'a> TwoLayerSemiImplicit<'a> {
                 dt * d.max_rate()
             );
         }
+        let n = model.layers();
+        assert_eq!(state.layers(), n, "the state must have the model's layers");
         let ops = *model.operators();
         let reference = options
             .reference
-            .unwrap_or_else(|| global_means(&ops, &state, model.dsigma()));
-        let lin = model.linearization(reference.0, reference.1);
-        let a = model.gravity_wave_matrix(reference.0, reference.1);
-        let modes = Modes::of(a);
-        let helmholtz = modes.speed2.map(|c2| {
-            let mut h = Helmholtz::new(ops, dt * dt * c2);
-            h.tolerance = options.tolerance;
-            h
-        });
+            .clone()
+            .unwrap_or_else(|| isothermal_reference(&model, &state));
+        let lin = model.linearization(reference.0, &reference.1);
+        let a = model.gravity_wave_matrix(reference.0, &reference.1);
+        let modes = Modes::of(&a);
+        let helmholtz = modes
+            .speed2
+            .iter()
+            .map(|&c2| {
+                let mut h = Helmholtz::new(ops, dt * dt * c2);
+                h.tolerance = options.tolerance;
+                h
+            })
+            .collect();
 
         let substeps = (dt / model.stable_dt(&state, start_courant))
             .ceil()
@@ -255,22 +265,26 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             model.step(&mut current, dt / substeps);
         }
         let (nc, ne) = (state.ps.len(), state.u[0].len());
-        let cells = || vec![0.0; nc];
-        let edges = || vec![0.0; ne];
+        let cells = || vec![vec![0.0; nc]; n];
+        let edges = || vec![vec![0.0; ne]; n];
         let moist = state.is_moist();
         if moist {
             // The RK4 start's centred transport isn't monotone: keep its
             // humidity within the initial range nearby (the cell, its
-            // neighbours and the other layer). What this changes is part of
-            // the starting water, not the budget.
+            // neighbours and the adjacent layers). What this changes is part
+            // of the starting water, not the budget.
             let mesh = ops.mesh();
-            for k in 0..2 {
+            for k in 0..n {
                 let q = |l: usize, i: usize| state.q_ps[l][i] / state.ps[i];
                 for i in 0..nc {
-                    let (mut lo, mut hi) = (q(k, i).min(q(1 - k, i)), q(k, i).max(q(1 - k, i)));
-                    for &n in mesh.cell_neighbors(i as u32) {
-                        lo = lo.min(q(k, n as usize));
-                        hi = hi.max(q(k, n as usize));
+                    let (mut lo, mut hi) = (q(k, i), q(k, i));
+                    for l in adjacent(k, n) {
+                        lo = lo.min(q(l, i));
+                        hi = hi.max(q(l, i));
+                    }
+                    for &c in mesh.cell_neighbors(i as u32) {
+                        lo = lo.min(q(k, c as usize));
+                        hi = hi.max(q(k, c as usize));
                     }
                     let p = current.ps[i];
                     current.q_ps[k][i] = current.q_ps[k][i].clamp(p * lo.max(0.0), p * hi);
@@ -293,21 +307,21 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             stats: SolverStats::default(),
             budget,
             water: WaterBudget::default(),
-            transport: moist.then(|| Transport::new(nc, ne)),
+            transport: moist.then(|| Transport::new(n, nc, ne)),
             tendency: state.dry(),
             physics,
             forcing,
             next: state,
-            big_u: [edges(), edges()],
-            m: [cells(), cells()],
-            modal: [cells(), cells()],
-            rhs: [cells(), cells()],
-            div: [cells(), cells()],
-            div_prev: [cells(), cells()],
-            grad: edges(),
-            cells: cells(),
-            mass_flux: [edges(), edges()],
-            zeros: cells(),
+            big_u: edges(),
+            m: cells(),
+            modal: cells(),
+            rhs: cells(),
+            div: cells(),
+            div_prev: cells(),
+            grad: vec![0.0; ne],
+            cells: vec![0.0; nc],
+            mass_flux: edges(),
+            zeros: vec![0.0; nc],
         };
         // First guess for the modal potentials: those of the current state.
         let y = solver.y_of(&solver.current.clone());
@@ -317,13 +331,13 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     }
 
     /// The current state.
-    pub fn state(&self) -> &TwoLayerState {
+    pub fn state(&self) -> &LayeredState {
         &self.current
     }
 
     /// The current state, mutably: for experiments such as injecting a
     /// fault. Only the current time level changes, not the previous one.
-    pub fn state_mut(&mut self) -> &mut TwoLayerState {
+    pub fn state_mut(&mut self) -> &mut LayeredState {
         &mut self.current
     }
 
@@ -364,8 +378,8 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     /// Safety limits for this run: the Courant limit and bounds about the
     /// reference state ([`Limits::around`]).
     pub fn limits(&self) -> Limits {
-        let (p_bar, th_bar) = self.reference;
-        Limits::around(self.courant_limit(), p_bar, th_bar)
+        let (p_bar, th_bar) = &self.reference;
+        Limits::around(self.courant_limit(), *p_bar, th_bar)
     }
 
     /// Check the current state against [`limits`](Self::limits).
@@ -374,7 +388,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     }
 
     /// The underlying model.
-    pub fn model(&self) -> &TwoLayer<'a> {
+    pub fn model(&self) -> &LayeredModel<'a> {
         &self.model
     }
 
@@ -388,18 +402,17 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         self.dt
     }
 
-    /// Reference `(p̄, [θ̄₀, θ̄₁])` of the linearization.
-    pub fn reference(&self) -> (f64, [f64; 2]) {
-        self.reference
+    /// Reference `(p̄, θ̄ₖ)` of the linearization.
+    pub fn reference(&self) -> (f64, &[f64]) {
+        (self.reference.0, &self.reference.1)
     }
 
-    /// Gravity-wave speeds `[external, internal]` of the reference state
-    /// (m s⁻¹).
-    pub fn wave_speeds(&self) -> [f64; 2] {
-        self.modes.speed2.map(f64::sqrt)
+    /// Gravity-wave speeds of the reference state (m s⁻¹), external first.
+    pub fn wave_speeds(&self) -> Vec<f64> {
+        self.modes.speed2.iter().map(|c| c.sqrt()).collect()
     }
 
-    /// Helmholtz solver totals (both modes).
+    /// Helmholtz solver totals (all modes).
     pub fn solver_stats(&self) -> SolverStats {
         self.stats
     }
@@ -407,7 +420,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     /// The longest stable step (s) for winds up to `max_wind` (m s⁻¹) at
     /// Courant number `courant`: advection and the inertial limit, as for the
     /// shallow-water scheme ([`crate::SemiImplicit::stable_dt`]).
-    pub fn stable_dt(model: &TwoLayer, max_wind: f64, courant: f64) -> f64 {
+    pub fn stable_dt(model: &LayeredModel, max_wind: f64, courant: f64) -> f64 {
         let ops = model.operators();
         let min_d = ops
             .geometry()
@@ -425,9 +438,9 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         courant * advective.min(inertial)
     }
 
-    /// `y = (p_s, θ₀ᴸ, θ₁ᴸ)` of a state.
-    fn y_of(&self, s: &TwoLayerState) -> [Vec<f64>; 3] {
-        let (p_bar, th_bar) = self.reference;
+    /// `y = (p_s, θ₀ᴸ, …)` of a state.
+    fn y_of(&self, s: &LayeredState) -> Vec<Vec<f64>> {
+        let (p_bar, th_bar) = (self.reference.0, &self.reference.1);
         let theta_l = |k: usize| -> Vec<f64> {
             s.theta_ps[k]
                 .par_iter()
@@ -436,48 +449,33 @@ impl<'a> TwoLayerSemiImplicit<'a> {
                 .map(|(t, p)| (t - th_bar[k] * p) / p_bar)
                 .collect()
         };
-        [s.ps.clone(), theta_l(0), theta_l(1)]
+        let mut y = vec![s.ps.clone()];
+        y.extend((0..s.layers()).map(theta_l));
+        y
     }
 
     /// `M = J y` per layer.
-    fn potentials(&self, y: &[Vec<f64>; 3]) -> [Vec<f64>; 2] {
-        let j = self.lin.j;
-        std::array::from_fn(|k| {
-            (0..y[0].len())
-                .into_par_iter()
-                .with_min_len(MIN_CHUNK)
-                .map(|i| j[k][0] * y[0][i] + j[k][1] * y[1][i] + j[k][2] * y[2][i])
-                .collect()
-        })
+    fn potentials(&self, y: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        self.lin.j.iter().map(|row| combine(row, y)).collect()
     }
 
-    fn to_modes(&self, m: &[Vec<f64>; 2]) -> [Vec<f64>; 2] {
-        let w = self.modes.v_inv;
-        std::array::from_fn(|r| {
-            m[0].par_iter()
-                .with_min_len(MIN_CHUNK)
-                .zip(&m[1])
-                .map(|(a, b)| w[r][0] * a + w[r][1] * b)
-                .collect()
-        })
+    fn to_modes(&self, m: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        self.modes.v_inv.iter().map(|row| combine(row, m)).collect()
     }
 
-    /// Advance one step. Returns the solve reports of the external and
-    /// internal modes.
-    // Loops over the two layers index several per-layer arrays together.
+    /// Advance one step. Returns the solve report of each vertical mode
+    /// (external first).
+    // Loops over the layers index several per-layer arrays together.
     #[allow(clippy::needless_range_loop)]
-    pub fn step(&mut self) -> [SolveReport; 2] {
+    pub fn step(&mut self) -> Vec<SolveReport> {
         let ops = self.ops;
         let dt = self.dt;
-        let (p_bar, th_bar) = self.reference;
-        let (j, b, a) = (self.lin.j, self.lin.b, self.a);
+        let n = self.model.layers();
+        let (p_bar, th_bar) = (self.reference.0, self.reference.1.clone());
+        let (j, b, a) = (&self.lin.j, &self.lin.b, &self.a);
 
         // Full tendency at the middle level.
-        let empty = TwoLayerState::new(
-            Vec::new(),
-            [Vec::new(), Vec::new()],
-            [Vec::new(), Vec::new()],
-        );
+        let empty = LayeredState::new(Vec::new(), Vec::new(), Vec::new());
         let mut current = std::mem::replace(&mut self.current, empty);
         self.model.tendency(&current, &mut self.tendency);
         // Hyperdiffusion and forcing, lagged to the old level.
@@ -516,7 +514,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         let d = &self.physics;
 
         // Divergences of uⁿ and uⁿ⁻¹.
-        for k in 0..2 {
+        for k in 0..n {
             ops.divergence(&current.u[k], &mut self.div[k]);
             ops.divergence(&self.previous.u[k], &mut self.div_prev[k]);
         }
@@ -525,8 +523,9 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         // Y = yⁿ⁻¹ + 2Δt (T_y − B δⁿ) + Δt B δⁿ⁻¹, in y-space.
         let y_prev = self.y_of(&self.previous);
         let nc = current.ps.len();
-        let mut big_y = [vec![0.0; nc], vec![0.0; nc], vec![0.0; nc]];
+        let mut big_y = vec![vec![0.0; nc]; n + 1];
         for (r, out) in big_y.iter_mut().enumerate() {
+            let th_bar = &th_bar;
             out.par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
@@ -537,8 +536,11 @@ impl<'a> TwoLayerSemiImplicit<'a> {
                         let diffusion = if diffuse { d.theta_ps[r - 1][i] } else { 0.0 };
                         (t.theta_ps[r - 1][i] + diffusion - th_bar[r - 1] * t.ps[i]) / p_bar
                     };
-                    let b_now = b[r][0] * div[0][i] + b[r][1] * div[1][i];
-                    let b_old = b[r][0] * div_prev[0][i] + b[r][1] * div_prev[1][i];
+                    let (mut b_now, mut b_old) = (b[r][0] * div[0][i], b[r][0] * div_prev[0][i]);
+                    for l in 1..n {
+                        b_now += b[r][l] * div[l][i];
+                        b_old += b[r][l] * div_prev[l][i];
+                    }
                     *o = y_prev[r][i] + 2.0 * dt * (t_y - b_now) + dt * b_old;
                 });
         }
@@ -546,7 +548,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         // Uₖ = uₖⁿ⁻¹ + 2Δt (T_u + ∇Mₖ(yⁿ)) − Δt ∇Mₖ(yⁿ⁻¹).
         let y_now = self.y_of(&current);
         let (m_now, m_prev) = (self.potentials(&y_now), self.potentials(&y_prev));
-        for k in 0..2 {
+        for k in 0..n {
             // ∇(2 Mₖ(yⁿ) − Mₖ(yⁿ⁻¹)) combines both linear terms in one gradient.
             self.cells
                 .par_iter_mut()
@@ -566,43 +568,41 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         }
 
         // rhs = J Y + Δt A ∇·U.
-        let mut div_u = [vec![0.0; nc], vec![0.0; nc]];
+        let mut div_u = vec![vec![0.0; nc]; n];
         for (u, d) in self.big_u.iter().zip(&mut div_u) {
             ops.divergence(u, d);
         }
         for (k, out) in self.rhs.iter_mut().enumerate() {
+            let (big_y, div_u) = (&big_y, &div_u);
             out.par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
                 .for_each(|(i, r)| {
-                    *r = j[k][0] * big_y[0][i]
-                        + j[k][1] * big_y[1][i]
-                        + j[k][2] * big_y[2][i]
-                        + dt * (a[k][0] * div_u[0][i] + a[k][1] * div_u[1][i]);
+                    let mut jy = j[k][0] * big_y[0][i];
+                    for c in 1..=n {
+                        jy += j[k][c] * big_y[c][i];
+                    }
+                    let mut ad = a[k][0] * div_u[0][i];
+                    for c in 1..n {
+                        ad += a[k][c] * div_u[c][i];
+                    }
+                    *r = jy + dt * ad;
                 });
         }
 
-        // Two scalar Helmholtz problems in the vertical modes.
+        // N scalar Helmholtz problems in the vertical modes.
         let rhs_modal = self.to_modes(&self.rhs);
-        let mut reports = [SolveReport {
-            iterations: 0,
-            relative_residual: 0.0,
-        }; 2];
-        for (mode, report) in reports.iter_mut().enumerate() {
-            *report = self.helmholtz[mode].solve(&rhs_modal[mode], &mut self.modal[mode]);
+        let mut reports = Vec::with_capacity(n);
+        for mode in 0..n {
+            reports.push(self.helmholtz[mode].solve(&rhs_modal[mode], &mut self.modal[mode]));
         }
-        let v = self.modes.v;
         for (k, out) in self.m.iter_mut().enumerate() {
-            let modal = &self.modal;
-            out.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, m)| *m = v[k][0] * modal[0][i] + v[k][1] * modal[1][i]);
+            *out = combine(&self.modes.v[k], &self.modal);
         }
 
         // uⁿ⁺¹ = U − Δt ∇Mⁿ⁺¹; yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹.
         let next = &mut self.next;
-        for k in 0..2 {
+        for k in 0..n {
             ops.gradient(&self.m[k], &mut self.grad);
             let (big_u, grad) = (&self.big_u[k], &self.grad);
             next.u[k]
@@ -613,21 +613,30 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             ops.divergence(&next.u[k], &mut self.div[k]);
         }
         let div = &self.div;
-        let y_new: [Vec<f64>; 3] = std::array::from_fn(|r| {
-            (0..nc)
-                .into_par_iter()
-                .with_min_len(MIN_CHUNK)
-                .map(|i| big_y[r][i] + dt * (b[r][0] * div[0][i] + b[r][1] * div[1][i]))
-                .collect()
-        });
+        let y_new: Vec<Vec<f64>> = (0..=n)
+            .map(|r| {
+                let big_y = &big_y;
+                (0..nc)
+                    .into_par_iter()
+                    .with_min_len(MIN_CHUNK)
+                    .map(|i| {
+                        let mut bd = b[r][0] * div[0][i];
+                        for l in 1..n {
+                            bd += b[r][l] * div[l][i];
+                        }
+                        big_y[r][i] + dt * bd
+                    })
+                    .collect()
+            })
+            .collect();
         next.ps.copy_from_slice(&y_new[0]);
-        for k in 0..2 {
-            let (ps, yk) = (&y_new[0], &y_new[k + 1]);
+        for k in 0..n {
+            let (ps, yk, th) = (&y_new[0], &y_new[k + 1], th_bar[k]);
             next.theta_ps[k]
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
-                .for_each(|(i, t)| *t = p_bar * yk[i] + th_bar[k] * ps[i]);
+                .for_each(|(i, t)| *t = p_bar * yk[i] + th * ps[i]);
         }
 
         // Humidity: flux-corrected transport with the step's mass fluxes,
@@ -635,7 +644,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         if let Some(transport) = &mut self.transport {
             let ds = self.model.dsigma();
             ops.cell_to_edge(&current.ps, &mut self.grad);
-            for k in 0..2 {
+            for k in 0..n {
                 let (ps_e, now, old, new) =
                     (&self.grad, &current.u[k], &self.previous.u[k], &next.u[k]);
                 self.mass_flux[k]
@@ -647,36 +656,60 @@ impl<'a> TwoLayerSemiImplicit<'a> {
                             * (ps_e[e] * now[e] + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
                     });
             }
-            let mut d0 = vec![0.0; nc];
-            ops.divergence(&self.mass_flux[0], &mut d0);
-            ops.divergence(&self.mass_flux[1], &mut self.cells);
-            let interface: Vec<f64> = d0
-                .par_iter()
-                .with_min_len(MIN_CHUNK)
-                .zip(self.cells.par_iter())
-                .map(|(d0, d1)| ds[0] * d1 - ds[1] * d0)
+            let mut flux_div = vec![vec![0.0; nc]; n];
+            for (f, d) in self.mass_flux.iter().zip(&mut flux_div) {
+                ops.divergence(f, d);
+            }
+            // The interface fluxes they imply (as in the dynamics).
+            let interface: Vec<Vec<f64>> = self
+                .model
+                .levels()
+                .interior()
+                .iter()
+                .enumerate()
+                .map(|(j, &s)| {
+                    let flux_div = &flux_div;
+                    (0..nc)
+                        .into_par_iter()
+                        .with_min_len(MIN_CHUNK)
+                        .map(|i| {
+                            let mut above = flux_div[0][i];
+                            for d in &flux_div[1..=j] {
+                                above += d[i];
+                            }
+                            let mut below = flux_div[j + 1][i];
+                            for d in &flux_div[j + 2..] {
+                                below += d[i];
+                            }
+                            s * below - (1.0 - s) * above
+                        })
+                        .collect()
+                })
                 .collect();
-            let q_mid: [Vec<f64>; 2] = std::array::from_fn(|k| current.humidity(k));
+            let q_mid: Vec<Vec<f64>> = (0..n).map(|k| current.humidity(k)).collect();
             let ratio = self.model.interface_ratios(&current);
-            let source = if diffuse {
-                [d.q_ps[0].as_slice(), d.q_ps[1].as_slice()]
+            let source: Vec<&[f64]> = if diffuse {
+                d.q_ps.iter().map(Vec::as_slice).collect()
             } else {
-                [self.zeros.as_slice(), self.zeros.as_slice()]
+                vec![self.zeros.as_slice(); n]
             };
             let input = TransportStep {
                 dsigma: ds,
                 interval: 2.0 * dt,
                 ps_old: &self.previous.ps,
                 ps_new: &next.ps,
-                flux: [&self.mass_flux[0], &self.mass_flux[1]],
-                interface: &interface,
-                q_old: [&self.previous.q_ps[0], &self.previous.q_ps[1]],
-                q_mid: [&q_mid[0], &q_mid[1]],
+                flux: self.mass_flux.iter().map(Vec::as_slice).collect(),
+                interface: interface.iter().map(Vec::as_slice).collect(),
+                q_old: self.previous.q_ps.iter().map(Vec::as_slice).collect(),
+                q_mid: q_mid.iter().map(Vec::as_slice).collect(),
                 source,
-                interface_ratio: [&ratio[0], &ratio[1]],
+                interface_ratio: ratio
+                    .iter()
+                    .map(|[up, down]| [up.as_slice(), down.as_slice()])
+                    .collect(),
             };
-            let [q0, q1] = &mut next.q_ps;
-            let report = transport.step(&ops, &input, [q0, q1]);
+            let outs: Vec<&mut [f64]> = next.q_ps.iter_mut().map(Vec::as_mut_slice).collect();
+            let report = transport.step(&ops, &input, outs);
             self.water.max_substeps = self.water.max_substeps.max(report.substeps);
         }
 
@@ -687,20 +720,23 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         // water of the two levels the filter changes.
         let moist = self.transport.is_some();
         let (bounds, water_before) = if moist {
-            let bounds: [Vec<(f64, f64)>; 2] = std::array::from_fn(|k| {
-                (0..nc)
-                    .into_par_iter()
-                    .with_min_len(MIN_CHUNK)
-                    .map(|i| {
-                        let q = [
-                            self.previous.q_ps[k][i] / self.previous.ps[i],
-                            current.q_ps[k][i] / current.ps[i],
-                            next.q_ps[k][i] / next.ps[i],
-                        ];
-                        (q[0].min(q[1]).min(q[2]), q[0].max(q[1]).max(q[2]))
-                    })
-                    .collect()
-            });
+            let bounds: Vec<Vec<(f64, f64)>> = (0..n)
+                .map(|k| {
+                    let (previous, current, next) = (&self.previous, &current, &*next);
+                    (0..nc)
+                        .into_par_iter()
+                        .with_min_len(MIN_CHUNK)
+                        .map(|i| {
+                            let q = [
+                                previous.q_ps[k][i] / previous.ps[i],
+                                current.q_ps[k][i] / current.ps[i],
+                                next.q_ps[k][i] / next.ps[i],
+                            ];
+                            (q[0].min(q[1]).min(q[2]), q[0].max(q[1]).max(q[2]))
+                        })
+                        .collect()
+                })
+                .collect();
             let w = self.model.water(&current) + self.model.water(next);
             (Some(bounds), w)
         } else {
@@ -712,7 +748,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             // (the filter is linear, so this never acts on a uniform q), and
             // account for the water the filter changed.
             for level in [&mut current, &mut *next] {
-                for k in 0..2 {
+                for k in 0..n {
                     let (ps, b) = (&level.ps, &bounds[k]);
                     level.q_ps[k]
                         .par_iter_mut()
@@ -723,7 +759,8 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             }
             let after = self.model.water(&current) + self.model.water(next);
             self.water.filter += 0.5 * (after - water_before);
-            let (ds, g) = (self.model.dsigma(), self.model.gravity());
+            let g = self.model.gravity();
+            let ds = self.model.dsigma();
             for level in [&mut current, &mut *next] {
                 let (added, borrowed) = fill_negative(&ops, ds, g, level);
                 self.water.fixer += 0.5 * added;
@@ -735,7 +772,7 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         self.model.advance_forcing(&self.current, dt);
 
         self.steps += 1;
-        for r in reports {
+        for r in &reports {
             self.stats.solves += 1;
             self.stats.iterations += u64::from(r.iterations);
             self.stats.worst_residual = self.stats.worst_residual.max(r.relative_residual);
@@ -744,15 +781,42 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     }
 }
 
+/// `Σᵢ cᵢ xᵢ` per cell, left to right.
+fn combine(c: &[f64], x: &[Vec<f64>]) -> Vec<f64> {
+    (0..x[0].len())
+        .into_par_iter()
+        .with_min_len(MIN_CHUNK)
+        .map(|i| {
+            let mut s = c[0] * x[0][i];
+            for (c, x) in c.iter().zip(x).skip(1) {
+                s += c * x[i];
+            }
+            s
+        })
+        .collect()
+}
+
+/// The layers next to `k` of `n`.
+fn adjacent(k: usize, n: usize) -> impl Iterator<Item = usize> {
+    [k.checked_sub(1), (k + 1 < n).then_some(k + 1)]
+        .into_iter()
+        .flatten()
+}
+
 /// RAW filter (Williams 2009) on every prognostic field.
 fn raw_filter(
-    old: &TwoLayerState,
-    now: &mut TwoLayerState,
-    next: &mut TwoLayerState,
+    old: &LayeredState,
+    now: &mut LayeredState,
+    next: &mut LayeredState,
     nu: f64,
     alpha: f64,
 ) {
-    let apply = |old: &[f64], now: &mut [f64], next: &mut [f64]| {
+    for ((old, now), next) in old
+        .parts()
+        .into_iter()
+        .zip(now.parts_mut())
+        .zip(next.parts_mut())
+    {
         now.par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .zip(next.par_iter_mut().with_min_len(MIN_CHUNK))
@@ -762,59 +826,87 @@ fn raw_filter(
                 *now += alpha * d;
                 *next -= (1.0 - alpha) * d;
             });
-    };
-    apply(&old.ps, &mut now.ps, &mut next.ps);
-    for k in 0..2 {
-        apply(&old.u[k], &mut now.u[k], &mut next.u[k]);
-        apply(
-            &old.theta_ps[k],
-            &mut now.theta_ps[k],
-            &mut next.theta_ps[k],
-        );
-        apply(&old.q_ps[k], &mut now.q_ps[k], &mut next.q_ps[k]);
     }
 }
 
-/// Fill negative humidity in `state`: from the same column's other layer
-/// where it has water to spare, else with zero. Returns the water added and
-/// the water moved between layers (kg).
+/// Fill negative humidity in `state`: from the same column's other layers
+/// where they have water to spare (the nearest first, the one below before
+/// the one above), else with zero. Returns the water added and the water
+/// moved between layers (kg).
+// Cells and layers index several arrays together.
+#[allow(clippy::needless_range_loop)]
 fn fill_negative(
     ops: &Operators,
-    ds: [f64; 2],
+    ds: &[f64],
     gravity: f64,
-    state: &mut TwoLayerState,
+    state: &mut LayeredState,
 ) -> (f64, f64) {
     let areas = &ops.geometry().cell_areas;
     let scale = ops.radius() * ops.radius() / gravity;
-    let [q0, q1] = &mut state.q_ps;
+    let n = ds.len();
     let (mut added, mut borrowed) = (0.0, 0.0);
-    for i in 0..q0.len() {
+    let mut c = vec![0.0; n];
+    for i in 0..state.ps.len() {
         // Column contents δσₖ Qₖ (Pa).
-        let mut c = [ds[0] * q0[i], ds[1] * q1[i]];
-        for k in 0..2 {
-            if c[k] < 0.0 {
-                let take = (-c[k]).min(c[1 - k].max(0.0));
-                c[1 - k] -= take;
-                c[k] += take;
-                borrowed += take * areas[i] * scale;
-                if c[k] < 0.0 {
-                    added -= c[k] * areas[i] * scale;
-                    c[k] = 0.0;
+        for k in 0..n {
+            c[k] = ds[k] * state.q_ps[k][i];
+        }
+        for k in 0..n {
+            if c[k] >= 0.0 {
+                continue;
+            }
+            for distance in 1..n {
+                let donors = [Some(k + distance), k.checked_sub(distance)];
+                for l in donors.into_iter().flatten().filter(|&l| l < n) {
+                    if c[k] < 0.0 {
+                        let take = (-c[k]).min(c[l].max(0.0));
+                        c[l] -= take;
+                        c[k] += take;
+                        borrowed += take * areas[i] * scale;
+                    }
                 }
             }
+            if c[k] < 0.0 {
+                added -= c[k] * areas[i] * scale;
+                c[k] = 0.0;
+            }
         }
-        q0[i] = c[0] / ds[0];
-        q1[i] = c[1] / ds[1];
+        for k in 0..n {
+            state.q_ps[k][i] = c[k] / ds[k];
+        }
     }
     (added, borrowed)
 }
 
-/// Area-weighted mean surface pressure and mass-weighted mean θ per layer.
-fn global_means(ops: &Operators, state: &TwoLayerState, _dsigma: [f64; 2]) -> (f64, [f64; 2]) {
+/// The default reference: global-mean surface pressure, and an isothermal
+/// atmosphere at [`REFERENCE_TEMPERATURE`] or the warmest layer of `state`,
+/// whichever is warmer.
+fn isothermal_reference(model: &LayeredModel, state: &LayeredState) -> (f64, Vec<f64>) {
+    let ops = model.operators();
+    let areas = &ops.geometry().cell_areas;
+    let p_bar = dot(areas, &state.ps) / areas.iter().sum::<f64>();
+    let mut warmest = REFERENCE_TEMPERATURE;
+    for (k, theta_ps) in state.theta_ps.iter().enumerate() {
+        for (tp, &ps) in theta_ps.iter().zip(&state.ps) {
+            warmest = warmest.max(tp / ps * model.layer_exner(ps)[k]);
+        }
+    }
+    let exner = model.layer_exner(p_bar);
+    (p_bar, exner.iter().map(|e| warmest / e).collect())
+}
+
+/// The starting state's global means: area-weighted surface pressure and
+/// mass-weighted θ per layer (the default reference before M2 step 9.5; a
+/// stable choice for two layers only).
+pub fn global_means(ops: &Operators, state: &LayeredState) -> (f64, Vec<f64>) {
     let areas = &ops.geometry().cell_areas;
     let total_area: f64 = areas.iter().sum();
     let mass = dot(areas, &state.ps);
     let p_bar = mass / total_area;
-    let th = [0, 1].map(|k| dot(areas, &state.theta_ps[k]) / mass);
+    let th = state
+        .theta_ps
+        .iter()
+        .map(|t| dot(areas, t) / mass)
+        .collect();
     (p_bar, th)
 }

@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use crate::two_layer::TwoLayerState;
+use crate::layered::LayeredState;
 
 /// Bounds a healthy state stays within.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,15 +24,16 @@ pub struct Limits {
 
 impl Limits {
     /// Limits for a step stable up to `max_wind`, about a reference surface
-    /// pressure `p̄` and layer potential temperatures `θ̄` (upper, lower):
-    /// `p_s` within `[p̄/4, 2p̄]` and θ within `[θ̄₁/3, 3θ̄₀]`. These are
+    /// pressure `p̄` and layer potential temperatures `θ̄` (top first):
+    /// `p_s` within `[p̄/4, 2p̄]` and θ within a third of the lowest layer's
+    /// and three times the top layer's. These are
     /// far outside anything a planet's weather produces; crossing them means
     /// the numerics have failed.
-    pub fn around(max_wind: f64, p_bar: f64, theta_bar: [f64; 2]) -> Self {
+    pub fn around(max_wind: f64, p_bar: f64, theta_bar: &[f64]) -> Self {
         Self {
             max_wind,
             surface_pressure: (0.25 * p_bar, 2.0 * p_bar),
-            theta: (theta_bar[1] / 3.0, 3.0 * theta_bar[0]),
+            theta: (theta_bar[theta_bar.len() - 1] / 3.0, 3.0 * theta_bar[0]),
         }
     }
 }
@@ -42,7 +43,7 @@ impl Limits {
 pub enum Variable {
     /// Surface pressure (cells).
     SurfacePressure,
-    /// Normal wind of a layer (edges); 0 is the upper layer.
+    /// Normal wind of a layer (edges); 0 is the top layer.
     Wind(usize),
     /// Potential temperature of a layer (cells).
     Theta(usize),
@@ -57,11 +58,10 @@ impl Variable {
 
 impl fmt::Display for Variable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let layer = |k: &usize| if *k == 0 { "upper" } else { "lower" };
         match self {
             Self::SurfacePressure => write!(f, "surface pressure"),
-            Self::Wind(k) => write!(f, "{} wind", layer(k)),
-            Self::Theta(k) => write!(f, "{} θ", layer(k)),
+            Self::Wind(k) => write!(f, "layer {k} wind"),
+            Self::Theta(k) => write!(f, "layer {k} θ"),
         }
     }
 }
@@ -134,7 +134,7 @@ pub struct Health {
 /// Check `state` against `limits`. Non-finite values are reported first,
 /// then the fastest wind if it's too fast, then the first value outside the
 /// bounds. Deterministic: a fixed scan order.
-pub fn check(state: &TwoLayerState, limits: &Limits) -> Result<Health, BlowUp> {
+pub fn check(state: &LayeredState, limits: &Limits) -> Result<Health, BlowUp> {
     let not_finite = |variable, index: usize, value: f64| BlowUp {
         variable,
         fault: Fault::NotFinite,
@@ -157,7 +157,7 @@ pub fn check(state: &TwoLayerState, limits: &Limits) -> Result<Health, BlowUp> {
             health.surface_pressure.1.max(p),
         );
     }
-    for k in 0..2 {
+    for k in 0..state.layers() {
         for (e, &u) in state.u[k].iter().enumerate() {
             if !u.is_finite() {
                 return Err(not_finite(Variable::Wind(k), e, u));
@@ -199,7 +199,7 @@ pub fn check(state: &TwoLayerState, limits: &Limits) -> Result<Health, BlowUp> {
             return Err(b);
         }
     }
-    for k in 0..2 {
+    for k in 0..state.layers() {
         for (i, (&t, &p)) in state.theta_ps[k].iter().zip(&state.ps).enumerate() {
             if let Some(b) = out_of_range(Variable::Theta(k), i, t / p, limits.theta) {
                 return Err(b);

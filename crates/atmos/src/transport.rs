@@ -1,4 +1,4 @@
-//! Positive-definite humidity transport for the semi-implicit two-layer
+//! Positive-definite humidity transport for the semi-implicit layered
 //! stepper: flux-corrected transport (Zalesak 1979) around the leapfrog
 //! step.
 //!
@@ -17,25 +17,25 @@
 //!    most 90% of its water per substep), plus the physics sources.
 //! 2. **High order**: centred at level `n` (leapfrog).
 //!
-//! Across the layer interface, humidity is carried at the interface values
-//! of the layers' own profiles (`rₖ qₖ`, with ratios `rₖ` from
+//! Across each layer interface, humidity is carried at the interface values
+//! of the two layers' own profiles (`rₖ qₖ`, with ratios `rₖ` from
 //! [`crate::radiation::interface_humidity_ratios`]): the upwind layer's in
 //! the low-order flux, the mean of the two in the high-order flux.
 //! 3. **Limit** the antidiffusive flux (high minus low) on each edge, and
-//!    across the layer interface, so that every cell stays within the range
-//!    of `q` at `n−1`, `n` and in the low-order solution, over itself, its
-//!    neighbours and the other layer.
+//!    across each interface, so that every cell stays within the range of
+//!    `q` at `n−1`, `n` and in the low-order solution, over itself, its
+//!    neighbours and the adjacent layers.
 //!
 //! The mass fluxes are those the semi-implicit step actually used: per layer
 //! `F̄ₖ = Fₖⁿ + p̄ δσₖ (uₖⁿ⁻¹ + uₖⁿ⁺¹ − 2uₖⁿ)/2` (the nonlinear flux at `n`
 //! with its linear part averaged over the old and new levels), and the
-//! interface flux `W̄ = σᵢ ∇·F̄₁ − (1 − σᵢ) ∇·F̄₀` they imply. These change
+//! interface fluxes `W̄ⱼ` they imply (as in [`crate::layered`]). These change
 //! each layer's mass from `n−1` to `n+1` exactly as the surface-pressure
 //! equation did, so humidity and mass are consistent: a uniform `q` stays
 //! uniform. Everything is in flux form, so total water changes only through
 //! the sources.
 
-// Loops over the two layers index several per-layer arrays together.
+// Loops over the layers index several per-layer arrays together.
 #![allow(clippy::needless_range_loop)]
 
 use fms_geo::Operators;
@@ -45,10 +45,10 @@ use rayon::prelude::*;
 /// Largest share of a cell's water an upwind substep may move out.
 const MAX_OUTFLOW: f64 = 0.9;
 
-/// Inputs of one transport step.
+/// Inputs of one transport step (`N` layers, `N − 1` interfaces).
 pub struct TransportStep<'s> {
     /// Layer thickness fractions `δσₖ`.
-    pub dsigma: [f64; 2],
+    pub dsigma: &'s [f64],
     /// Length of the step, `2Δt` for leapfrog (s).
     pub interval: f64,
     /// Surface pressure at the start (`n−1`) and end (`n+1`) (Pa).
@@ -57,18 +57,19 @@ pub struct TransportStep<'s> {
     pub ps_new: &'s [f64],
     /// Mass flux `F̄ₖ` per layer at edges (Pa m s⁻¹), positive from
     /// `cells[0]` to `cells[1]`.
-    pub flux: [&'s [f64]; 2],
-    /// Interface mass flux `W̄` (`p_s σ̇`, Pa s⁻¹), positive downward.
-    pub interface: &'s [f64],
+    pub flux: Vec<&'s [f64]>,
+    /// Mass flux `W̄ⱼ` across each interface (`p_s σ̇`, Pa s⁻¹), positive
+    /// downward.
+    pub interface: Vec<&'s [f64]>,
     /// `Qₖ` at the start (Pa).
-    pub q_old: [&'s [f64]; 2],
+    pub q_old: Vec<&'s [f64]>,
     /// Specific humidity `qₖ` at the middle level (kg kg⁻¹).
-    pub q_mid: [&'s [f64]; 2],
+    pub q_mid: Vec<&'s [f64]>,
     /// Sources of `Qₖ` (Pa s⁻¹): physics, constant over the step.
-    pub source: [&'s [f64]; 2],
-    /// Humidity at the interface relative to each layer's mean: upper at
-    /// its bottom, lower at its top.
-    pub interface_ratio: [&'s [f64]; 2],
+    pub source: Vec<&'s [f64]>,
+    /// Per interface, humidity there relative to each adjacent layer's mean:
+    /// the upper layer at its bottom, the lower at its top.
+    pub interface_ratio: Vec<[&'s [f64]; 2]>,
 }
 
 /// What one transport step did.
@@ -80,40 +81,42 @@ pub struct TransportReport {
 
 /// Scratch space for [`Transport::step`].
 pub struct Transport {
-    low_flux: [Vec<f64>; 2],
-    anti: [Vec<f64>; 2],
-    low_interface: Vec<f64>,
-    anti_interface: Vec<f64>,
-    content: [Vec<f64>; 2],
-    q_low: [Vec<f64>; 2],
-    q_max: [Vec<f64>; 2],
-    q_min: [Vec<f64>; 2],
-    r_plus: [Vec<f64>; 2],
-    r_minus: [Vec<f64>; 2],
+    low_flux: Vec<Vec<f64>>,
+    anti: Vec<Vec<f64>>,
+    low_interface: Vec<Vec<f64>>,
+    anti_interface: Vec<Vec<f64>>,
+    content: Vec<Vec<f64>>,
+    q_low: Vec<Vec<f64>>,
+    q_max: Vec<Vec<f64>>,
+    q_min: Vec<Vec<f64>>,
+    r_plus: Vec<Vec<f64>>,
+    r_minus: Vec<Vec<f64>>,
     edge_amount: Vec<f64>,
     divergence: Vec<f64>,
-    q: [Vec<f64>; 2],
+    q: Vec<Vec<f64>>,
 }
 
 impl Transport {
-    /// Scratch for a mesh with `n_cells` cells and `n_edges` edges.
-    pub fn new(n_cells: usize, n_edges: usize) -> Self {
-        let cells = || [vec![0.0; n_cells], vec![0.0; n_cells]];
-        let edges = || [vec![0.0; n_edges], vec![0.0; n_edges]];
+    /// Scratch for `layers` layers on a mesh with `n_cells` cells and
+    /// `n_edges` edges.
+    pub fn new(layers: usize, n_cells: usize, n_edges: usize) -> Self {
+        let cells = |n: usize| vec![vec![0.0; n_cells]; n];
+        let edges = || vec![vec![0.0; n_edges]; layers];
+        let interfaces = layers.saturating_sub(1);
         Self {
             low_flux: edges(),
             anti: edges(),
-            low_interface: vec![0.0; n_cells],
-            anti_interface: vec![0.0; n_cells],
-            content: cells(),
-            q_low: cells(),
-            q_max: cells(),
-            q_min: cells(),
-            r_plus: cells(),
-            r_minus: cells(),
+            low_interface: cells(interfaces),
+            anti_interface: cells(interfaces),
+            content: cells(layers),
+            q_low: cells(layers),
+            q_max: cells(layers),
+            q_min: cells(layers),
+            r_plus: cells(layers),
+            r_minus: cells(layers),
             edge_amount: vec![0.0; n_edges],
             divergence: vec![0.0; n_cells],
-            q: cells(),
+            q: cells(layers),
         }
     }
 
@@ -122,16 +125,17 @@ impl Transport {
         &mut self,
         ops: &Operators,
         input: &TransportStep,
-        out: [&mut [f64]; 2],
+        out: Vec<&mut [f64]>,
     ) -> TransportReport {
         let mesh = ops.mesh();
         let g = ops.geometry();
         let r = ops.radius();
         let edges = mesh.edges();
         let ds = input.dsigma;
+        let n = ds.len();
         let t = input.interval;
-        let w = input.interface;
-        let ratio = input.interface_ratio;
+        let w = &input.interface;
+        let ratio = &input.interface_ratio;
 
         // Substeps: each cell may move out at most MAX_OUTFLOW of its water
         // per substep, at its smallest mass over the step.
@@ -146,24 +150,32 @@ impl Transport {
                 })
                 .sum::<f64>()
                 / (g.cell_areas[c] * r);
-            let vertical = ratio[k][c]
-                * if k == 0 {
-                    w[c].max(0.0)
-                } else {
-                    (-w[c]).max(0.0)
-                };
+            // Down through the bottom, up through the top.
+            let mut vertical = 0.0;
+            if k + 1 < n {
+                vertical += ratio[k][0][c] * w[k][c].max(0.0);
+            }
+            if k > 0 {
+                vertical += ratio[k - 1][1][c] * (-w[k - 1][c]).max(0.0);
+            }
             (horizontal + vertical) / (ds[k] * input.ps_old[c].min(input.ps_new[c]))
         };
         let max_rate = (0..mesh.n_cells())
             .into_par_iter()
             .with_min_len(MIN_CHUNK)
-            .map(|c| outflow_rate(c, 0).max(outflow_rate(c, 1)))
+            .map(|c| {
+                let mut m = outflow_rate(c, 0);
+                for k in 1..n {
+                    m = m.max(outflow_rate(c, k));
+                }
+                m
+            })
             .reduce(|| 0.0, f64::max);
         let substeps = ((t * max_rate / MAX_OUTFLOW).ceil() as u32).max(1);
         let h = t / f64::from(substeps);
 
         // 1. Low order: upwind substeps from n−1, with the sources.
-        for k in 0..2 {
+        for k in 0..n {
             self.content[k]
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
@@ -171,10 +183,12 @@ impl Transport {
                 .for_each(|(c, &q)| *c = ds[k] * q);
             self.low_flux[k].fill(0.0);
         }
-        self.low_interface.fill(0.0);
+        for x in &mut self.low_interface {
+            x.fill(0.0);
+        }
         for m in 0..substeps {
             let s = f64::from(m) / f64::from(substeps);
-            for k in 0..2 {
+            for k in 0..n {
                 let content = &self.content[k];
                 self.q[k]
                     .par_iter_mut()
@@ -185,7 +199,7 @@ impl Transport {
                         *q = content[i] / (ds[k] * ps);
                     });
             }
-            for k in 0..2 {
+            for k in 0..n {
                 let (q, flux) = (&self.q[k], input.flux[k]);
                 self.edge_amount
                     .par_iter_mut()
@@ -210,27 +224,30 @@ impl Transport {
                     .enumerate()
                     .for_each(|(i, c)| *c += -div[i] + h * ds[k] * source[i]);
             }
-            // Across the interface (downward positive: from layer 0 to 1).
-            let [c0, c1] = &mut self.content;
-            let q = &self.q;
-            c0.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(c1.par_iter_mut())
-                .zip(self.low_interface.par_iter_mut())
-                .enumerate()
-                .for_each(|(i, ((c0, c1), total))| {
-                    let upwind = if w[i] >= 0.0 {
-                        ratio[0][i] * q[0][i]
-                    } else {
-                        ratio[1][i] * q[1][i]
-                    };
-                    let x = h * w[i] * upwind;
-                    *c0 -= x;
-                    *c1 += x;
-                    *total += x;
-                });
+            // Across each interface (downward positive: from layer j to j+1).
+            for j in 0..n - 1 {
+                let (upper, lower) = self.content.split_at_mut(j + 1);
+                let (c0, c1) = (&mut upper[j], &mut lower[0]);
+                let (q, w, ratio) = (&self.q, w[j], ratio[j]);
+                c0.par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(c1.par_iter_mut())
+                    .zip(self.low_interface[j].par_iter_mut())
+                    .enumerate()
+                    .for_each(|(i, ((c0, c1), total))| {
+                        let upwind = if w[i] >= 0.0 {
+                            ratio[0][i] * q[j][i]
+                        } else {
+                            ratio[1][i] * q[j + 1][i]
+                        };
+                        let x = h * w[i] * upwind;
+                        *c0 -= x;
+                        *c1 += x;
+                        *total += x;
+                    });
+            }
         }
-        for k in 0..2 {
+        for k in 0..n {
             let content = &self.content[k];
             self.q_low[k]
                 .par_iter_mut()
@@ -240,7 +257,7 @@ impl Transport {
         }
 
         // 2. Antidiffusive fluxes: centred at n minus upwind.
-        for k in 0..2 {
+        for k in 0..n {
             let (q, flux, low) = (input.q_mid[k], input.flux[k], &self.low_flux[k]);
             self.anti[k]
                 .par_iter_mut()
@@ -252,21 +269,21 @@ impl Transport {
                     *a = t * flux[e] * centred - low[e];
                 });
         }
-        {
-            let q = input.q_mid;
-            let low = &self.low_interface;
-            self.anti_interface
+        for j in 0..n - 1 {
+            let (q, w, ratio) = (&input.q_mid, w[j], ratio[j]);
+            let low = &self.low_interface[j];
+            self.anti_interface[j]
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
                 .for_each(|(i, a)| {
-                    let centred = 0.5 * (ratio[0][i] * q[0][i] + ratio[1][i] * q[1][i]);
+                    let centred = 0.5 * (ratio[0][i] * q[j][i] + ratio[1][i] * q[j + 1][i]);
                     *a = t * w[i] * centred - low[i];
                 });
         }
 
         // 3. Bounds: q at n−1, n and in the low-order solution, over the cell,
-        // its neighbours and the other layer.
+        // its neighbours and the adjacent layers.
         let local = |k: usize, i: usize| -> (f64, f64) {
             let values = [
                 input.q_old[k][i] / input.ps_old[i],
@@ -277,7 +294,7 @@ impl Transport {
                 .iter()
                 .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
         };
-        for k in 0..2 {
+        for k in 0..n {
             let [q_min, q_max] = [&mut self.q_min[k], &mut self.q_max[k]];
             q_min
                 .par_iter_mut()
@@ -286,10 +303,15 @@ impl Transport {
                 .enumerate()
                 .for_each(|(i, (lo, hi))| {
                     let (mut a, mut b) = local(k, i);
-                    let (c, d) = local(1 - k, i);
-                    (a, b) = (a.min(c), b.max(d));
-                    for &n in mesh.cell_neighbors(i as u32) {
-                        let (c, d) = local(k, n as usize);
+                    for l in [k.checked_sub(1), (k + 1 < n).then_some(k + 1)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        let (c, d) = local(l, i);
+                        (a, b) = (a.min(c), b.max(d));
+                    }
+                    for &c in mesh.cell_neighbors(i as u32) {
+                        let (c, d) = local(k, c as usize);
                         (a, b) = (a.min(c), b.max(d));
                     }
                     *lo = a.max(0.0);
@@ -299,7 +321,7 @@ impl Transport {
 
         // Zalesak's ratios: the share of the incoming (outgoing)
         // antidiffusive water each cell can take (give) within its bounds.
-        for k in 0..2 {
+        for k in 0..n {
             let (anti, anti_v) = (&self.anti[k], &self.anti_interface);
             let (content, q_min, q_max) = (&self.content[k], &self.q_min[k], &self.q_max[k]);
             let [r_plus, r_minus] = [&mut self.r_plus[k], &mut self.r_minus[k]];
@@ -320,12 +342,20 @@ impl Transport {
                             incoming -= x;
                         }
                     }
-                    // Downward positive: out of layer 0, into layer 1.
-                    let v = if k == 0 { anti_v[i] } else { -anti_v[i] };
-                    if v > 0.0 {
-                        outgoing += v;
-                    } else {
-                        incoming -= v;
+                    // Downward positive: out through the bottom, in through
+                    // the top.
+                    let mut vertical = |v: f64| {
+                        if v > 0.0 {
+                            outgoing += v;
+                        } else {
+                            incoming -= v;
+                        }
+                    };
+                    if k + 1 < n {
+                        vertical(anti_v[k][i]);
+                    }
+                    if k > 0 {
+                        vertical(-anti_v[k - 1][i]);
                     }
                     let mass = ds[k] * input.ps_new[i];
                     let room = mass * q_max[i] - content[i];
@@ -344,9 +374,7 @@ impl Transport {
         }
 
         // Limit and apply.
-        let [out0, out1] = out;
-        let outs = [out0, out1];
-        for (k, out) in outs.into_iter().enumerate() {
+        for (k, out) in out.into_iter().enumerate() {
             let (anti, rp, rm) = (&self.anti[k], &self.r_plus[k], &self.r_minus[k]);
             self.edge_amount
                 .par_iter_mut()
@@ -365,17 +393,27 @@ impl Transport {
             ops.divergence(&self.edge_amount, &mut self.divergence);
             let (content, div) = (&self.content[k], &self.divergence);
             let (anti_v, r_plus, r_minus) = (&self.anti_interface, &self.r_plus, &self.r_minus);
+            // The limited flux across interface j (downward positive).
+            let limited = |j: usize, i: usize| -> f64 {
+                let a = anti_v[j][i];
+                let c = if a >= 0.0 {
+                    r_minus[j][i].min(r_plus[j + 1][i])
+                } else {
+                    r_plus[j][i].min(r_minus[j + 1][i])
+                };
+                c * a
+            };
             out.par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
                 .for_each(|(i, q)| {
-                    let a = anti_v[i];
-                    let c = if a >= 0.0 {
-                        r_minus[0][i].min(r_plus[1][i])
-                    } else {
-                        r_plus[0][i].min(r_minus[1][i])
-                    };
-                    let vertical = if k == 0 { -c * a } else { c * a };
+                    let mut vertical = 0.0;
+                    if k > 0 {
+                        vertical += limited(k - 1, i);
+                    }
+                    if k + 1 < n {
+                        vertical -= limited(k, i);
+                    }
                     *q = (content[i] - div[i] + vertical) / ds[k];
                 });
         }
@@ -386,16 +424,23 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::levels::Levels;
     use fms_geo::{LloydOptions, MeshGeometry, SphereMesh};
 
-    /// A random step on a small mesh: edge mass fluxes, the interface flux
-    /// and end surface pressure they imply.
-    fn setup(
-        mesh: &SphereMesh,
-        geometry: &MeshGeometry,
-    ) -> (Vec<f64>, Vec<f64>, [Vec<f64>; 2], Vec<f64>) {
-        let ops = Operators::new(mesh, geometry, 6.371e6);
+    /// A random step on a small mesh: edge mass fluxes per layer, the
+    /// interface fluxes and end surface pressure they imply.
+    struct Setup {
+        ps_old: Vec<f64>,
+        ps_new: Vec<f64>,
+        flux: Vec<Vec<f64>>,
+        interface: Vec<Vec<f64>>,
+    }
+
+    fn setup(ops: &Operators, levels: &Levels) -> Setup {
+        let mesh = ops.mesh();
         let (nc, ne) = (mesh.n_cells(), mesh.n_edges());
+        let n = levels.count();
+        let ds = levels.dsigma();
         let mut x = 0x9E37_79B9_7F4A_7C15u64;
         let mut rand = || {
             x ^= x << 13;
@@ -403,20 +448,40 @@ mod tests {
             x ^= x << 17;
             (x >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         };
-        // Winds up to 100 m/s in 500 hPa layers, independent per layer: strong
-        // enough to need upwind substeps.
-        let flux: [Vec<f64>; 2] =
-            std::array::from_fn(|_| (0..ne).map(|_| 5e4 * 200.0 * rand()).collect());
-        let mut d = [vec![0.0; nc], vec![0.0; nc]];
-        ops.divergence(&flux[0], &mut d[0]);
-        ops.divergence(&flux[1], &mut d[1]);
-        let w: Vec<f64> = (0..nc).map(|i| 0.5 * d[1][i] - 0.5 * d[0][i]).collect();
+        // Winds up to 100 m/s, independent per layer: strong enough to need
+        // upwind substeps.
+        let flux: Vec<Vec<f64>> = (0..n)
+            .map(|k| (0..ne).map(|_| ds[k] * 1e5 * 200.0 * rand()).collect())
+            .collect();
+        let mut d = vec![vec![0.0; nc]; n];
+        for k in 0..n {
+            ops.divergence(&flux[k], &mut d[k]);
+        }
+        let interface = levels
+            .interior()
+            .iter()
+            .enumerate()
+            .map(|(j, &s)| {
+                (0..nc)
+                    .map(|i| {
+                        let above: f64 = (0..=j).map(|k| d[k][i]).sum();
+                        let below: f64 = (j + 1..n).map(|k| d[k][i]).sum();
+                        s * below - (1.0 - s) * above
+                    })
+                    .collect()
+            })
+            .collect();
         let ps_old: Vec<f64> = (0..nc).map(|_| 1e5 + 1e3 * rand()).collect();
         let t = 4000.0;
-        let ps_new: Vec<f64> = (0..nc)
-            .map(|i| ps_old[i] - t * (d[0][i] + d[1][i]))
+        let ps_new = (0..nc)
+            .map(|i| ps_old[i] - t * (0..n).map(|k| d[k][i]).sum::<f64>())
             .collect();
-        (ps_old, ps_new, flux, w)
+        Setup {
+            ps_old,
+            ps_new,
+            flux,
+            interface,
+        }
     }
 
     #[test]
@@ -425,62 +490,78 @@ mod tests {
         let geometry = MeshGeometry::new(&mesh);
         let ops = Operators::new(&mesh, &geometry, 6.371e6);
         let nc = mesh.n_cells();
-        let (ps_old, ps_new, flux, w) = setup(&mesh, &geometry);
-        let ones = vec![1.0; nc];
-        let zeros = vec![0.0; nc];
-        let mut transport = Transport::new(nc, mesh.n_edges());
-        let step = |q: &[Vec<f64>; 2], transport: &mut Transport| {
-            let q_old: [Vec<f64>; 2] =
-                std::array::from_fn(|k| q[k].iter().zip(&ps_old).map(|(q, p)| q * p).collect());
-            let mut out = [vec![0.0; nc], vec![0.0; nc]];
-            let [o0, o1] = &mut out;
-            let report = transport.step(
-                &ops,
-                &TransportStep {
-                    dsigma: [0.5, 0.5],
-                    interval: 4000.0,
-                    ps_old: &ps_old,
-                    ps_new: &ps_new,
-                    flux: [&flux[0], &flux[1]],
-                    interface: &w,
-                    q_old: [&q_old[0], &q_old[1]],
-                    q_mid: [&q[0], &q[1]],
-                    source: [&zeros, &zeros],
-                    interface_ratio: [&ones, &ones],
-                },
-                [o0, o1],
-            );
-            assert!(report.substeps > 1, "the test should need substeps");
-            (q_old, out)
-        };
-        // Mass and humidity move together: uniform q stays uniform.
-        let (_, out) = step(&[vec![0.01; nc], vec![0.01; nc]], &mut transport);
-        for k in 0..2 {
-            for i in 0..nc {
-                assert!((out[k][i] / ps_new[i] / 0.01 - 1.0).abs() < 1e-12);
+        for levels in [
+            Levels::two(0.5),
+            Levels::new(&[0.4, 0.85]),
+            Levels::equal_mass(5),
+        ] {
+            let n = levels.count();
+            let setup = setup(&ops, &levels);
+            let ones = vec![1.0; nc];
+            let zeros = vec![0.0; nc];
+            let mut transport = Transport::new(n, nc, mesh.n_edges());
+            let mut step = |q: &[Vec<f64>]| {
+                let q_old: Vec<Vec<f64>> = q
+                    .iter()
+                    .map(|q| q.iter().zip(&setup.ps_old).map(|(q, p)| q * p).collect())
+                    .collect();
+                let mut out = vec![vec![0.0; nc]; n];
+                let report = transport.step(
+                    &ops,
+                    &TransportStep {
+                        dsigma: levels.dsigma(),
+                        interval: 4000.0,
+                        ps_old: &setup.ps_old,
+                        ps_new: &setup.ps_new,
+                        flux: setup.flux.iter().map(Vec::as_slice).collect(),
+                        interface: setup.interface.iter().map(Vec::as_slice).collect(),
+                        q_old: q_old.iter().map(Vec::as_slice).collect(),
+                        q_mid: q.iter().map(Vec::as_slice).collect(),
+                        source: vec![zeros.as_slice(); n],
+                        interface_ratio: vec![[ones.as_slice(), ones.as_slice()]; n - 1],
+                    },
+                    out.iter_mut().map(Vec::as_mut_slice).collect(),
+                );
+                assert!(report.substeps > 1, "the test should need substeps");
+                (q_old, out)
+            };
+            // Mass and humidity move together: uniform q stays uniform.
+            let (_, out) = step(&vec![vec![0.01; nc]; n]);
+            for k in 0..n {
+                for i in 0..nc {
+                    assert!((out[k][i] / setup.ps_new[i] / 0.01 - 1.0).abs() < 1e-12);
+                }
             }
-        }
-        // Patches stay within their bounds, and water is conserved.
-        let patch: Vec<f64> = (0..nc)
-            .map(|i| if i % 7 < 2 { 0.02 } else { 0.0 })
-            .collect();
-        let (q_old, out) = step(&[patch.clone(), patch], &mut transport);
-        let total = |q: &[Vec<f64>; 2]| -> f64 {
-            (0..2)
-                .map(|k| {
-                    q[k].iter()
-                        .zip(&geometry.cell_areas)
-                        .map(|(q, a)| q * a)
-                        .sum::<f64>()
-                })
-                .sum()
-        };
-        assert!((total(&out) / total(&q_old) - 1.0).abs() < 1e-13);
-        for k in 0..2 {
-            for i in 0..nc {
-                let q = out[k][i] / ps_new[i];
-                // To round-off (the stepper fills any trace below zero).
-                assert!((-1e-15..=0.02 * (1.0 + 1e-12)).contains(&q), "q {q}");
+            // Patches stay within their bounds, and water is conserved.
+            let patch: Vec<f64> = (0..nc)
+                .map(|i| if i % 7 < 2 { 0.02 } else { 0.0 })
+                .collect();
+            let (q_old, out) = step(&vec![patch; n]);
+            let total = |q: &[Vec<f64>]| -> f64 {
+                q.iter()
+                    .zip(levels.dsigma())
+                    .map(|(q, ds)| {
+                        ds * q
+                            .iter()
+                            .zip(&geometry.cell_areas)
+                            .map(|(q, a)| q * a)
+                            .sum::<f64>()
+                    })
+                    .sum()
+            };
+            assert!(
+                (total(&out) / total(&q_old) - 1.0).abs() < 1e-13,
+                "{n} layers"
+            );
+            for k in 0..n {
+                for i in 0..nc {
+                    let q = out[k][i] / setup.ps_new[i];
+                    // To round-off (the stepper fills any trace below zero).
+                    assert!(
+                        (-1e-15..=0.02 * (1.0 + 1e-12)).contains(&q),
+                        "{n} layers: q {q}"
+                    );
+                }
             }
         }
     }

@@ -200,12 +200,12 @@ The GIF up to that point is written as usual.
 ### Held–Suarez benchmark
 
 `fms held-suarez` runs the standard test of dry dynamical cores (Held &
-Suarez 1994) on the two-layer model. Temperature relaxes toward a zonally
+Suarez 1994) on the layered model (two layers by default). Temperature relaxes toward a zonally
 symmetric equilibrium (warm equator, cold poles, a 200 K stratosphere), and
 Rayleigh friction damps winds near the surface. Starting from rest, jets and
 baroclinic eddies develop by themselves. After a spin-up, the run averages
-the zonal-mean climate. The forcing is averaged over each layer's mass, so the
-lower layer gets friction at 0.3/day and the upper layer none.
+the zonal-mean climate. The forcing is averaged over each layer's mass, so
+with two layers the lower gets friction at 0.3/day and the upper none.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -216,6 +216,10 @@ lower layer gets friction at 0.3/day and the upper layer none.
 | `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
 | `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion, as for `fms baroclinic` |
+| `--levels S,…` | 0.5 | Interior layer interfaces in σ, top down: `0.4,0.85` is three layers with a thin bottom one, `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
+
+With more than two layers, "upper" in the maps, tables and charts means the
+layer holding 250 hPa (the jets) and "lower" the lowest layer.
 
 The benchmark run is `fms held-suarez --terrain-frequency 64 --climate-frequency 32`
 (10k cells, ~30 minutes). Total energy settles by about day 300 (the free
@@ -230,12 +234,14 @@ leaves a small upward drift in the energy budget. Outputs in
 - `diagnostics.csv`, the GIF of surface pressure over the last days, and maps
   of the final state, as for `fms baroclinic`, including the blow-up dump.
 
-The `--max-wind`, `--diffusion-order`, `--e-folding` and `--inviscid` options
-also apply to `fms baroclinic`, whose design wind defaults to 120 m/s.
+The `--max-wind`, `--diffusion-order`, `--e-folding`, `--inviscid` and
+`--levels` options also apply to `fms baroclinic` (two layers only; its
+design wind defaults to 120 m/s) and `fms climate`.
 
 ### Climate
 
-`fms climate` runs the two-layer model driven by sunlight, radiation and
+`fms climate` runs the layered model (two layers; calibrated for them, see
+`--levels`) driven by sunlight, radiation and
 moisture (evaporation, convection, condensation, rain and snow, clouds)
 instead of an idealized forcing (PLAN §4.2), on the world's planet: its
 orbit, day length, gravity, CO₂ and surface pressure (`--co2`,

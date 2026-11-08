@@ -36,6 +36,8 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-24 | [The water cycle is too strong](#o-24-the-water-cycle-is-too-strong) | Moisture | Scheduled: M2 step 15 |
 | O-25 | [Clouds are calibrated from layer-mean humidity](#o-25-clouds-are-calibrated-from-layer-mean-humidity) | Clouds | Accepted |
 | O-26 | [Strong easterlies aloft at the equator](#o-26-strong-easterlies-aloft-at-the-equator) | Dynamics | Watching |
+| O-27 | [Shortwave water absorption depends on the layering](#o-27-shortwave-water-absorption-depends-on-the-layering) | Radiation | Scheduled: M2 step 10 |
+| O-28 | [More than two layers make the vertical modes non-normal](#o-28-more-than-two-layers-make-the-vertical-modes-non-normal) | Numerics | Accepted |
 
 ---
 
@@ -332,6 +334,14 @@ Options: a boundary-layer profile below the lower layer, or a thin third
 (boundary) layer. Check the result against the sign of Held–Suarez's
 surface winds.
 
+**Update (M2.9.5):** the core now takes any layers, and step 10 will use a
+thin third layer. Held–Suarez (k = 16, days 100–200) with five equal-mass
+layers has westerlies of +7.3 m/s in the lowest layer under jets of 26 m/s
+at 42°: the right sign. With three layers split at σ 0.4 and 0.85, the
+jets sit at 32° (in the 0–0.4 layer) with −2 m/s under them, so a thin
+bottom layer alone isn't the whole answer; step 10's surface drag and
+boundary-layer mixing replace Held–Suarez's friction there.
+
 ### O-19: Radiation is calibrated, not resolved
 
 **Seen (M2.8):** a few of the radiation scheme's parameters are effective
@@ -543,4 +553,45 @@ brakes upper-level winds in the tropics on Earth).
 **Revisit if:** the equatorial winds start to matter (tropical waves,
 monsoons, M2 step 15), by mixing momentum between the layers along with
 the convective mass exchange.
+
+### O-27: Shortwave water absorption depends on the layering
+
+**Seen (M2.9.5):** the same column cut into four or six layers instead of
+two (each at the two-layer profile's temperature, fixed relative
+humidity) puts 7.7 and 12.3 W/m² less sunlight on the surface, though its
+water agrees to 0.5% and its longwave to a few W/m². Water vapour's
+near-infrared absorption saturates as `√w` layer by layer, so splitting a
+layer raises it (`Σ√wₖ > √Σwₖ`); and each layer takes its share of all the
+light rather than of what's left in the near-infrared, which over-counts
+it further.
+
+**Why it's acceptable for now:** two layers are calibrated with it in
+place, and the climate stays on two layers until step 10.
+
+**Plan:** M2 step 10, before recalibrating on three layers: carry the
+near-infrared band separately through the adding method, with each slab's
+optical depth from the cumulative water path (`τ ∝ √W_below − √W_above`),
+so absorption doesn't depend on the layering. Check that more layers
+converge.
+
+### O-28: More than two layers make the vertical modes non-normal
+
+**Seen (M2.9.5):** with two layers, the gravity-wave matrix `A` is
+self-adjoint in the mass-weighted inner product (`δσₖ A` symmetric to
+1e-11). With more, and stratification, it isn't (0.4% for three layers, 2%
+for five), although the linearization matches the model's own tendencies
+to 1e-12. The cause is the interface θ: Arakawa & Suarez (1983) conserve
+energy with any interface value, but the arithmetic mean of the two layers
+doesn't give a symmetric linear operator once there are several
+interfaces. Using the symmetric part instead made the semi-implicit
+solver inconsistent (spurious wind over the mountain test rose from 0.105
+to 0.166 m/s), so the solver decomposes the general matrix.
+
+**Why it's acceptable:** the eigenvalues stay real and distinct (or
+exactly repeated, for an unstratified atmosphere), energy is still
+conserved exactly by the spatial scheme, and all the layered tests pass.
+
+**Revisit if:** the vertical modes misbehave with many layers (computational
+modes, noise in θ between layers): Arakawa & Suarez's weighted interface θ
+is the alternative.
 

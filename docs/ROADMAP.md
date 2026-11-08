@@ -120,7 +120,7 @@ Added after the M1 review: tooling the GCM work depends on.
    to ~0.1 W/m² (time stepping).
    Known gaps: the subtropics rain out their own evaporation (O-22), the
    water cycle is too strong (O-24), clouds are calibrated (O-25).
-- [ ] 9.5. **N-layer vertical structure**: generalize the two-layer model to
+- [x] 9.5. **N-layer vertical structure**: generalize the two-layer model to
     any number of σ layers with arbitrary interfaces: the Arakawa–Suarez
     (1983) energy-conserving vertical scheme, one vertical mode per layer in
     the semi-implicit solver, flux-corrected humidity transport across every
@@ -130,13 +130,29 @@ Added after the M1 review: tooling the GCM work depends on.
     step 9 to round-off (Held–Suarez, baroclinic wave, energy and water
     budgets); with three to five layers, mass, Θ, water and energy are
     conserved and Held–Suarez and the moist aquaplanet run stably.
+    Done (`levels.rs`, `LayeredModel`, `fms … --levels`): with step 9's
+    semi-implicit reference, two layers reproduce step 9 bit for bit; with
+    three and five, energy is conserved exactly in space, mass, Θ and water
+    to round-off, and Held–Suarez (200 days) and the moist aquaplanet (60
+    days) run stably at 7.5× the explicit step. Two changes beyond the
+    refactor, both needed for more layers: the semi-implicit reference is
+    now an isothermal 300 K atmosphere (Simmons et al. 1978; the start's own
+    profile blew up three-layer Held–Suarez at day 28), and shallow
+    convection only moves water from layers above their reference humidity
+    to those below (it drew dry layers negative). The two-layer climate is
+    unchanged (5 years: 297.0 K, albedo 0.286, cloud 0.63, 4.83 mm/day;
+    energy closes to 0.03 W/m²). Found: shortwave water absorption depends
+    on the layering (O-27); with more than one interface the vertical modes
+    are non-normal (O-28).
 - [ ] 10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
     bucket soil moisture, snow cover and albedo, orographic precipitation using the
     sub-grid terrain statistics. Needs a diagnosed surface wind, not the
     lower-layer wind ([OBSERVATIONS.md](OBSERVATIONS.md) O-18), and should return
     friction's dissipated energy as heat (O-21). The boundary layer should
     also hold evaporated water near the surface, so the subtropics stop
-    raining out their own evaporation (O-22).
+    raining out their own evaporation (O-22). Runs on three layers (step
+    9.5) with a thin bottom one; fix the layering dependence of the
+    shortwave (O-27) before recalibrating.
 - [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
     Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
     over a 150 m deep layer per ocean cell, horizontal diffusion in both,

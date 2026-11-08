@@ -1,4 +1,4 @@
-//! Balanced zonal flows with vertical shear for the two-layer model, and the
+//! Balanced zonal flows with vertical shear for a two-layer model, and the
 //! linear theory of their baroclinic instability (Phillips 1954; the
 //! two-level model in Holton, *An Introduction to Dynamic Meteorology*, §8.2).
 //!
@@ -19,7 +19,7 @@ use std::f64::consts::FRAC_PI_2;
 
 use fms_geo::coords::to_lat_lon;
 
-use crate::two_layer::{TwoLayer, TwoLayerState};
+use crate::layered::{LayeredModel, LayeredState};
 
 /// Latitude steps for integrating the balance equations from 0 to 90°.
 const TABLE_STEPS: usize = 4000;
@@ -57,13 +57,16 @@ impl Profile {
 
 impl ShearedFlow {
     /// The balanced state on `model`'s mesh (flat terrain is assumed).
-    pub fn state(&self, model: &TwoLayer) -> TwoLayerState {
+    ///
+    /// # Panics
+    /// If the model doesn't have two layers.
+    pub fn state(&self, model: &LayeredModel) -> LayeredState {
         let ops = model.operators();
         let (m, g) = (ops.mesh(), ops.geometry());
         let a = ops.radius();
         let profile = self.profile(model);
         let mut ps = Vec::with_capacity(m.n_cells());
-        let mut theta = [
+        let mut theta = vec![
             Vec::with_capacity(m.n_cells()),
             Vec::with_capacity(m.n_cells()),
         ];
@@ -75,21 +78,26 @@ impl ShearedFlow {
         }
         // Winds from vertex stream functions ψ = −a U sin φ, so the initial
         // flow is exactly non-divergent.
-        let u = self.speed.map(|speed| {
-            m.edges()
-                .iter()
-                .zip(&g.edge_lengths)
-                .map(|(e, &l)| {
-                    let psi = |v: u32| -a * speed * m.vertices()[v as usize].z;
-                    -(psi(e.vertices[1]) - psi(e.vertices[0])) / (l * a)
-                })
-                .collect()
-        });
-        TwoLayerState::new(ps, u, theta)
+        let u = self
+            .speed
+            .iter()
+            .map(|&speed| {
+                m.edges()
+                    .iter()
+                    .zip(&g.edge_lengths)
+                    .map(|(e, &l)| {
+                        let psi = |v: u32| -a * speed * m.vertices()[v as usize].z;
+                        -(psi(e.vertices[1]) - psi(e.vertices[0])) / (l * a)
+                    })
+                    .collect()
+            })
+            .collect();
+        LayeredState::new(ps, u, theta)
     }
 
     /// Integrate the balance equations from the equator to the pole.
-    fn profile(&self, model: &TwoLayer) -> Profile {
+    fn profile(&self, model: &LayeredModel) -> Profile {
+        assert_eq!(model.layers(), 2, "the sheared flow is for two layers");
         let a = model.operators().radius();
         let cp = model.gas().heat_capacity;
         let s = self.stability;
@@ -101,7 +109,7 @@ impl ShearedFlow {
             let dg = coeff.map(|c| c * 2.0 * sin * cos);
             // Φₖ and Pₖ as functions of (θ̂, p_s), differentiated numerically.
             let phi =
-                |th: f64, ps: f64| model.geopotentials_at(ps, [th + 0.5 * s, th - 0.5 * s], 0.0);
+                |th: f64, ps: f64| model.geopotentials_at(ps, &[th + 0.5 * s, th - 0.5 * s], 0.0);
             let (et, ep) = (1e-3, 1.0);
             let (pt_hi, pt_lo) = (phi(th + et, ps), phi(th - et, ps));
             let (pp_hi, pp_lo) = (phi(th, ps + ep), phi(th, ps - ep));
@@ -153,11 +161,11 @@ impl ShearedFlow {
     ///
     /// with `U_T = (U₀ − U₁) cos φ / 2`, `k = m / (a cos φ)`, and `2λ² = f²/c²`,
     /// `c` the model's internal gravity-wave speed
-    /// ([`TwoLayer::gravity_wave_speeds`]). Returns `(growth, critical)`: the growth
+    /// ([`LayeredModel::gravity_wave_speeds`]). Returns `(growth, critical)`: the growth
     /// rate, and the smallest `speed[0] − speed[1]` (equatorial speeds, as in
     /// [`ShearedFlow::speed`]) for which any wavenumber is unstable at this
     /// latitude, from `U_T > β/(2λ²)`.
-    pub fn phillips_growth_rate(&self, model: &TwoLayer, m: u32, lat: f64) -> (f64, f64) {
+    pub fn phillips_growth_rate(&self, model: &LayeredModel, m: u32, lat: f64) -> (f64, f64) {
         let a = model.operators().radius();
         let (sin, cos) = fms_math::sin_cos(lat);
         let f = 2.0 * self.omega * sin;
@@ -169,7 +177,7 @@ impl ShearedFlow {
         // The deformation wavenumber from the model's own internal gravity-wave
         // speed: 2λ² = f² / c_int².
         let c_int = model
-            .gravity_wave_speeds(ps, [th + 0.5 * self.stability, th - 0.5 * self.stability])[1];
+            .gravity_wave_speeds(ps, &[th + 0.5 * self.stability, th - 0.5 * self.stability])[1];
         let lambda2 = f * f / (2.0 * c_int * c_int);
         let k2 = k * k;
         let delta = beta * beta * lambda2 * lambda2 / (k2 * k2 * (k2 + 2.0 * lambda2).powi(2))

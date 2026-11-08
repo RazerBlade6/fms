@@ -2,7 +2,7 @@
 //! outside the adiabatic dynamics. Held–Suarez ([`crate::held_suarez`]) is
 //! the first; radiation and surface fluxes replace it later.
 
-use crate::two_layer::TwoLayerState;
+use crate::layered::LayeredState;
 
 /// A source of tendencies for the winds, `Θ` and humidity.
 ///
@@ -15,12 +15,12 @@ pub trait Forcing: Send + Sync {
     /// semi-implicit stepper calls this once per step, so a forcing may
     /// record what it applied (e.g. precipitation) for
     /// [`advance`](Self::advance) to account.
-    fn add_tendency(&mut self, state: &TwoLayerState, out: &mut TwoLayerState);
+    fn add_tendency(&mut self, state: &LayeredState, out: &mut LayeredState);
 
     /// Called once after every completed time step of `dt` seconds with the
     /// new state: for forcing with state of its own (a surface) or work done
     /// every few steps (radiation). Default: nothing.
-    fn advance(&mut self, _state: &TwoLayerState, _dt: f64) {}
+    fn advance(&mut self, _state: &LayeredState, _dt: f64) {}
 
     /// Energy exchanged with space and stored outside the atmosphere, for
     /// the planet's energy budget. `None` if the forcing has no such notion.

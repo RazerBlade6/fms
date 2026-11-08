@@ -9,10 +9,10 @@ use clap::Args;
 use fms_atmos::{HeldSuarez, HeldSuarezParams, ZonalClimatology, ZonalMeans};
 
 use crate::chart::{self, Series, TimeAxis};
-use crate::render::write_png;
-use crate::two_layer_run::{
+use crate::layered_run::{
     DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, stepper,
 };
+use crate::render::write_png;
 use crate::{ImageArgs, WorldArgs, build_world};
 
 /// Design wind: Held–Suarez winds peak near 65 m s⁻¹.
@@ -100,7 +100,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
             spun_up = Some((si.model().diagnostics(si.state()), si.energy_budget()));
         }
     })?;
-    let means = climate.means();
+    let means = crate::layered_run::upper_and_lower(si.model(), climate.means());
 
     // Profiles: CSV and chart.
     let mut csv = String::from(
@@ -188,7 +188,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
         summary,
         "Time means of {} samples ({} per day).",
         climate.samples(),
-        crate::two_layer_run::SAMPLES_PER_DAY
+        crate::layered_run::SAMPLES_PER_DAY
     );
     let path = out.dir.join("summary.txt");
     std::fs::write(&path, &summary).map_err(|e| format!("cannot write {}: {e}", path.display()))?;

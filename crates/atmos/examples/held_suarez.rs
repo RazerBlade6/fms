@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use fms_atmos::williamson::{GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions, TwoLayer, TwoLayerSemiImplicit,
-    TwoLayerSemiImplicitOptions, ZonalClimatology,
+    Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
+    LayeredSemiImplicitOptions, Levels, ZonalClimatology,
 };
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
@@ -33,15 +33,15 @@ fn main() {
     let spinup: f64 = args.next().map_or(200.0, |s| s.parse().unwrap());
     let (mesh, _) = SphereMesh::centroidal(k, LloydOptions::default());
     let geometry = MeshGeometry::new(&mesh);
-    let model = TwoLayer::new(
+    let model = LayeredModel::new(
         Operators::new(&mesh, &geometry, RADIUS),
         GRAVITY,
         Gas::EARTH_AIR,
-        0.5,
+        Levels::two(0.5),
         mesh.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect(),
         vec![0.0; mesh.n_cells()],
     );
-    let dt = TwoLayerSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 80.0), 0.6);
+    let dt = LayeredSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 80.0), 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
     let hs = HeldSuarez::new(&model, HeldSuarezParams::default());
@@ -57,13 +57,8 @@ fn main() {
         .with_forcing(Box::new(hs));
     let start = model.diagnostics(&state);
     let mut climate = ZonalClimatology::new(&model, env("FMS_BANDS", 36));
-    let mut si = TwoLayerSemiImplicit::new(
-        model,
-        state,
-        dt,
-        TwoLayerSemiImplicitOptions::default(),
-        0.5,
-    );
+    let mut si =
+        LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
     let per_day = (DAY / dt).round() as u64;
     let t = Instant::now();
     let mut peak: f64 = 0.0;

@@ -10,7 +10,7 @@ use clap::Args;
 use fms_atmos::ShearedFlow;
 use fms_geo::coords::to_lat_lon;
 
-use crate::two_layer_run::{
+use crate::layered_run::{
     DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, stepper,
 };
 use crate::{ImageArgs, WorldArgs, build_world};
@@ -52,6 +52,9 @@ pub fn run(args: BaroclinicArgs) -> Result<(), String> {
     let fields = Fields::register(&mut world)?;
     let world = world;
     let setup = build_model(&world, &args.dynamics, MAX_WIND)?;
+    if setup.model.layers() != 2 {
+        return Err("fms baroclinic is a two-layer experiment (Phillips's model): leave --levels at one interface".into());
+    }
     let model = setup.model;
     let flow = ShearedFlow {
         speed: [10.0 + args.shear, 10.0],

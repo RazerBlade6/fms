@@ -2,14 +2,15 @@
 //! conservation, rest over a mountain, baroclinic growth, cost.
 //!
 //! ```sh
-//! cargo run --release -p fms-atmos --example two_layer_si [frequency]
+//! cargo run --release -p fms-atmos --example layered_si [frequency]
 //! ```
 
 use std::time::Instant;
 
 use fms_atmos::williamson::{Case, GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, ShearedFlow, TwoLayer, TwoLayerSemiImplicit, TwoLayerSemiImplicitOptions, TwoLayerState,
+    Gas, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, LayeredState, Levels,
+    ShearedFlow,
 };
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -25,7 +26,7 @@ struct Setup {
 }
 
 impl Setup {
-    fn model(&self, mountain: bool) -> TwoLayer<'_> {
+    fn model(&self, mountain: bool) -> LayeredModel<'_> {
         let phi_s = if mountain {
             self.mesh
                 .cell_centers()
@@ -35,11 +36,11 @@ impl Setup {
         } else {
             vec![0.0; self.mesh.n_cells()]
         };
-        TwoLayer::new(
+        LayeredModel::new(
             Operators::new(&self.mesh, &self.geometry, RADIUS),
             GRAVITY,
             Gas::EARTH_AIR,
-            0.5,
+            Levels::two(0.5),
             self.mesh
                 .vertices()
                 .iter()
@@ -53,20 +54,20 @@ impl Setup {
 /// Either scheme behind one interface.
 enum Stepper<'a> {
     /// Model, state, step, steps taken.
-    Rk4(Box<TwoLayer<'a>>, TwoLayerState, f64, u64),
-    Si(Box<TwoLayerSemiImplicit<'a>>),
+    Rk4(Box<LayeredModel<'a>>, LayeredState, f64, u64),
+    Si(Box<LayeredSemiImplicit<'a>>),
 }
 
 impl Stepper<'_> {
-    fn new(model: TwoLayer<'_>, state: TwoLayerState, semi_implicit: bool) -> Stepper<'_> {
+    fn new(model: LayeredModel<'_>, state: LayeredState, semi_implicit: bool) -> Stepper<'_> {
         if semi_implicit {
-            let dt = TwoLayerSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
+            let dt = LayeredSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
             let dt = DAY / (DAY / dt).ceil();
-            let si = TwoLayerSemiImplicit::new(
+            let si = LayeredSemiImplicit::new(
                 model,
                 state,
                 dt,
-                TwoLayerSemiImplicitOptions::default(),
+                LayeredSemiImplicitOptions::default(),
                 0.5,
             );
             Stepper::Si(Box::new(si))
@@ -99,13 +100,13 @@ impl Stepper<'_> {
             }
         }
     }
-    fn state(&self) -> &TwoLayerState {
+    fn state(&self) -> &LayeredState {
         match self {
             Self::Rk4(_, s, _, _) => s,
             Self::Si(si) => si.state(),
         }
     }
-    fn model(&self) -> &TwoLayer<'_> {
+    fn model(&self) -> &LayeredModel<'_> {
         match self {
             Self::Rk4(m, _, _, _) => m,
             Self::Si(si) => si.model(),
@@ -174,7 +175,7 @@ fn main() {
             .map(|phi| 1.0e5 * fms_math::exp(-phi / (Gas::EARTH_AIR.gas_constant * t0)))
             .collect();
         let theta = {
-            let mut th = [vec![0.0; ps.len()], vec![0.0; ps.len()]];
+            let mut th = vec![vec![0.0; ps.len()]; 2];
             for (i, &p) in ps.iter().enumerate() {
                 let e = model.layer_exner(p);
                 th[0][i] = t0 / e[0];
@@ -183,7 +184,7 @@ fn main() {
             th
         };
         let ne = setup.mesh.n_edges();
-        let state = TwoLayerState::new(ps, [vec![0.0; ne], vec![0.0; ne]], theta);
+        let state = LayeredState::new(ps, vec![vec![0.0; ne]; 2], theta);
         let mut stepper = Stepper::new(model, state, si);
         stepper.run_days(5.0);
         let spurious = stepper
@@ -238,12 +239,12 @@ fn main() {
     }
 }
 
-fn wave6(setup: &Setup, a: &TwoLayerState, b: &TwoLayerState) -> f64 {
+fn wave6(setup: &Setup, a: &LayeredState, b: &LayeredState) -> f64 {
     let (mut re, mut im, mut area) = (0.0, 0.0, 0.0);
     for (i, &p) in setup.mesh.cell_centers().iter().enumerate() {
         let (lat, lon) = to_lat_lon(p);
         if (30f64.to_radians()..60f64.to_radians()).contains(&lat) {
-            let th = |s: &TwoLayerState| 0.5 * (s.theta_ps[0][i] + s.theta_ps[1][i]) / s.ps[i];
+            let th = |s: &LayeredState| 0.5 * (s.theta_ps[0][i] + s.theta_ps[1][i]) / s.ps[i];
             let (s, c) = fms_math::sin_cos(6.0 * lon);
             let d = setup.geometry.cell_areas[i] * (th(a) - th(b));
             re += d * c;

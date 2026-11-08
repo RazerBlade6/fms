@@ -31,7 +31,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 | Geometry | Simulation runs on a sphere; flat maps are projections of it | Tilt, Coriolis and latitude need a real sphere; no polar distortion |
 | Sphere grid | Icosahedral geodesic grid (Voronoi hexagons + 12 pentagons) | Cells are nearly uniform with no pole singularity; standard for finite-volume models (ICON, MPAS) |
 | Climate fidelity | Simplified GCM ("GCM-lite"): actual fluid dynamics | Weather emerges from the physics instead of being scripted |
-| Atmosphere | 2-layer primitive-equation model | Smallest model that produces Hadley and Ferrel cells, jets and storms on its own |
+| Atmosphere | Layered primitive-equation model: any number of σ layers; two until M2 step 10, then three with a thin boundary layer | Two layers are the smallest model that produces Hadley and Ferrel cells, jets and storms on its own; a third resolves the surface wind and the boundary layer's water |
 | Ocean | Two-layer dynamical slab (Ekman/Sverdrup, eddy and diffusive heat transport) + wind-driven gyres + thermodynamic sea ice | Ocean heat transport (western boundary currents) matters for coastal climates |
 | Compute | CPU with rayon first, GPU (wgpu compute) later | Easier to debug the physics; data is laid out as struct-of-arrays so it can be ported |
 | Time stepping | Semi-implicit GCM; base step derived from the CFL limit (~20–30 min at default resolution); slower subsystems run every N steps | Stable and affordable; resolves the day/night cycle |
@@ -142,7 +142,7 @@ crates/
   sched/      system scheduler (tick rates, R/W sets, determinism)
   planet/     planet parameters, orbit, insolation
   worldgen/   Generator trait, plate generator, noise, heightmap import
-  atmos/      2-layer GCM (dynamics + physics parameterizations)
+  atmos/      layered GCM (dynamics + physics parameterizations)
   ocean/      slab mixed layer, wind-driven currents, sea ice
   hydro/      runoff, flow routing, depression filling, lakes, basins
   climate/    rolling monthly stats, Köppen, biomes, high-speed climate mode
@@ -195,34 +195,41 @@ crates never depend on `app`. Everything except `app` runs headless.
 - Known limitations of the planet model (Kepler's third law, equation of time)
   are tracked in [OBSERVATIONS.md](OBSERVATIONS.md).
 
-### 4.2 Atmosphere (2-layer GCM)
+### 4.2 Atmosphere (layered GCM)
 - Primitive equations solved with a finite-volume method on the icosahedral grid.
-  Upper and lower layers each have wind, temperature and moisture (moisture mostly
-  in the lower layer).
+  Each layer has wind, temperature and moisture (moisture mostly in the lowest
+  layers).
 - Physics parameterizations:
   - shortwave and longwave radiation (semi-grey; see below)
   - surface fluxes (bulk formulas)
   - large-scale condensation and simple convective adjustment
   - orographic lift using the sub-grid terrain statistics
   - boundary-layer friction
-- **Vertical structure** (decided at M2.5): two equal-mass sigma layers
-  (`σ = p/p_s`, interface at σ = 0.5, model top at p = 0), the classic Phillips
-  two-level model. Prognostic: surface pressure, the wind in each layer, and
-  potential temperature per layer (stored mass-weighted, `p_s θ`, so total mass
-  and total θ are conserved to round-off). Vertical differencing follows
-  Arakawa & Suarez (1983): layer Exner functions are mass-weighted layer means
-  of `(p/p₀)^κ`, and the hydrostatic relation uses the same interface θ as
-  vertical advection. Together these conserve total energy (kinetic + enthalpy
-  + surface potential) exactly in the spatial discretization, and keep an
-  isentropic atmosphere at rest over mountains exactly at rest.
-- **Radiation** (decided at M2.8): two-stream transfer through the two layers
+- **Vertical structure** (decided at M2.5, generalized at M2.9.5): sigma
+  layers (`σ = p/p_s`, model top at p = 0) at any interfaces
+  (`crates/atmos/src/levels.rs`). Two equal-mass layers (interface at σ = 0.5)
+  are the classic Phillips two-level model, the climate's setting until M2
+  step 10 moves it to three with a thin bottom layer. Prognostic: surface
+  pressure, the wind in each layer, and potential temperature per layer
+  (stored mass-weighted, `p_s θ`, so total mass and total θ are conserved to
+  round-off). Vertical differencing follows Arakawa & Suarez (1983): layer
+  Exner functions are mass-weighted layer means of `(p/p₀)^κ`, and the
+  hydrostatic relation uses the same interface θ (the mean of the two
+  layers') as vertical advection. Together these conserve total energy
+  (kinetic + enthalpy + surface potential) exactly in the spatial
+  discretization for any layers, and keep an isentropic atmosphere at rest
+  over mountains exactly at rest. With more than one interface the
+  arithmetic interface θ makes the vertical modes slightly non-normal
+  (O-28); the semi-implicit solver decomposes them in general.
+- **Radiation** (decided at M2.8): two-stream transfer through the layers
   and the surface, semi-grey in four kinds of spectral interval. CO₂ has an
   opaque band at 667 cm⁻¹ whose width grows with the log of the
   pressure-broadened CO₂ amount (the band-wing model), so its forcing is
   logarithmic by construction. The 800–1200 cm⁻¹ window has a self-broadened
   water continuum. Water's band cores and their weak edges each use a
   four-term k-distribution. Each layer's emission is linear in optical depth
-  between its edges, and the lower layer follows the convective lapse rate.
+  between its edges, and each interface takes the temperature of the layer
+  below along the convective lapse rate.
   Water vapour comes from a fixed relative-humidity profile (Manabe &
   Wetherald 1967) until humidity is prognostic (M2 step 9). Shortwave:
   ozone and saturating near-infrared water-vapour absorption, a stand-in
@@ -236,7 +243,8 @@ crates never depend on `app`. Everything except `app` runs headless.
   Manabe–Wetherald shape scaled to the layer's water, and humidity crosses
   the interface at the profiles' values there. Physics: Betts–Miller
   convection relaxing towards the moist adiabat of a surface-air parcel
-  (deep, raining, or shallow, redistributing), large-scale condensation
+  from the highest unstable layer down (deep, raining, or shallow, moving
+  water only from layers above their reference to those below), large-scale condensation
   above calibrated layer humidities, re-evaporation of falling rain, rain or
   snow by surface air temperature, and evaporation from the slab by bulk
   formula. Two cloud sheets (high and low) from the layers' relative
@@ -246,6 +254,9 @@ crates never depend on `app`. Everything except `app` runs headless.
 - **Semi-implicit time stepping** (as in SPEEDY): fast gravity waves are solved
   implicitly, so the timestep is limited by advection (winds) rather than wave speed.
   At the default resolution this gives a base step of ~20–30 min. See §4.6.
+  The linearization is about an isothermal reference at 300 K (or warmer, if
+  the start is): warmer and more stable than the atmosphere, as stability at
+  long steps needs (Simmons, Hoskins & Burridge 1978).
 
 ### 4.3 Ocean
 (Decided at M2.9.) A dynamical slab ocean after Codron (2012) and Bhatnagar
@@ -427,7 +438,8 @@ Names only, as a reading list. Grouped by subsystem.
 - Poisson's equation for potential temperature
 - Coriolis parameter (f = 2Ω sin φ) and the β-plane approximation, for analysis
 - Sigma (terrain-following) vertical coordinate
-- Phillips two-level model (the classical 2-layer formulation)
+- Phillips two-level model (the classical 2-layer formulation), and its
+  generalization to any number of sigma layers (Arakawa & Suarez 1983)
 - Geostrophic balance, thermal wind equation, Rossby number, Rossby deformation
   radius (used as diagnostics and checks)
 - Dry and moist adiabatic lapse rates
