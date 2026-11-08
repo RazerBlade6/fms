@@ -140,6 +140,22 @@ fn diffusion_conserves_theta_and_removes_kinetic_energy() {
     let rate = model.energy_tendency(&state, &winds_only).total();
     eprintln!("kinetic energy dissipation {rate:.3e} W");
     assert!(rate < 0.0);
+
+    // With dissipative heating, the lost kinetic energy comes back as heat
+    // to round-off (O-21). (θ's diffusion itself moves a little enthalpy:
+    // it conserves Θ, not `Σ Π Θ`.)
+    let mut heated = model.with_dissipative_heating();
+    let mut h = state.clone();
+    heated.diffusion_tendency(&state, &mut h);
+    let terms = heated.energy_tendency(&state, &h);
+    let plain = heated.energy_tendency(&state, &d);
+    eprintln!("with heating: {terms:?}");
+    assert!((terms.kinetic - plain.kinetic).abs() < 1e-12 * rate.abs());
+    let heat = terms.thermal - plain.thermal;
+    assert!(
+        (heat + terms.kinetic).abs() < 1e-11 * rate.abs(),
+        "{terms:?}"
+    );
 }
 
 #[test]

@@ -68,6 +68,7 @@ use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};
+use crate::dissipation::KineticHeating;
 use crate::forcing::{EnergyTerms, Forcing};
 use crate::helmholtz::dot;
 pub use crate::levels::Levels;
@@ -332,6 +333,8 @@ pub struct LayeredModel<'a> {
     forcing: Option<Box<dyn Forcing + 'a>>,
     /// Profile within the layers that sets humidity at the interfaces.
     humidity_profile: RadiationParams,
+    /// Whether diffusion returns lost kinetic energy as heat.
+    heat_dissipation: bool,
 }
 
 impl<'a> LayeredModel<'a> {
@@ -394,6 +397,7 @@ impl<'a> LayeredModel<'a> {
             diffusion: None,
             forcing: None,
             humidity_profile: RadiationParams::default(),
+            heat_dissipation: false,
         }
     }
 
@@ -427,8 +431,29 @@ impl<'a> LayeredModel<'a> {
     /// The model with hyperdiffusion ([`crate::diffusion`]). Without it the
     /// core is inviscid and collapses to the grid scale once eddies mature.
     pub fn with_hyperdiffusion(mut self, options: HyperdiffusionOptions) -> Self {
-        self.diffusion = Some(Hyperdiffusion::new(&self.ops, options));
+        let mut diffusion = Hyperdiffusion::new(&self.ops, options);
+        if self.heat_dissipation {
+            diffusion.set_heating(Some(self.kinetic_heating()));
+        }
+        self.diffusion = Some(diffusion);
         self
+    }
+
+    /// The model with the kinetic energy hyperdiffusion removes returned as
+    /// heat where it is lost ([`crate::dissipation`]), so it conserves total
+    /// energy. Off by default (Held–Suarez leaves it out).
+    pub fn with_dissipative_heating(mut self) -> Self {
+        self.heat_dissipation = true;
+        let heating = self.kinetic_heating();
+        if let Some(d) = &mut self.diffusion {
+            d.set_heating(Some(heating));
+        }
+        self
+    }
+
+    /// A [`KineticHeating`] for this model's mesh, gas and layers.
+    pub fn kinetic_heating(&self) -> KineticHeating {
+        KineticHeating::new(&self.ops, self.gas, self.levels.clone())
     }
 
     /// The hyperdiffusion, if any.
@@ -750,6 +775,7 @@ impl<'a> LayeredModel<'a> {
             diffusion,
             forcing,
             humidity_profile,
+            heat_dissipation: _,
         } = self;
         let params = Parameters {
             ops,

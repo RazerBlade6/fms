@@ -3,7 +3,7 @@
 //! close, and (slow, run with `--ignored`) the equilibrium climate is that of
 //! an ice-free, Earth-like aquaplanet.
 
-use fms_atmos::column_physics::{LATENT_HEAT, initial_state};
+use fms_atmos::column_physics::{CLIMATE_LEVELS, LATENT_HEAT, initial_state};
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
     ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
@@ -17,7 +17,7 @@ const DAY: f64 = 86_400.0;
 /// Run `days` on frequency `k` from the single-column equilibrium, calling
 /// `each` after every step.
 fn run(k: u32, days: f64, each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64)) {
-    run_with(k, days, Levels::two(0.5), each);
+    run_with(k, days, Levels::new(&CLIMATE_LEVELS), each);
 }
 
 /// [`run`] on other layers.
@@ -57,6 +57,7 @@ fn run_with(
     );
     let model = model
         .with_hyperdiffusion(diffusion)
+        .with_dissipative_heating()
         .with_forcing(Box::new(physics));
     let mut si =
         LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
@@ -70,11 +71,12 @@ fn run_with(
 #[test]
 fn the_planets_energy_and_water_budgets_close() {
     // What the atmosphere (enthalpy and latent energy) and the slab gain
-    // equals sunlight absorbed minus longwave emitted, minus the kinetic
-    // energy friction and diffusion remove; only the dynamics'
-    // time-stepping error is left. The atmosphere's water changes by
-    // evaporation minus precipitation (and the time filter's trace), to
-    // round-off.
+    // equals sunlight absorbed minus longwave emitted (friction's and
+    // diffusion's lost kinetic energy comes back as heat); only the
+    // time-stepping error is left: measured −0.029 W/m² over these 90 days
+    // of spin-up, and a third of that at half the step. The atmosphere's
+    // water changes by evaporation minus precipitation (and the time
+    // filter's trace), to round-off.
     let mut first = None;
     let mut last = None;
     run(16, 90.0, |si, _, dt| {
@@ -97,8 +99,10 @@ fn the_planets_energy_and_water_budgets_close() {
     let wm2 = |j: f64| j / (t1 - t0) / area;
     let toa = (b1.absorbed - b0.absorbed) - (b1.outgoing - b0.outgoing);
     let uptake = (d1.energy - d0.energy) + (b1.stored - b0.stored) + LATENT_HEAT * (w1 - w0);
-    let removed =
-        (e1.forcing.kinetic - e0.forcing.kinetic) + (e1.diffusion.total() - e0.diffusion.total());
+    // Friction's and diffusion's lost kinetic energy comes back as heat.
+    let removed = (e1.forcing.kinetic - e0.forcing.kinetic)
+        + (b1.dissipated - b0.dissipated)
+        + (e1.diffusion.total() - e0.diffusion.total());
     let residual = toa - uptake + removed;
     eprintln!(
         "90 days: net in at the top {:+.3} W/m², uptake {:+.3}, kinetic energy removed {:.3}, residual {:+.5}",
@@ -108,7 +112,7 @@ fn the_planets_energy_and_water_budgets_close() {
         wm2(residual)
     );
     assert!(
-        wm2(residual).abs() < 0.01,
+        wm2(residual).abs() < 0.05,
         "residual {} W/m²",
         wm2(residual)
     );
@@ -183,6 +187,7 @@ fn more_layers_run_the_moist_aquaplanet() {
         let toa = (b1.absorbed - b0.absorbed) - (b1.outgoing - b0.outgoing);
         let uptake = (d1.energy - d0.energy) + (b1.stored - b0.stored) + LATENT_HEAT * (w1 - w0);
         let removed = (e1.forcing.kinetic - e0.forcing.kinetic)
+            + (b1.dissipated - b0.dissipated)
             + (e1.diffusion.total() - e0.diffusion.total());
         let residual = wm2(toa - uptake + removed);
         let exchanged = (b1.evaporated - b0.evaporated) - (b1.precipitated - b0.precipitated);
@@ -272,9 +277,9 @@ fn the_equilibrium_climate_is_an_earthlike_aquaplanet() {
     );
     let albedo = 1.0 - asr / (planet.mean_flux() / 4.0);
     let uptake = wm2((d1.energy - d0.energy) + (b1.stored - b0.stored) + LATENT_HEAT * (w1 - w0));
-    let removed =
-        -wm2((e1.forcing.kinetic - e0.forcing.kinetic)
-            + (e1.diffusion.total() - e0.diffusion.total()));
+    let removed = -wm2((e1.forcing.kinetic - e0.forcing.kinetic)
+        + (b1.dissipated - b0.dissipated)
+        + (e1.diffusion.total() - e0.diffusion.total()));
     let mean = |name: &str| sums[names.iter().position(|n| *n == name).unwrap()] / n;
     let ts = mean("rad.surface_temperature");
     let (precipitation, cloud) = (mean("atm.precipitation"), mean("atm.cloud_cover"));

@@ -49,6 +49,9 @@ pub struct ForcingBudget {
     pub evaporated: f64,
     /// Water precipitated out of the atmosphere (kg).
     pub precipitated: f64,
+    /// Kinetic energy the forcing removed from the winds and returned as
+    /// heat (J; [`crate::dissipation`]).
+    pub dissipated: f64,
 }
 
 /// A named cell field.

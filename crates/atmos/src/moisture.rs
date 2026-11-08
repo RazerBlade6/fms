@@ -28,12 +28,17 @@
 //! includes the dry stratosphere is referred to a far lower mean relative
 //! humidity than one near the surface:
 //!
+//!
+//! Temperature relaxes only in the cloud layers, all but the lowest: the
+//! subcloud layer (the boundary layer) keeps its temperature, as in Betts
+//! (1986), and only its humidity relaxes.
+//!
 //! - **Deep** (the relaxation removes water): it rains out, and the
-//!   reference temperature shifts uniformly so the convecting layers'
-//!   heating is exactly the latent heat released (enthalpy plus latent
-//!   energy is conserved).
+//!   cloud layers' reference temperature shifts uniformly so their heating
+//!   is exactly the latent heat released (enthalpy plus latent energy is
+//!   conserved).
 //! - **Shallow** (it would add water): no rain. Temperature is only
-//!   redistributed between the convecting layers (enthalpy conserved), and
+//!   redistributed between the cloud layers (enthalpy conserved), and
 //!   water only moves from layers above their reference humidity to those
 //!   below it, at the rate the givers supply: none is created, and no layer
 //!   dries faster than its own relaxation, so none is drawn below zero.
@@ -106,7 +111,7 @@ pub struct CloudParams {
 impl Default for CloudParams {
     fn default() -> Self {
         Self {
-            sigma: [0.25, 0.8],
+            sigma: [0.25, 0.9],
             albedo: [0.4, 0.5],
             emissivity: [0.8, 1.0],
             critical_humidity: [0.15, 0.3],
@@ -117,15 +122,19 @@ impl Default for CloudParams {
     }
 }
 
+/// σ at the centre of the climate's boundary layer (σ 0.85–1).
+pub const BOUNDARY_LAYER_CENTRE: f64 = 0.925;
+
 /// Moist-physics parameters. [`Default`] is Earth-like.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MoistureParams {
     /// Layer relative humidity above which water condenses (below 1: a
-    /// layer saturates in places before its mean does), for a layer centred
-    /// at σ = ¼ and one at σ = ¾; layers in between interpolate linearly in
-    /// the σ of their centre, and layers beyond take the nearer value. Two
-    /// equal-mass layers get exactly these.
-    pub condensation_humidity: [f64; 2],
+    /// layer saturates in places before its mean does), for layers centred
+    /// at σ = ¼, ¾ and [`BOUNDARY_LAYER_CENTRE`] (the climate's boundary
+    /// layer, which holds near 0.7 without raining); layers in between
+    /// interpolate linearly in the σ of their centre, and layers beyond take
+    /// the nearer value. Two equal-mass layers get exactly the first two.
+    pub condensation_humidity: [f64; 3],
     /// Large-scale condensation time (s).
     pub condensation_time: f64,
     /// Surface relative humidity of convection's reference profile (the
@@ -147,16 +156,21 @@ impl MoistureParams {
     /// ([`condensation_humidity`](Self::condensation_humidity)).
     pub fn condensation_threshold(&self, top: f64, bottom: f64) -> f64 {
         let centre = 0.5 * (top + bottom);
-        let x = ((centre - 0.25) / 0.5).clamp(0.0, 1.0);
-        let [upper, lower] = self.condensation_humidity;
-        upper * (1.0 - x) + lower * x
+        let [upper, lower, boundary] = self.condensation_humidity;
+        if centre <= 0.75 {
+            let x = ((centre - 0.25) / 0.5).clamp(0.0, 1.0);
+            upper * (1.0 - x) + lower * x
+        } else {
+            let x = ((centre - 0.75) / (BOUNDARY_LAYER_CENTRE - 0.75)).min(1.0);
+            lower * (1.0 - x) + boundary * x
+        }
     }
 }
 
 impl Default for MoistureParams {
     fn default() -> Self {
         Self {
-            condensation_humidity: [0.45, 0.7],
+            condensation_humidity: [0.45, 0.7, 0.9],
             condensation_time: 4.0 * 3600.0,
             convection_humidity: 0.7,
             convection_time: 2.0 * 3600.0,
@@ -178,6 +192,8 @@ pub struct MoistColumn {
     pub humidity: Vec<f64>,
     /// Surface air temperature (K).
     pub surface_air: f64,
+    /// Surface air specific humidity (kg kg⁻¹): the convective parcel's.
+    pub surface_humidity: f64,
     /// Stratosphere temperature (K): the floor of the top layer's
     /// convective reference.
     pub stratosphere: f64,
@@ -342,16 +358,26 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     };
 
     // Convection, from the highest layer colder than the parcel down.
-    let q_star_surface = saturation_humidity(column.surface_air, ps);
-    let surface_q = (q[bottom] / sat[bottom].shaped * q_star_surface).min(q_star_surface);
+    let surface_q = column
+        .surface_humidity
+        .clamp(0.0, saturation_humidity(column.surface_air, ps));
     let reference = convective_reference(setting, column, surface_q);
     if let Some(top) = (0..bottom).find(|&k| reference[k] > t[k]) {
         let tau = p.convection_time;
         let ref_sat = setting.saturation(ps, &reference);
         let layers = top..n;
+        // The subcloud (lowest) layer keeps its temperature: its reference
+        // includes moist-adiabatic warming above the condensation level
+        // that the well-mixed layer doesn't have.
         let mut dt: Vec<f64> = layers
             .clone()
-            .map(|k| (reference[k] - t[k]) / tau)
+            .map(|k| {
+                if k == bottom {
+                    0.0
+                } else {
+                    (reference[k] - t[k]) / tau
+                }
+            })
             .collect();
         let mut dq: Vec<f64> = layers
             .clone()
@@ -371,9 +397,13 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             total += m;
         }
         if rain > 0.0 {
-            // Deep: heating equals the latent heat released.
-            let c = (l * rain - cp * weighted(&dt)) / (cp * total);
-            dt.iter_mut().for_each(|d| *d += c);
+            // Deep: heating equals the latent heat released, all of it in
+            // the cloud layers above the lowest (the subcloud layer keeps
+            // its own relaxation; Betts 1986).
+            let cloud = total - mc[mc.len() - 1];
+            let c = (l * rain - cp * weighted(&dt)) / (cp * cloud);
+            let last = dt.len() - 1;
+            dt[..last].iter_mut().for_each(|d| *d += c);
             out.convective = rain;
         } else {
             // Shallow: redistribute heat and water, conserving both. Water
@@ -392,8 +422,9 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             dq.iter_mut()
                 .filter(|d| **d > 0.0)
                 .for_each(|d| *d *= scale);
-            let ct = -weighted(&dt) / total;
-            dt.iter_mut().for_each(|d| *d += ct);
+            let ct = -weighted(&dt) / (total - mc[mc.len() - 1]);
+            let last = dt.len() - 1;
+            dt[..last].iter_mut().for_each(|d| *d += ct);
         }
         out.temperature[top..].copy_from_slice(&dt);
         out.humidity[top..].copy_from_slice(&dq);
@@ -508,9 +539,11 @@ mod tests {
                 let x = ((0.5 * (a + b) - 0.25) / 0.5).clamp(0.0, 1.0);
                 (rh[0] * (1.0 - x) + rh[1] * x) * sat[k].mean
             })
-            .collect();
+            .collect::<Vec<f64>>();
+        let bottom = levels.count() - 1;
         MoistColumn {
             ps: 1e5,
+            surface_humidity: surface_humidity(s, 1e5, &temperature, humidity[bottom], surface_air),
             humidity,
             temperature,
             surface_air,
@@ -541,11 +574,7 @@ mod tests {
         let tropical = {
             let (rh, surface_air) = ([0.3, 0.8], 300.0);
             let c = column(profile(s, 300.0, 0.19, 200.0), rh, surface_air, s);
-            let bottom = s.levels.count() - 1;
-            let sat = s.saturation(c.ps, &c.temperature);
-            let q_star = saturation_humidity(surface_air, c.ps);
-            let surface_q = (c.humidity[bottom] / sat[bottom].shaped * q_star).min(q_star);
-            let reference = convective_reference(s, &c, surface_q);
+            let reference = convective_reference(s, &c, c.surface_humidity);
             column(
                 reference.iter().map(|t| t - 3.0).collect(),
                 rh,
@@ -613,9 +642,14 @@ mod tests {
             let [tropical, midlatitude, polar] = columns(&s).map(|c| moist_physics(&s, &c));
             let n = levels.count();
             // Warm, moist surface air under cold upper layers: deep
-            // convection dries and warms the column and rains.
+            // convection dries the column, warms the cloud layers and
+            // rains; convection only dries the subcloud layer.
             assert!(tropical.convective > 0.0, "{n}");
-            assert!(tropical.temperature.iter().all(|&t| t > 0.0), "{n}");
+            assert!(
+                tropical.temperature[..n - 1].iter().all(|&t| t > 0.0),
+                "{n}"
+            );
+            assert!(tropical.humidity[n - 1] < 0.0, "{n}");
             assert!(tropical.clouds[0] > 0.0);
             // A stable column doesn't convect; saturated layers condense.
             assert_eq!(midlatitude.convective, 0.0, "{n}");
@@ -629,7 +663,7 @@ mod tests {
     fn two_equal_layers_get_the_condensation_thresholds_exactly() {
         let p = MoistureParams::default();
         let l = two();
-        let [upper, lower] = p.condensation_humidity;
+        let [upper, lower, boundary] = p.condensation_humidity;
         assert_eq!(
             p.condensation_threshold(l.bounds(0).0, l.bounds(0).1),
             upper
@@ -641,7 +675,8 @@ mod tests {
         // In between, linear in σ; beyond, the nearer value.
         let mid = p.condensation_threshold(0.4, 0.6);
         assert!((mid - 0.5 * (upper + lower)).abs() < 1e-15);
-        assert_eq!(p.condensation_threshold(0.85, 1.0), lower);
+        assert_eq!(p.condensation_threshold(0.85, 1.0), boundary);
+        assert_eq!(p.condensation_threshold(0.0, 0.1), upper);
     }
 
     #[test]

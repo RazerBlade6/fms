@@ -48,6 +48,7 @@ use fms_geo::Operators;
 use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
+use crate::dissipation::KineticHeating;
 use crate::helmholtz::dot;
 use crate::layered::LayeredState;
 
@@ -105,6 +106,8 @@ pub struct Hyperdiffusion {
     nu: f64,
     radius: f64,
     work: Work,
+    /// Returns the winds' lost kinetic energy as heat, if set.
+    heating: Option<KineticHeating>,
 }
 
 #[derive(Clone, Debug)]
@@ -148,7 +151,19 @@ impl Hyperdiffusion {
             nu,
             radius: ops.radius(),
             work,
+            heating: None,
         }
+    }
+
+    /// Return the kinetic energy the winds' diffusion removes as heat in the
+    /// same layer ([`crate::dissipation`]), or not (`None`, the default).
+    pub fn set_heating(&mut self, heating: Option<KineticHeating>) {
+        self.heating = heating;
+    }
+
+    /// Whether lost kinetic energy is returned as heat.
+    pub fn heats(&self) -> bool {
+        self.heating.is_some()
     }
 
     /// The settings.
@@ -194,6 +209,9 @@ impl Hyperdiffusion {
             ps_edge,
         } = &mut self.work;
         ops.cell_to_edge(&state.ps, ps_edge);
+        if let Some(h) = &mut self.heating {
+            h.prepare(&state.ps);
+        }
         for k in 0..state.layers() {
             // Wind: divergent part into `edges`, rotational part into `edges2`.
             ops.divergence(&state.u[k], cells);
@@ -206,12 +224,27 @@ impl Hyperdiffusion {
                 vertex_laplacian(ops, vertices, edges2);
             }
             ops.tangential_gradient(vertices, edges2);
-            let (d, r) = (&*edges, &*edges2);
+            edges
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .zip(edges2.par_iter())
+                .for_each(|(d, &r)| *d = sign * nu * (*d - r));
             out.u[k]
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(e, o)| *o += sign * nu * (d[e] - r[e]));
+                .zip(edges.par_iter())
+                .for_each(|(o, &du)| *o += du);
+            if let Some(h) = &self.heating {
+                h.add(
+                    ops,
+                    &state.ps,
+                    k,
+                    k,
+                    &state.u[k],
+                    edges,
+                    &mut out.theta_ps[k],
+                );
+            }
 
             // θ, in flux form.
             cells

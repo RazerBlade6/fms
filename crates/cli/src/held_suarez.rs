@@ -54,7 +54,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let world = world;
-    let setup = build_model(&world, &args.dynamics, MAX_WIND)?;
+    let setup = build_model(&world, &args.dynamics, MAX_WIND, &[0.5])?;
     let hs = HeldSuarez::new(&setup.model, HeldSuarezParams::default());
     let state = hs.initial_state(&setup.model, 0.1);
     let model = setup.model.with_forcing(Box::new(hs));

@@ -1,5 +1,6 @@
-//! `fms climate`: the two-layer model driven by radiation and moist physics
-//! over a slab aquaplanet, on the world's planet (orbit, CO₂, surface
+//! `fms climate`: the layered model (three layers by default, the bottom one
+//! the boundary layer) driven by radiation and moist physics over a slab
+//! aquaplanet, on the world's planet (orbit, CO₂, surface
 //! pressure). Spins up, then averages the final year: zonal means, a global
 //! summary with the planet's energy and water budgets, and annual-mean maps,
 //! in `output/climate/`.
@@ -7,7 +8,7 @@
 use std::fmt::Write as _;
 
 use clap::Args;
-use fms_atmos::column_physics::{LATENT_HEAT, initial_state};
+use fms_atmos::column_physics::{CLIMATE_LEVELS, LATENT_HEAT, initial_state};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_geo::LatitudeBands;
@@ -158,8 +159,11 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
 
     // Start from the single column's equilibrium, at rest, with its
     // humidity.
-    let setup = build_model(&world, &args.dynamics, MAX_WIND)?;
-    let model = setup.model.with_humidity_profile(params.radiation);
+    let setup = build_model(&world, &args.dynamics, MAX_WIND, &CLIMATE_LEVELS)?;
+    let model = setup
+        .model
+        .with_humidity_profile(params.radiation)
+        .with_dissipative_heating();
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
     let nc = mesh.n_cells();
     let (state, surface_temperature) = initial_state(&model, &world.planet, &params);
@@ -409,19 +413,23 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         // leapfrog levels).
         let atmosphere = (d1.energy - d0.energy) + LATENT_HEAT * (w1 - w0);
         let slab = b1.stored - b0.stored;
+        // Friction's and diffusion's lost kinetic energy comes back as heat;
+        // what's left of them is round-off.
         let friction = e1.forcing.kinetic - e0.forcing.kinetic;
+        let returned = b1.dissipated - b0.dissipated;
         let diffusion = e1.diffusion.total() - e0.diffusion.total();
         let _ = writeln!(
             summary,
             "Final-year energy budget (W/m²): net in at the top of the atmosphere {:+.3} = atmosphere uptake {:+.3} \
-             (enthalpy and latent) + slab uptake {:+.3} + kinetic energy removed by friction {:.3} and diffusion {:.3} \
-             + residual {:+.4}",
+             (enthalpy and latent) + slab uptake {:+.3} + residual {:+.4}; friction dissipated {:.3} \
+             (returned as heat, net {:+.1e}), diffusion's net {:+.1e}",
             wm2(toa),
             wm2(atmosphere),
             wm2(slab),
+            wm2(toa - atmosphere - slab + friction + returned + diffusion),
             -wm2(friction),
-            -wm2(diffusion),
-            wm2(toa - atmosphere - slab + friction + diffusion),
+            wm2(friction + returned),
+            wm2(diffusion),
         );
         let exchanged = (b1.evaporated - b0.evaporated) - (b1.precipitated - b0.precipitated);
         let (filter, fixer) = (wb1.filter - wb0.filter, wb1.fixer - wb0.fixer);

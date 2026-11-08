@@ -51,7 +51,7 @@ pub fn run(args: BaroclinicArgs) -> Result<(), String> {
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let world = world;
-    let setup = build_model(&world, &args.dynamics, MAX_WIND)?;
+    let setup = build_model(&world, &args.dynamics, MAX_WIND, &[0.5])?;
     if setup.model.layers() != 2 {
         return Err("fms baroclinic is a two-layer experiment (Phillips's model): leave --levels at one interface".into());
     }

@@ -15,6 +15,7 @@ pub mod baroclinic;
 pub mod climatology;
 pub mod column_physics;
 pub mod diffusion;
+pub mod dissipation;
 pub mod forcing;
 pub mod held_suarez;
 pub mod helmholtz;
@@ -26,6 +27,7 @@ pub mod radiation;
 pub mod safety;
 pub mod semi_implicit;
 pub mod shallow_water;
+pub mod surface_layer;
 pub mod transport;
 pub mod williamson;
 

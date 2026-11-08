@@ -30,9 +30,10 @@ pub const SAMPLES_PER_DAY: u64 = 4;
 #[derive(Args)]
 pub struct DynamicsArgs {
     /// Interior layer interfaces in σ = p/p_s, top down, comma-separated
-    /// (e.g. `0.4,0.85` for three layers with a thin bottom one).
-    #[arg(long, default_value = "0.5", value_delimiter = ',', num_args = 1..)]
-    pub levels: Vec<f64>,
+    /// (e.g. `0.4,0.85` for three layers with a thin bottom one). Default:
+    /// `0.5` (two layers), or the climate's three layers for `fms climate`.
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    pub levels: Option<Vec<f64>>,
     /// Design maximum wind for the time step (m s⁻¹). The run stops if a
     /// wind outruns the step (its Courant limit is this / 0.6).
     #[arg(long)]
@@ -56,17 +57,18 @@ pub struct Setup<'w> {
     pub steps_per_day: u64,
 }
 
-/// The model and step for `args`, with `max_wind` as the design wind unless
-/// the user gave one.
+/// The model and step for `args`, with `max_wind` as the design wind and
+/// `levels` as the interior interfaces unless the user gave others.
 pub fn build_model<'w>(
     world: &'w World,
     args: &DynamicsArgs,
     max_wind: f64,
+    levels: &[f64],
 ) -> Result<Setup<'w>, String> {
     let params = *world.planet.params();
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
     let omega = world.planet.rotation_rate();
-    let interior = &args.levels;
+    let interior = args.levels.as_deref().unwrap_or(levels);
     if interior.len() + 1 > fms_atmos::levels::MAX_LAYERS
         || !interior.windows(2).all(|w| w[0] < w[1])
         || interior.iter().any(|&s| s <= 0.0 || s >= 1.0)

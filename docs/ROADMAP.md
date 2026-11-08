@@ -176,7 +176,12 @@ Added after the M1 review: tooling the GCM work depends on.
       - Manabe bucket soil moisture with runoff;
       - snow mass, melt and snow albedo;
       - orographic rain and sub-grid orographic drag from the height
-        spread.
+        spread;
+      - single-column test cases for the boundary layer and convection
+        (BOMEX trade cumulus, DYCOMS stratocumulus): the column physics as
+        a per-column function forced by the cases' prescribed large-scale
+        tendencies, checked against their observations and large-eddy
+        simulations in seconds per run.
 
       Developed on an idealized continent, then run on the Earth
       heightmap. Tests: energy and water budgets close (soil water and
