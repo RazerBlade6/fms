@@ -575,6 +575,14 @@ optical depth from the cumulative water path (`τ ∝ √W_below − √W_above`
 so absorption doesn't depend on the layering. Check that more layers
 converge.
 
+**Fixed (M2.10.1):** sunlight now runs through the adding method in two
+bands, the visible (ozone) and the near-infrared (water, from the
+cumulative slant path). Four and six layers now put 0.03 and 0.01 W/m² less
+sunlight on the surface than two. Recalibrated to the same column
+absorption: ozone 0.03 → 0.046 (it now acts on the visible band only),
+water 0.04 → 0.062; the reference column absorbs 49.3 W/m² against 49.4
+before, and its response to halving the water is the same within 0.5 W/m².
+
 ### O-28: More than two layers make the vertical modes non-normal
 
 **Seen (M2.9.5):** with two layers, the gravity-wave matrix `A` is

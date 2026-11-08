@@ -55,10 +55,13 @@
 //!
 //! # Shortwave
 //!
-//! Absorbed on the way down (slant path `1/μ`) and again after reflection
-//! (diffuse path): ozone at the top, and water vapour in every layer, in
-//! the near-infrared only (a fixed share of sunlight) and saturating as
-//! `√w`. A cloud deck at the layer interface reflects a fixed share (a
+//! Two bands, each absorbed on the way down (slant path `1/μ`) and again
+//! after reflection (diffuse path): the visible, absorbed by ozone at the
+//! top, and the near-infrared (a fixed share of sunlight), absorbed by water
+//! vapour. Water's absorption saturates with the slant path `u` from the
+//! top (transmissivity `exp(−a√u)`), so each slab absorbs what's left of the
+//! band between its top and bottom paths and the column's absorption
+//! doesn't depend on how it's layered. A cloud deck at the layer interface reflects a fixed share (a
 //! stand-in until the model diagnoses clouds), and the surface reflects its
 //! own albedo; reflections between the two are summed exactly. Putting the
 //! clouds' reflection at the surface instead, below the water vapour, would
@@ -107,10 +110,11 @@ pub struct RadiationParams {
     pub continuum_opacity: f64,
     /// Surface relative humidity `RH_s` of the Manabe–Wetherald profile.
     pub surface_humidity: f64,
-    /// Shortwave absorption by ozone (optical depth, at the top).
+    /// Shortwave absorption by ozone: optical depth of the visible band, at
+    /// the top.
     pub ozone_absorption: f64,
-    /// Shortwave absorption by water vapour: near-infrared optical depth
-    /// per `√(kg m⁻²)`.
+    /// Near-infrared absorption by water vapour: optical depth per
+    /// `√(kg m⁻²)` of slant water path from the top.
     pub water_absorption: f64,
     /// Share of sunlight in the near-infrared water-vapour bands.
     pub near_infrared: f64,
@@ -147,8 +151,8 @@ impl Default for RadiationParams {
             water_edge: 0.02,
             continuum_opacity: 0.03,
             surface_humidity: 0.77,
-            ozone_absorption: 0.03,
-            water_absorption: 0.04,
+            ozone_absorption: 0.046,
+            water_absorption: 0.062,
             near_infrared: 0.35,
             lapse_rate: 6.5e-3,
             mu: 0.5,
@@ -673,6 +677,86 @@ fn slabs(
     (slabs, elements)
 }
 
+/// Diffusivity factor: the mean slant path of diffuse light (air masses).
+const DIFFUSIVITY: f64 = 1.66;
+
+/// Sunlight in one band through the column's elements.
+struct Band {
+    /// Absorbed by each element (zero for sheets).
+    absorbed: Vec<f64>,
+    /// Absorbed by the surface.
+    surface: f64,
+    /// Reflected to space.
+    escaped: f64,
+}
+
+/// The adding method for one band of sunlight `s` (W m⁻²): sheets reflect
+/// and transmit without absorbing; `slab(j)` gives slab `j`'s direct and
+/// diffuse transmissivities; reflections between everything are summed
+/// exactly.
+fn shortwave_band(
+    elements: &[Element],
+    sheets: &[Cloud],
+    albedo: f64,
+    s: f64,
+    slab: impl Fn(usize) -> (f64, f64),
+) -> Band {
+    // Per element: reflectance and direct and diffuse transmissivities.
+    let optics: Vec<(f64, f64, f64)> = elements
+        .iter()
+        .map(|e| match *e {
+            Element::Slab(j) => {
+                let (direct, diffuse) = slab(j);
+                (0.0, direct, diffuse)
+            }
+            Element::Sheet(c) => {
+                let r = sheets[c].reflectance;
+                (r, 1.0 - r, 1.0 - r)
+            }
+        })
+        .collect();
+    let n = elements.len();
+    // Direct beam down; diffuse reflectance R̃ of everything below each
+    // interface, and the diffuse light U leaving each interface upward that
+    // the direct beam generates below it.
+    let mut direct = vec![0.0; n + 1];
+    direct[0] = s;
+    for (j, &(_, t_dir, _)) in optics.iter().enumerate() {
+        direct[j + 1] = direct[j] * t_dir;
+    }
+    let mut reflect = vec![0.0; n + 1];
+    let mut rising = vec![0.0; n + 1];
+    reflect[n] = albedo;
+    rising[n] = albedo * direct[n];
+    for j in (0..n).rev() {
+        let (r, _, t) = optics[j];
+        let denom = 1.0 - r * reflect[j + 1];
+        reflect[j] = r + t * t * reflect[j + 1] / denom;
+        rising[j] = t * rising[j + 1] / denom + r * direct[j];
+    }
+    let mut down = vec![0.0; n + 1];
+    for j in 0..n {
+        let (r, _, t) = optics[j];
+        down[j + 1] = (t * down[j] + r * rising[j + 1]) / (1.0 - r * reflect[j + 1]);
+    }
+    let up = |j: usize| reflect[j] * down[j] + rising[j];
+    let absorbed = (0..n)
+        .map(|j| {
+            let (r, _, t) = optics[j];
+            if r > 0.0 {
+                0.0
+            } else {
+                (direct[j] - direct[j + 1]) + (1.0 - t) * (down[j] + up(j + 1))
+            }
+        })
+        .collect();
+    Band {
+        absorbed,
+        surface: (1.0 - albedo) * (down[n] + direct[n]),
+        escaped: up(0),
+    }
+}
+
 /// Radiative fluxes of one column.
 pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Fluxes {
     let levels = column.levels;
@@ -695,75 +779,50 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
     let sheet_layer = |c: usize| levels.layer_of(sheets[c].sigma);
     let mut layers = vec![0.0; n_layers];
 
-    // Shortwave. Each layer's transmissivity along a path of `m` air masses
-    // (ozone in its top slab, saturating near-infrared water absorption),
-    // shared among its slabs in proportion to their water.
-    let layer_transmit = |k: usize, m: f64| {
-        let vapour = params.near_infrared
-            * (1.0 - fms_math::exp(-m * params.water_absorption * water[k].sqrt()));
-        1.0 - vapour
-    };
-    let slab_transmit = |j: usize, m: f64| {
-        let slab = &slabs[j];
-        let share = if water[slab.layer] > 0.0 {
-            slab.water / water[slab.layer]
-        } else {
-            (slab.bottom - slab.top) / levels.dsigma()[slab.layer]
-        };
-        let ozone = if j == 0 { params.ozone_absorption } else { 0.0 };
-        fms_math::exp(-m * ozone) * fms_math::pow(layer_transmit(slab.layer, m), share)
-    };
-    // Per element: reflectance and direct and diffuse transmissivities.
-    let optics: Vec<(f64, f64, f64)> = elements
-        .iter()
-        .map(|e| match *e {
-            Element::Slab(j) => (
-                0.0,
-                slab_transmit(j, 1.0 / params.mu),
-                slab_transmit(j, 1.66),
-            ),
-            Element::Sheet(c) => {
-                let r = sheets[c].reflectance;
-                (r, 1.0 - r, 1.0 - r)
-            }
-        })
-        .collect();
-    let n = elements.len();
+    // Shortwave, in two bands: the visible (ozone at the top) and the
+    // near-infrared (water vapour). Each band runs the adding method
+    // through the same sheets and surface. Water's absorption saturates
+    // with the path from the top: transmissivity `exp(−a√(mW))` along `m`
+    // air masses through `W` of water, so a slab between cumulative paths
+    // `W₁` and `W₂` transmits `exp(−a(√(mW₂) − √(mW₁)))` and the column's
+    // absorption doesn't depend on how it's cut into slabs.
+    let mut path = vec![0.0; slabs.len() + 1];
+    for (j, slab) in slabs.iter().enumerate() {
+        path[j + 1] = path[j] + slab.water;
+    }
     let s = column.insolation.max(0.0);
-    // Adding method. Direct beam down; diffuse reflectance R̃ of everything
-    // below each interface, and the diffuse light U leaving each interface
-    // upward that the direct beam generates below it.
-    let mut direct = vec![0.0; n + 1];
-    direct[0] = s;
-    for (j, &(_, t_dir, _)) in optics.iter().enumerate() {
-        direct[j + 1] = direct[j] * t_dir;
-    }
     let albedo = params.albedo;
-    let mut reflect = vec![0.0; n + 1];
-    let mut rising = vec![0.0; n + 1];
-    reflect[n] = albedo;
-    rising[n] = albedo * direct[n];
-    for j in (0..n).rev() {
-        let (r, _, t) = optics[j];
-        let denom = 1.0 - r * reflect[j + 1];
-        reflect[j] = r + t * t * reflect[j + 1] / denom;
-        rising[j] = t * rising[j + 1] / denom + r * direct[j];
-    }
-    let mut down = vec![0.0; n + 1];
-    for j in 0..n {
-        let (r, _, t) = optics[j];
-        down[j + 1] = (t * down[j] + r * rising[j + 1]) / (1.0 - r * reflect[j + 1]);
-    }
-    let up = |j: usize, down: &[f64]| reflect[j] * down[j] + rising[j];
-    for (j, e) in elements.iter().enumerate() {
-        if let Element::Slab(i) = *e {
-            let (_, _, t) = optics[j];
-            let absorbed = (direct[j] - direct[j + 1]) + (1.0 - t) * (down[j] + up(j + 1, &down));
-            layers[slabs[i].layer] += absorbed;
+    let visible = |j: usize, m: f64| {
+        if j == 0 {
+            fms_math::exp(-m * params.ozone_absorption)
+        } else {
+            1.0
         }
+    };
+    let infrared = |j: usize, m: f64| {
+        let a = params.water_absorption;
+        fms_math::exp(-a * ((m * path[j + 1]).sqrt() - (m * path[j]).sqrt()))
+    };
+    let mut surface_shortwave = 0.0;
+    let mut escaped = 0.0;
+    for (share, transmit) in [
+        (
+            1.0 - params.near_infrared,
+            &visible as &dyn Fn(usize, f64) -> f64,
+        ),
+        (params.near_infrared, &infrared),
+    ] {
+        let band = shortwave_band(&elements, &sheets, albedo, share * s, |j| {
+            (transmit(j, 1.0 / params.mu), transmit(j, DIFFUSIVITY))
+        });
+        for (j, e) in elements.iter().enumerate() {
+            if let Element::Slab(i) = *e {
+                layers[slabs[i].layer] += band.absorbed[j];
+            }
+        }
+        surface_shortwave += band.surface;
+        escaped += band.escaped;
     }
-    let surface_shortwave = (1.0 - albedo) * (down[n] + direct[n]);
-    let escaped = up(0, &down);
 
     // Longwave, interval by interval. Edge temperatures: each interface
     // that of the layer below it, along the convective lapse rate through
@@ -778,6 +837,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
     let surface_air = profile.in_layer(n_layers - 1, 1.0);
     let cloud_temperature: Vec<f64> = sheets.iter().map(|c| profile.at(c.sigma)).collect();
     let ds = levels.dsigma();
+    let n = elements.len();
     let mut edges = vec![(0.0, 0.0); n_layers];
     let mut tau = vec![0.0; slabs.len()];
     let mut emit = vec![(0.0, 0.0); n];
@@ -968,14 +1028,11 @@ mod tests {
         // The same atmosphere (each layer at the two-layer profile's
         // temperature there, fixed relative humidity) cut into more
         // layers: the budget closes, the water is the same, and the
-        // longwave agrees to within the resampled profile. Measured against
-        // two layers: OLR +2.3 and +4.9 W/m², surface longwave +4.0 and
-        // +4.5, water +0.5% and +0.3%.
-        //
-        // The shortwave doesn't converge: water's near-infrared absorption
-        // saturates as √w layer by layer, and each layer takes its share of
-        // all the light rather than of what's left in the band, so more
-        // layers absorb more (surface −7.7 and −12.3 W/m² here; O-27).
+        // longwave and shortwave agree to within the resampled profile.
+        // Measured against two layers: OLR +2.3 and +4.9 W/m², surface
+        // longwave +4.0 and +4.5, water +0.5% and +0.3%, surface sunlight
+        // −0.03 and −0.01 (the
+        // atmosphere's +0.6 and +0.4, mostly the resampled water; O-27).
         let params = RadiationParams::default();
         let gas = Gas::EARTH_AIR;
         let base = earthlike();
@@ -1027,8 +1084,11 @@ mod tests {
                 (f.surface_down - reference.surface_down).abs() < 6.0,
                 "{f:?}"
             );
-            // O-27: within 15 W/m² until the shortwave is fixed.
-            assert!((f.surface_shortwave - reference.surface_shortwave).abs() < 15.0);
+            assert!(
+                (f.surface_shortwave - reference.surface_shortwave).abs() < 0.2,
+                "{f:?}"
+            );
+            assert!((f.absorbed - reference.absorbed).abs() < 1.5, "{f:?}");
         }
     }
 

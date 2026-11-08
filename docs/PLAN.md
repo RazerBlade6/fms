@@ -231,8 +231,10 @@ crates never depend on `app`. Everything except `app` runs headless.
   between its edges, and each interface takes the temperature of the layer
   below along the convective lapse rate.
   Water vapour comes from a fixed relative-humidity profile (Manabe &
-  Wetherald 1967) until humidity is prognostic (M2 step 9). Shortwave:
-  ozone and saturating near-infrared water-vapour absorption, a stand-in
+  Wetherald 1967) until humidity is prognostic (M2 step 9). Shortwave, in
+  two bands through the adding method: ozone in the visible, and
+  near-infrared water-vapour absorption saturating with the cumulative
+  slant path from the top (so it doesn't depend on the layering), a stand-in
   cloud deck at the layer interface, and the surface albedo. Calibrated in a
   single column against Earth's global-mean column; see `crates/atmos/src/radiation.rs`
   and [OBSERVATIONS.md](OBSERVATIONS.md) O-19, O-20.
