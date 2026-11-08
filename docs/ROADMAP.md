@@ -144,15 +144,43 @@ Added after the M1 review: tooling the GCM work depends on.
     energy closes to 0.03 W/m²). Found: shortwave water absorption depends
     on the layering (O-27); with more than one interface the vertical modes
     are non-normal (O-28).
-- [ ] 10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
-    bucket soil moisture, snow cover and albedo, orographic precipitation using the
-    sub-grid terrain statistics. Needs a diagnosed surface wind, not the
-    lower-layer wind ([OBSERVATIONS.md](OBSERVATIONS.md) O-18), and should return
-    friction's dissipated energy as heat (O-21). The boundary layer should
-    also hold evaporated water near the surface, so the subtropics stop
-    raining out their own evaporation (O-22). Runs on three layers (step
-    9.5) with a thin bottom one; fix the layering dependence of the
-    shortwave (O-27) before recalibrating.
+- [ ] 10. **Boundary layer and land surface**, in two reviewed parts:
+    - [ ] 10.1. **Boundary layer** (on the aquaplanet):
+      - make the shortwave independent of the layering (O-27): the
+        near-infrared band carried separately, each layer's absorption from
+        the cumulative water path;
+      - move the climate to three layers with a thin (~1.4 km) bottom one;
+      - diagnose a 10 m surface wind from the bottom layer (log profile,
+        roughness, stability), replacing the lower-layer wind
+        ([OBSERVATIONS.md](OBSERVATIONS.md) O-18);
+      - bulk surface drag and stability-dependent heat and moisture
+        exchange in place of the Rayleigh friction;
+      - return friction's and diffusion's dissipated energy as heat (O-21);
+      - stability-dependent mixing out of the bottom layer that keeps
+        evaporated water near the surface (O-22);
+      - recalibrate once on three layers.
+
+      Tests: surface sunlight converges with more layers; the subtropics
+      rain ≲2 mm/day; Held–Suarez-like surface westerlies under the jets;
+      the top of the atmosphere balances in equilibrium; energy and water
+      budgets close.
+    - [ ] 10.2. **Land surface**:
+      - terrain into the climate run: surface geopotential, land fraction
+        and sub-grid height spread per cell (check spurious σ-coordinate
+        winds over steep terrain);
+      - land and ocean tiles per cell, each with its own surface
+        temperature and fluxes, weighted by land fraction (the ocean tile
+        stays the 10 m slab until step 11);
+      - land energy balance: a skin temperature over a thin soil heat
+        store, solved implicitly;
+      - Manabe bucket soil moisture with runoff;
+      - snow mass, melt and snow albedo;
+      - orographic rain and sub-grid orographic drag from the height
+        spread.
+
+      Developed on an idealized continent, then run on the Earth
+      heightmap. Tests: energy and water budgets close (soil water and
+      snow included); land swings more than ocean daily and seasonally.
 - [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
     Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
     over a 150 m deep layer per ocean cell, horizontal diffusion in both,
