@@ -41,16 +41,18 @@
 //!
 //! # Diffusion
 //!
-//! The model's hyperdiffusion ([`crate::diffusion`]) is evaluated at the old
-//! level and added to `N`: `xⁿ⁺¹ = xⁿ⁻¹ + 2Δt D(xⁿ⁻¹) + …`. Centred in time,
-//! diffusion would be unstable under leapfrog; lagged, it is stable while
-//! `Δt` times the fastest damping rate is below 1. The energy it removes is
-//! accumulated in [`TwoLayerSemiImplicit::dissipated_energy`].
+//! The model's hyperdiffusion ([`crate::diffusion`]) and forcing
+//! ([`crate::forcing`]) are evaluated at the old level and added to `N`:
+//! `xⁿ⁺¹ = xⁿ⁻¹ + 2Δt D(xⁿ⁻¹) + …`. Centred in time, damping would be
+//! unstable under leapfrog; lagged, it is stable while `Δt` times the fastest
+//! damping rate is below 1. The energy each adds or removes is accumulated in
+//! [`TwoLayerSemiImplicit::energy_budget`].
 
 use fms_geo::Operators;
 use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
+use crate::forcing::EnergyTerms;
 use crate::helmholtz::{Helmholtz, SolveReport, dot};
 use crate::safety::{self, BlowUp, Health, Limits};
 use crate::semi_implicit::SolverStats;
@@ -79,6 +81,18 @@ impl Default for TwoLayerSemiImplicitOptions {
             tolerance: 1e-8,
         }
     }
+}
+
+/// Energy added since the start (J) by each non-adiabatic process. With it,
+/// `energy(now) − energy(start) − diffusion − forcing` is the time-stepping
+/// error.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EnergyBudget {
+    /// Hyperdiffusion (negative).
+    pub diffusion: EnergyTerms,
+    /// External forcing: for Held–Suarez, friction (kinetic) and Newtonian
+    /// heating and cooling (thermal).
+    pub forcing: EnergyTerms,
 }
 
 /// The vertical modes: `A = V diag(−c²) V⁻¹`.
@@ -136,11 +150,12 @@ pub struct TwoLayerSemiImplicit<'a> {
     current: TwoLayerState,
     steps: u64,
     stats: SolverStats,
-    /// Energy added by diffusion so far (J; negative).
-    dissipated: f64,
+    budget: EnergyBudget,
     // Scratch.
     tendency: TwoLayerState,
-    diffusion: TwoLayerState,
+    /// Lagged tendencies: diffusion plus forcing.
+    physics: TwoLayerState,
+    forcing: TwoLayerState,
     next: TwoLayerState,
     big_u: [Vec<f64>; 2],
     m: [Vec<f64>; 2],
@@ -190,9 +205,16 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             .ceil()
             .max(1.0);
         let mut current = state.clone();
-        let mut diffusion = state.clone();
-        model.diffusion_tendency(&state, &mut diffusion);
-        let dissipated = dt * model.energy_tendency(&state, &diffusion);
+        let (mut physics, mut forcing) = (state.clone(), state.clone());
+        let mut budget = EnergyBudget::default();
+        model.diffusion_tendency(&state, &mut physics);
+        budget
+            .diffusion
+            .add_scaled(dt, model.energy_tendency(&state, &physics));
+        model.forcing_tendency(&state, &mut forcing);
+        budget
+            .forcing
+            .add_scaled(dt, model.energy_tendency(&state, &forcing));
         for _ in 0..substeps as u64 {
             model.step(&mut current, dt / substeps);
         }
@@ -213,9 +235,10 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             current,
             steps: 1,
             stats: SolverStats::default(),
-            dissipated,
+            budget,
             tendency: state.clone(),
-            diffusion,
+            physics,
+            forcing,
             next: state,
             big_u: [edges(), edges()],
             m: [cells(), cells()],
@@ -244,11 +267,14 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         &mut self.current
     }
 
-    /// Energy added by hyperdiffusion since the start (J; negative). With
-    /// it, `energy(now) − energy(start) − dissipated_energy()` is the
-    /// time-stepping error.
+    /// Energy added by hyperdiffusion since the start (J; negative).
     pub fn dissipated_energy(&self) -> f64 {
-        self.dissipated
+        self.budget.diffusion.total()
+    }
+
+    /// Energy added by each non-adiabatic process since the start.
+    pub fn energy_budget(&self) -> EnergyBudget {
+        self.budget
     }
 
     /// Fastest wind (m s⁻¹) the step can advect stably: Courant number 1 on
@@ -381,15 +407,39 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         };
         let mut current = std::mem::replace(&mut self.current, empty);
         self.model.tendency(&current, &mut self.tendency);
-        // Hyperdiffusion, lagged to the old level.
+        // Hyperdiffusion and forcing, lagged to the old level.
         let diffuse = self.model.hyperdiffusion().is_some();
+        let forced = self.model.has_forcing();
         if diffuse {
             self.model
-                .diffusion_tendency(&self.previous, &mut self.diffusion);
-            self.dissipated += dt * self.model.energy_tendency(&self.previous, &self.diffusion);
+                .diffusion_tendency(&self.previous, &mut self.physics);
+            let rate = self.model.energy_tendency(&self.previous, &self.physics);
+            self.budget.diffusion.add_scaled(dt, rate);
         }
+        if forced {
+            self.model
+                .forcing_tendency(&self.previous, &mut self.forcing);
+            let rate = self.model.energy_tendency(&self.previous, &self.forcing);
+            self.budget.forcing.add_scaled(dt, rate);
+            if diffuse {
+                for (p, f) in self
+                    .physics
+                    .parts_mut()
+                    .into_iter()
+                    .zip(self.forcing.parts())
+                {
+                    p.par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .zip(f.par_iter())
+                        .for_each(|(p, f)| *p += f);
+                }
+            } else {
+                std::mem::swap(&mut self.physics, &mut self.forcing);
+            }
+        }
+        let diffuse = diffuse || forced;
         let t = &self.tendency;
-        let d = &self.diffusion;
+        let d = &self.physics;
 
         // Divergences of uⁿ and uⁿ⁻¹.
         for k in 0..2 {

@@ -85,9 +85,14 @@ Added after the M1 review: tooling the GCM work depends on.
    deferred until there are more levels (O-16). Tests: a storm life cycle
    survives 30 days with mass and θ exact and the energy budget closed; rest
    over a mountain is untouched; blow-ups are caught before they become NaNs.
-- [ ] 7. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
+- [x] 7. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
    friction. Mid-latitude jets and baroclinic eddies should appear. Use ∇⁴, not
-   the paper's ∇⁸ ([OBSERVATIONS.md](OBSERVATIONS.md) O-17).
+   the paper's ∇⁸ ([OBSERVATIONS.md](OBSERVATIONS.md) O-17). Done with the
+   forcing averaged over each layer's mass (`fms held-suarez`). 1200 days at
+   10k cells: upper jets of 26 m/s at 49°, north and south within 0.5 m/s, and an
+   energy budget that closes (Newtonian heating 0.38 W/m² balanced by friction
+   and diffusion). Tests (k = 16, 450 days): jets, hemispheric agreement,
+   steady and closed energy budget. The lower layer is not the surface (O-18).
 - [ ] 8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
    CO₂/pressure-dependent optical depth. Replaces the Held–Suarez forcing.
    Test: global energy balance closes.
@@ -96,7 +101,8 @@ Added after the M1 review: tooling the GCM work depends on.
    heating, precipitation output.
 - [ ] 10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
     bucket soil moisture, snow cover and albedo, orographic precipitation using the
-    sub-grid terrain statistics.
+    sub-grid terrain statistics. Needs a diagnosed surface wind, not the
+    lower-layer wind ([OBSERVATIONS.md](OBSERVATIONS.md) O-18).
 - [ ] 11. **Slab ocean and sea ice**: mixed-layer heat budget coupled to the
     atmosphere; Semtner zero-layer sea ice with ice-albedo feedback.
 - [ ] 12. **Ocean currents**: currents driven by wind stress through Ekman/Sverdrup

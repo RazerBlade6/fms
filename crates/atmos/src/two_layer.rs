@@ -57,6 +57,7 @@ use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};
+use crate::forcing::{EnergyTerms, Forcing};
 use crate::helmholtz::dot;
 
 /// Reference pressure for potential temperature (Pa).
@@ -124,7 +125,7 @@ impl TwoLayerState {
         }
     }
 
-    fn parts(&self) -> [&[f64]; 5] {
+    pub(crate) fn parts(&self) -> [&[f64]; 5] {
         [
             &self.ps,
             &self.u[0],
@@ -134,7 +135,7 @@ impl TwoLayerState {
         ]
     }
 
-    fn parts_mut(&mut self) -> [&mut [f64]; 5] {
+    pub(crate) fn parts_mut(&mut self) -> [&mut [f64]; 5] {
         let [u0, u1] = &mut self.u;
         let [t0, t1] = &mut self.theta_ps;
         [&mut self.ps, u0, u1, t0, t1]
@@ -232,6 +233,7 @@ pub struct TwoLayer<'a> {
     stages: [TwoLayerState; 4],
     stage_state: TwoLayerState,
     diffusion: Option<Hyperdiffusion>,
+    forcing: Option<Box<dyn Forcing>>,
 }
 
 impl<'a> TwoLayer<'a> {
@@ -292,6 +294,7 @@ impl<'a> TwoLayer<'a> {
             stages: std::array::from_fn(|_| TwoLayerState::zeros(nc, ne)),
             stage_state: TwoLayerState::zeros(nc, ne),
             diffusion: None,
+            forcing: None,
         }
     }
 
@@ -305,6 +308,18 @@ impl<'a> TwoLayer<'a> {
     /// The hyperdiffusion, if any.
     pub fn hyperdiffusion(&self) -> Option<&Hyperdiffusion> {
         self.diffusion.as_ref()
+    }
+
+    /// The model with external forcing ([`crate::forcing`]), e.g.
+    /// [`crate::HeldSuarez`].
+    pub fn with_forcing(mut self, forcing: Box<dyn Forcing>) -> Self {
+        self.forcing = Some(forcing);
+        self
+    }
+
+    /// Whether the model has external forcing.
+    pub fn has_forcing(&self) -> bool {
+        self.forcing.is_some()
     }
 
     /// The operators.
@@ -472,47 +487,65 @@ impl<'a> TwoLayer<'a> {
         }
     }
 
+    /// Forcing tendencies of `state` into `out` (zero without forcing;
+    /// `out.ps` is always zero).
+    pub fn forcing_tendency(&self, state: &TwoLayerState, out: &mut TwoLayerState) {
+        for x in out.parts_mut() {
+            x.fill(0.0);
+        }
+        if let Some(f) = &self.forcing {
+            f.add_tendency(state, out);
+        }
+    }
+
     /// Rate of change of total energy (W) caused by a tendency of the winds
     /// and `Θ` at fixed surface pressure, such as
     /// [`diffusion_tendency`](Self::diffusion_tendency): the exact derivative
-    /// of the energy in [`diagnostics`](Self::diagnostics) along it.
+    /// of the energy in [`diagnostics`](Self::diagnostics) along it, split
+    /// into the part through the winds and the part through `Θ`.
     /// `tendency.ps` is ignored.
-    pub fn energy_tendency(&self, state: &TwoLayerState, tendency: &TwoLayerState) -> f64 {
+    pub fn energy_tendency(&self, state: &TwoLayerState, tendency: &TwoLayerState) -> EnergyTerms {
         let ops = &self.ops;
         let r2 = ops.radius() * ops.radius();
         let g = ops.geometry();
         let ds = self.dsigma();
         let edges = ops.mesh().edges();
         let edge_areas = ops.edge_areas();
-        let mut rate = 0.0;
+        let mut rate = EnergyTerms::default();
+        let gravity = self.gravity;
+        let cp = self.gas.heat_capacity;
+        // Layer Exner functions, once per cell.
+        let exner: Vec<[f64; 2]> = state
+            .ps
+            .par_iter()
+            .with_min_len(MIN_CHUNK)
+            .map(|&ps| self.layer_exner(ps))
+            .collect();
         for (k, &dsk) in ds.iter().enumerate() {
             // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
             let kinetic: Vec<f64> = (0..edges.len())
+                .into_par_iter()
+                .with_min_len(MIN_CHUNK)
                 .map(|e| {
                     let [a, b] = edges[e].cells;
                     let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
-                    edge_areas[e] * dp * state.u[k][e] / self.gravity
+                    edge_areas[e] * dp * state.u[k][e] / gravity
                 })
                 .collect();
-            rate += dot(&kinetic, &tendency.u[k]);
+            rate.kinetic += dot(&kinetic, &tendency.u[k]);
             // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
             let enthalpy: Vec<f64> = (0..state.ps.len())
-                .map(|i| {
-                    g.cell_areas[i]
-                        * r2
-                        * dsk
-                        * self.gas.heat_capacity
-                        * self.layer_exner(state.ps[i])[k]
-                        / self.gravity
-                })
+                .into_par_iter()
+                .with_min_len(MIN_CHUNK)
+                .map(|i| g.cell_areas[i] * r2 * dsk * cp * exner[i][k] / gravity)
                 .collect();
-            rate += dot(&enthalpy, &tendency.theta_ps[k]);
+            rate.thermal += dot(&enthalpy, &tendency.theta_ps[k]);
         }
         rate
     }
 
     /// Advance `state` by `dt` seconds with classic fourth-order Runge–Kutta,
-    /// including hyperdiffusion.
+    /// including hyperdiffusion and forcing.
     pub fn step(&mut self, state: &mut TwoLayerState, dt: f64) {
         let Self {
             ops,
@@ -524,6 +557,7 @@ impl<'a> TwoLayer<'a> {
             stages,
             stage_state,
             diffusion,
+            forcing,
             ..
         } = self;
         let params = Parameters {
@@ -537,6 +571,9 @@ impl<'a> TwoLayer<'a> {
             compute_tendency(params, work, x, out);
             if let Some(d) = diffusion.as_mut() {
                 d.add_tendency(ops, x, out);
+            }
+            if let Some(f) = forcing.as_ref() {
+                f.add_tendency(x, out);
             }
         };
         let [k1, k2, k3, k4] = stages;

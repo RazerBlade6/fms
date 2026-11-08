@@ -15,6 +15,7 @@ pub mod mesh;
 pub mod operators;
 pub mod spherical;
 pub mod two_level;
+pub mod zonal;
 
 pub use geometry::MeshGeometry;
 pub use locate::CellLocator;
@@ -23,3 +24,4 @@ pub use mesh::{
 };
 pub use operators::Operators;
 pub use two_level::TwoLevelMap;
+pub use zonal::LatitudeBands;

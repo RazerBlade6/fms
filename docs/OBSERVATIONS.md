@@ -27,6 +27,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-15 | [Baroclinic growth is ~75% of local theory](#o-15-baroclinic-growth-is-75-of-local-theory) | Dynamics | Accepted |
 | O-16 | [No sponge layer](#o-16-no-sponge-layer) | Dynamics | Accepted |
 | O-17 | [Zig-zag vertex modes limit explicit hyperdiffusion](#o-17-zig-zag-vertex-modes-limit-explicit-hyperdiffusion) | Numerics | Accepted |
+| O-18 | [Two layers have no surface wind](#o-18-two-layers-have-no-surface-wind) | Dynamics | Scheduled: M2 step 10 |
 
 ---
 
@@ -194,6 +195,11 @@ the initial wind blew up.
 **Why it's acceptable for now:** the scheme is correct, conserves mass to
 round-off, and is already a net win. Per-step cost is a performance problem.
 
+**Also seen (M2.7):** Held–Suarez at 10k cells runs at 42 steps/s. Of the
+24 ms per step, 18 ms is the adiabatic core (15 CG iterations per solve),
+3 ms hyperdiffusion, 1 ms the forcing and 0.7 ms the energy budget. The
+1200-day benchmark takes 28 minutes.
+
 **Plan:** M2 step 16, together with O-12. Options: a better preconditioner
 (geometric multigrid on the icosahedral refinement hierarchy, or a Chebyshev
 polynomial preconditioner, which needs no dot products); fusing each CG
@@ -293,4 +299,28 @@ scales where the damping is negligible anyway.
 (M2 step 7) needs a sharper filter. Options: implicit diffusion (one CG
 solve per step; its matrix is well conditioned at these strengths), or
 filtering the vertex modes separately.
+
+### O-18: Two layers have no surface wind
+
+**Seen (M2.7):** in the Held–Suarez benchmark (1200 days, 10k cells) the
+upper layer's jets are close to HS94: 26 m/s at 49° in both hemispheres. The
+lower layer is the mean over σ 0.5–1, and its westerlies peak at only
+5.7 m/s, against a 20 m/s difference between the layers. Extrapolated
+linearly to the surface (`1.5 u_lower − 0.5 u_upper`), that gives about
+−4 m/s, easterly under the jets, where HS94's surface winds are westerly.
+The zonal-mean surface pressure agrees: it rises steadily from 987 hPa at the
+equator to 1019 hPa at the poles. HS94 has subtropical highs and subpolar
+lows. The upper-level climate, the temperature contrast (43 K in the lower
+layer) and the energy budget all look right.
+
+**Why it's acceptable for now:** it's a limit of two layers. The model has
+one wind for the whole lower half of the atmosphere, and friction acts on
+that layer mean. Held–Suarez only tests the dynamics, and those behave.
+
+**Plan:** M2 step 10 (land surface and boundary-layer friction) must
+diagnose a surface wind rather than use the lower-layer wind: bulk fluxes,
+orographic lift and step 12's wind-stress-driven currents all depend on it.
+Options: a boundary-layer profile below the lower layer, or a thin third
+(boundary) layer. Check the result against the sign of Held–Suarez's
+surface winds.
 

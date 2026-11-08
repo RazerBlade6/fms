@@ -13,6 +13,7 @@
 //! fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2  # time series at a point
 //! fms williamson --case 5                     # shallow-water flow over a mountain
 //! fms baroclinic                              # two-layer core: storms on a sheared jet
+//! fms held-suarez --climate-frequency 32      # dynamical-core benchmark, 1200 days
 //! ```
 
 mod arrows;
@@ -20,9 +21,11 @@ mod baroclinic;
 mod chart;
 mod colormap;
 mod font;
+mod held_suarez;
 mod patterns;
 mod render;
 mod run_log;
+mod two_layer_run;
 mod view;
 mod williamson;
 
@@ -73,6 +76,10 @@ enum Command {
     /// Run the two-layer dry core on a sheared jet seeded with small waves
     /// and render the growing baroclinic storms to `output/baroclinic/`.
     Baroclinic(baroclinic::BaroclinicArgs),
+    /// Run the Held–Suarez dynamical-core benchmark: spin up from rest under
+    /// idealized heating and friction, then average the zonal-mean climate;
+    /// write profiles, a summary, maps and a GIF to `output/held_suarez/`.
+    HeldSuarez(held_suarez::HeldSuarezArgs),
 }
 
 #[derive(Args, Clone)]
@@ -222,6 +229,7 @@ fn main() -> ExitCode {
         Command::Probe(args) => probe(args),
         Command::Williamson(args) => williamson::run(args),
         Command::Baroclinic(args) => baroclinic::run(args),
+        Command::HeldSuarez(args) => held_suarez::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

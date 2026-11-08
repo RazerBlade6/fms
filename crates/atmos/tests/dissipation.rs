@@ -143,7 +143,7 @@ fn diffusion_conserves_theta_and_removes_kinetic_energy() {
         theta_ps: [vec![0.0; d.ps.len()], vec![0.0; d.ps.len()]],
         ..d.clone()
     };
-    let rate = model.energy_tendency(&state, &winds_only);
+    let rate = model.energy_tendency(&state, &winds_only).total();
     eprintln!("kinetic energy dissipation {rate:.3e} W");
     assert!(rate < 0.0);
 }

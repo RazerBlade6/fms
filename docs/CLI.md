@@ -21,6 +21,7 @@ cargo build --release -p fms-cli
 | `fms probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
 | `fms williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
+| `fms held-suarez` | Run the Held–Suarez dynamical-core benchmark; write zonal-mean profiles (CSV and chart), a summary, maps and a GIF to `output/held_suarez/` |
 
 ### Cell, edge and vertex fields
 
@@ -186,6 +187,42 @@ bounds. The error says what failed, where and when. A dump goes to
 
 The GIF up to that point is written as usual.
 
+### Held–Suarez benchmark
+
+`fms held-suarez` runs the standard test of dry dynamical cores (Held &
+Suarez 1994) on the two-layer model. Temperature relaxes toward a zonally
+symmetric equilibrium (warm equator, cold poles, a 200 K stratosphere), and
+Rayleigh friction damps winds near the surface. Starting from rest, jets and
+baroclinic eddies develop by themselves. After a spin-up, the run averages
+the zonal-mean climate. The forcing is averaged over each layer's mass, so the
+lower layer gets friction at 0.3/day and the upper layer none.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--days D` | 1200 | Simulated days, including spin-up |
+| `--spinup D` | 200 | Days left out of the statistics |
+| `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
+| `--movie-days D` | 30 | The GIF covers the last `D` days |
+| `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
+| `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
+| `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion, as for `fms baroclinic` |
+
+The benchmark run is `fms held-suarez --terrain-frequency 64 --climate-frequency 32`
+(10k cells, ~30 minutes). Total energy settles by about day 300 (the free
+atmosphere relaxes over 40 days), so the default 200-day spin-up, HS94's,
+leaves a small upward drift in the energy budget. Outputs in
+`output/held_suarez/`:
+- `zonal_mean.csv` and `zonal_mean.png`: time-mean zonal-mean eastward wind
+  and temperature in each layer, and surface pressure, by latitude;
+- `summary.txt`: the jets in each hemisphere, how far north and south
+  differ, and the energy budget after spin-up in W/m² (Newtonian heating,
+  friction, diffusion and the time-stepping residual);
+- `diagnostics.csv`, the GIF of surface pressure over the last days, and maps
+  of the final state, as for `fms baroclinic`, including the blow-up dump.
+
+The `--max-wind`, `--diffusion-order`, `--e-folding` and `--inviscid` options
+also apply to `fms baroclinic`, whose design wind defaults to 120 m/s.
+
 ### Point probes
 
 `fms probe` reads each field at the cell nearest the requested point, on that
@@ -231,4 +268,5 @@ fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles
 fms probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
 fms williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
 fms baroclinic --terrain-frequency 90                      # a storm life cycle on a jet, 30 days
+fms held-suarez --terrain-frequency 64 --climate-frequency 32  # the dynamical-core benchmark, 1200 days
 ```
