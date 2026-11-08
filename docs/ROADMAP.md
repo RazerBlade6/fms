@@ -90,14 +90,17 @@ Added after the M1 review: tooling the GCM work depends on.
 - [ ] 12. **Ocean currents**: currents driven by wind stress through Ekman/Sverdrup
     balance, with western boundary intensification and heat advection.
 - [ ] 13. **Multi-rate scheduling**:
-    - derive `dt` from the CFL limit, rounded so it divides the solar day
+    - derive `dt` from the CFL limit, rounded so it divides the solar day. Size
+      it from a design maximum wind, not the current one: flows accelerate
+      ([OBSERVATIONS.md](OBSERVATIONS.md) O-13)
     - radiation every ~3 h, ocean every 1–6 h (§4.6)
 - [ ] 14. **Idealized planets**: aquaplanet (symmetric Hadley cell), no-tilt (no
     seasons), fast and slow rotation (number and width of circulation cells).
     Automated assertions on zonal-mean wind and temperature. Also a
     **grid-imprinting check**: measure how strongly the pentagons' pattern shows up
     in the long-run Held–Suarez climate ([OBSERVATIONS.md](OBSERVATIONS.md) O-1), and
-    apply a fix if it is visible.
+    apply a fix if it is visible. Already visible in Williamson case 2 as error
+    dipoles at the pentagons (±1.5 m of 3 km after 5 days).
 - [ ] 15. **Earth benchmark, part 1**: compare against a reference climatology:
     - trade winds and jets
     - the tropical rain belt and its seasonal migration
@@ -108,6 +111,11 @@ Added after the M1 review: tooling the GCM work depends on.
     Includes a parameter-tuning pass.
 - [ ] 16. **Performance pass**: profile, parallelize the hot kernels with rayon, check
     the memory layout. Target: speed 2 (~340 steps/s) at the default resolution.
+    Known costs going in ([OBSERVATIONS.md](OBSERVATIONS.md)):
+    - per-call parallel overhead dominates the dynamics (O-12): fuse operators
+    - the Helmholtz solve takes ~36 CG iterations per step (O-13): better
+      preconditioner (multigrid or Chebyshev), looser tolerance
+    - scheduler overhead (O-8)
 
 ## M3 — Hydrology and climate
 - [ ] 1. **Downscaling**: interpolate climate-grid fields onto the fine grid, with a
