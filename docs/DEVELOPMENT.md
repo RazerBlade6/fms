@@ -47,8 +47,9 @@ The README stays short and points here.
 - Pushing needs an explicit go-ahead.
 - "Ship it" / "push to prod" means: commit, push `dev`, fast-forward `main` to
   `dev`, push `main`. `main` is never force-pushed.
-- CI runs on every push to `dev`: format, clippy, API docs, and tests on macOS,
-  Windows and Linux. `main` only ever receives what has already passed on `dev`.
+- CI runs on every push to `dev`: format, clippy, API docs, and the golden-hash
+  tests on macOS, Windows and Linux. The full test suite runs locally before a
+  push, not in CI. `main` only ever receives what has already passed on `dev`.
   From M5, pushes to `main` build a GitHub Release (CD).
 
 ## Milestones

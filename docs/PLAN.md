@@ -413,7 +413,7 @@ the climatology.
   - Köppen agreement with observed maps exceeds a target threshold
 - **Determinism tests**: running twice from the same save must give
   bit-identical results.
-- These tests run in CI as regression checks.
+- These tests run before each push as regression checks.
 
 ## 6. Equations and numerical methods
 
@@ -528,7 +528,8 @@ Milestones and their steps are tracked in [ROADMAP.md](ROADMAP.md).
 ## 8. Branching and release
 
 - `dev` is the working branch, where all development happens. `main` is the release branch.
-- CI (fmt, clippy, tests on macOS, Windows and Linux) runs on every push to `dev`.
+- CI (fmt, clippy, docs, and golden-hash tests on macOS, Windows and Linux) runs
+  on every push to `dev`; the full test suite runs locally before a push.
 - `main` is only ever fast-forwarded from `dev` when a release is shipped.
 - CD runs on pushes to `main` and builds a GitHub Release, from M5 onwards
   ([roadmap](ROADMAP.md), M5 step 10).
