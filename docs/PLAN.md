@@ -528,8 +528,7 @@ Milestones and their steps are tracked in [ROADMAP.md](ROADMAP.md).
 ## 8. Branching and release
 
 - `dev` is the working branch, where all development happens. `main` is the release branch.
-- CI (fmt, clippy, tests on macOS, Windows and Linux) runs on every push to `dev`
-  or `main`, and on pull requests.
+- CI (fmt, clippy, tests on macOS, Windows and Linux) runs on every push to `dev`.
 - `main` is only ever fast-forwarded from `dev` when a release is shipped.
 - CD runs on pushes to `main` and builds a GitHub Release, from M5 onwards
   ([roadmap](ROADMAP.md), M5 step 10).
