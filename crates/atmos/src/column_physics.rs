@@ -244,6 +244,9 @@ struct SurfaceFlux {
     /// 10 m wind speed (m s⁻¹) and surface stress (N m⁻²).
     wind: f64,
     stress: f64,
+    /// Water carried out of the boundary layer by entrainment and shallow
+    /// cumulus (kg m⁻² s⁻¹).
+    export: f64,
     /// Eastward and northward stress of the surface on the air (N m⁻²).
     stress_east: f64,
     stress_north: f64,
@@ -482,7 +485,7 @@ impl<'a> ColumnPhysics<'a> {
                 // down to it along the profile's lapse rate.
                 let above = bottom - 1;
                 let p_above = REFERENCE_PRESSURE * fms_math::pow(exner[above], 1.0 / gas.kappa());
-                let beta = rd * self.params.radiation.lapse_rate / g;
+                let beta = rd * sl.top_lapse_factor * self.params.radiation.lapse_rate / g;
                 let t_top = state.theta_ps[above][i] / ps
                     * exner[above]
                     * fms_math::pow(top * ps / p_above, beta);
@@ -512,6 +515,14 @@ impl<'a> ColumnPhysics<'a> {
                     convective_velocity: w_star,
                     wind: x.wind,
                     stress: momentum * x.wind,
+                    export: (density_top * w_e
+                        + if cumulus {
+                            sl.cumulus * density_top * w_star
+                        } else {
+                            0.0
+                        })
+                        * (state.q_ps[bottom][i] - state.q_ps[above][i])
+                        / ps,
                     stress_east: -momentum * x.wind_ratio * e,
                     stress_north: -momentum * x.wind_ratio * nn,
                 }
@@ -893,6 +904,66 @@ impl Forcing for ColumnPhysics<'_> {
                 "Shallow cumulus mass flux out of the boundary layer",
                 "g m-2 s-1",
                 self.surface.iter().map(|s| 1e3 * s.cumulus).collect(),
+            ),
+            field(
+                "moist.condensation_boundary",
+                "Large-scale condensation in the boundary layer",
+                "mm day-1",
+                self.moist
+                    .iter()
+                    .map(|m| m.condensed[lowest] * DAY)
+                    .collect(),
+            ),
+            field(
+                "moist.condensation_above",
+                "Large-scale condensation in the layer above the boundary layer",
+                "mm day-1",
+                self.moist
+                    .iter()
+                    .map(|m| m.condensed[lowest - 1] * DAY)
+                    .collect(),
+            ),
+            field(
+                "moist.condensation_upper",
+                "Large-scale condensation in the higher layers",
+                "mm day-1",
+                self.moist
+                    .iter()
+                    .map(|m| m.condensed[..lowest - 1].iter().sum::<f64>() * DAY)
+                    .collect(),
+            ),
+            field(
+                "moist.reevaporation_boundary",
+                "Rain re-evaporated in the boundary layer",
+                "mm day-1",
+                self.moist
+                    .iter()
+                    .map(|m| m.reevaporated[lowest] * DAY)
+                    .collect(),
+            ),
+            field(
+                "moist.reevaporation_above",
+                "Rain re-evaporated above the boundary layer",
+                "mm day-1",
+                self.moist
+                    .iter()
+                    .map(|m| m.reevaporated[..lowest].iter().sum::<f64>() * DAY)
+                    .collect(),
+            ),
+            field(
+                "moist.convective_boundary",
+                "Water convection adds to the boundary layer",
+                "mm day-1",
+                self.moist
+                    .iter()
+                    .map(|m| m.convective_boundary * DAY)
+                    .collect(),
+            ),
+            field(
+                "atm.boundary_layer_export",
+                "Water carried out of the boundary layer by entrainment and cumulus",
+                "mm day-1",
+                self.surface.iter().map(|s| s.export * DAY).collect(),
             ),
             field(
                 "atm.surface_stress_east",

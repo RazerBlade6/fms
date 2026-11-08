@@ -214,6 +214,13 @@ pub struct MoistTendency {
     pub snow: f64,
     /// The part of the precipitation from convection (kg m⁻² s⁻¹).
     pub convective: f64,
+    /// Water the convection adds to the lowest layer (negative if it
+    /// dries it; kg m⁻² s⁻¹).
+    pub convective_boundary: f64,
+    /// Large-scale condensation per layer (kg m⁻² s⁻¹).
+    pub condensed: Vec<f64>,
+    /// Re-evaporation of falling rain per layer (kg m⁻² s⁻¹).
+    pub reevaporated: Vec<f64>,
     /// Cloud cover of the high and low sheets.
     pub clouds: [f64; 2],
     /// Layer relative humidities.
@@ -428,6 +435,7 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             let last = dt.len() - 1;
             dt[..last].iter_mut().for_each(|d| *d += ct);
         }
+        out.convective_boundary = dq[dq.len() - 1] * mc[mc.len() - 1];
         out.temperature[top..].copy_from_slice(&dt);
         out.humidity[top..].copy_from_slice(&dq);
     }
@@ -476,6 +484,8 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     out.snow = snow_share * total;
     out.rain = total - out.snow;
     out.temperature[bottom] += FUSION_HEAT * out.snow / (cp * m[bottom]);
+    out.condensed = condensed;
+    out.reevaporated = evaporated;
 
     // Clouds.
     let c = &p.clouds;

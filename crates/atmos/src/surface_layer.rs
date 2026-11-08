@@ -57,6 +57,9 @@ pub struct SurfaceLayerParams {
     pub cumulus: f64,
     /// Factor on the drag coefficient, for sensitivity experiments (1).
     pub drag_factor: f64,
+    /// Factor on the lapse rate used to extrapolate the layer above down to
+    /// the boundary layer's top, for sensitivity experiments (1).
+    pub top_lapse_factor: f64,
 }
 
 impl Default for SurfaceLayerParams {
@@ -69,6 +72,7 @@ impl Default for SurfaceLayerParams {
             max_entrainment: 0.05,
             cumulus: 0.03,
             drag_factor: 1.0,
+            top_lapse_factor: 1.0,
         }
     }
 }

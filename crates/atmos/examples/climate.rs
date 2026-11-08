@@ -14,6 +14,8 @@
 //! Blackburn et al. 2013); `FMS_AVERAGE` sets the
 //! final averaging window in days (default a year).
 //!
+//! `FMS_TOP_LAPSE` scales the lapse rate that extrapolates the layer above
+//! to the boundary layer's top.
 //! `FMS_DRAG` scales the surface drag coefficient and `FMS_DIFFUSION_TIME`
 //! the hyperdiffusion's e-folding time, for sensitivity experiments. The run
 //! ends with Hadley-cell diagnostics per latitude band.
@@ -95,6 +97,7 @@ fn main() {
         m.convection_time = env("FMS_CONV_TIME", m.convection_time);
     }
     params.surface_layer.drag_factor = env("FMS_DRAG", 1.0);
+    params.surface_layer.top_lapse_factor = env("FMS_TOP_LAPSE", 1.0);
     println!("{:?}", params.moisture);
 
     let levels = std::env::var("FMS_LEVELS").map_or(Levels::new(&CLIMATE_LEVELS), |v| {
@@ -178,8 +181,12 @@ fn main() {
     let mut last_year = None;
     // Zonal-mean winds (east, north) per layer.
     let mut winds = vec![vec![0.0f64; 2 * n_layers]; nb];
-    // Per band and layer: zonal means of u·v, θ, q, Φ and T.
-    let mut layer_means = vec![vec![[0.0f64; 5]; n_layers]; nb];
+    // Per band and layer: zonal means of u·v, θ, q, Φ, T, v·q, and the
+    // product of the zonal means of v and q.
+    let mut layer_means = vec![vec![[0.0f64; 7]; n_layers]; nb];
+    // Time-mean northward wind and humidity per layer and cell.
+    let mut cell_v = vec![vec![0.0f64; nc]; n_layers];
+    let mut cell_q = vec![vec![0.0f64; nc]; n_layers];
     let t = Instant::now();
     while si.steps() < total {
         si.step();
@@ -224,6 +231,21 @@ fn main() {
                 let uv: Vec<f64> = east.iter().zip(&north).map(|(e, n)| e * n).collect();
                 for (b, x) in bands.mean(&geometry, &uv).into_iter().enumerate() {
                     layer_means[b][k][0] += x;
+                }
+                let st = si.state();
+                let q: Vec<f64> = (0..nc).map(|i| st.q_ps[k][i] / st.ps[i]).collect();
+                let vq: Vec<f64> = north.iter().zip(&q).map(|(n, q)| n * q).collect();
+                for (b, x) in bands.mean(&geometry, &vq).into_iter().enumerate() {
+                    layer_means[b][k][5] += x;
+                }
+                let (north_band, q_band) =
+                    (bands.mean(&geometry, &north), bands.mean(&geometry, &q));
+                for b in 0..nb {
+                    layer_means[b][k][6] += north_band[b] * q_band[b];
+                }
+                for i in 0..nc {
+                    cell_v[k][i] += north[i];
+                    cell_q[k][i] += q[i];
                 }
             }
             {
@@ -527,6 +549,100 @@ fn main() {
         })
         .collect();
     print_mse(&rows);
+
+    println!(
+        "\n  Water budget of the rain (mm/day). Boundary layer: E − export + conv − cond + reevap + adv = 0 (adv is the residual)"
+    );
+    println!(
+        "  lat        E export   conv   cond reevap    adv | cond_abv cond_up reev_abv  deep      P"
+    );
+    for (b, latitude) in lat.iter().enumerate() {
+        let f = |name: &str| field(name, b);
+        let (e, export, conv, cond, re) = (
+            f("atm.evaporation"),
+            f("atm.boundary_layer_export"),
+            f("moist.convective_boundary"),
+            f("moist.condensation_boundary"),
+            f("moist.reevaporation_boundary"),
+        );
+        println!(
+            "  {:>5.1} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} | {:>8.2} {:>7.2} {:>8.2} {:>5.2} {:>6.2}",
+            latitude.to_degrees(),
+            e,
+            export,
+            conv,
+            cond,
+            re,
+            -(e - export + conv - cond + re),
+            f("moist.condensation_above"),
+            f("moist.condensation_upper"),
+            f("moist.reevaporation_above"),
+            f("atm.convective_precipitation"),
+            f("atm.precipitation"),
+        );
+    }
+
+    // Northward water transport (10⁸ kg/s): the mean flow in the boundary
+    // layer and above it, the eddies, and what E − P implies.
+    let mut implied_water = vec![0.0; nb];
+    let net: f64 = (0..nb)
+        .map(|b| (field("atm.evaporation", b) - field("atm.precipitation", b)) * band_area(b))
+        .sum::<f64>()
+        / area;
+    let mut acc = 0.0;
+    for (b, x) in implied_water.iter_mut().enumerate() {
+        acc += (field("atm.evaporation", b) - field("atm.precipitation", b) - net) * band_area(b)
+            / DAY;
+        *x = acc / 1e8;
+    }
+    // [v̄* q̄*] per band and layer: the stationary eddies' flux.
+    let stationary: Vec<Vec<f64>> = (0..n_layers)
+        .map(|k| {
+            let product: Vec<f64> = (0..nc)
+                .map(|i| cell_v[k][i] / samples * cell_q[k][i] / samples)
+                .collect();
+            let means = bands.mean(&geometry, &product);
+            (0..nb)
+                .map(|b| means[b] - wind(b, k, 1) * mean_of(b, k, 2))
+                .collect()
+        })
+        .collect();
+    println!(
+        "\n  Northward water transport (1e8 kg/s) through each band's centre: time-mean zonal flow (boundary layer, above), its variations in time, stationary and transient eddies (and their boundary-layer part), total, E − P implied"
+    );
+    println!("  lat   mean_bl mean_abv  var_zm station transnt tran_bl   total implied");
+    for b in 0..nb {
+        let factor = two_pi_a * fms_math::cos(lat[b]) / 1e8;
+        let mean_flow = |k: usize| m[k] * wind(b, k, 1) * mean_of(b, k, 2);
+        let sum =
+            |f: &dyn Fn(usize) -> f64| factor * (0..n_layers).map(|k| m[k] * f(k)).sum::<f64>();
+        let mean_bl = factor * mean_flow(bottom);
+        let mean_above = factor * (0..bottom).map(mean_flow).sum::<f64>();
+        let total = sum(&|k| mean_of(b, k, 5));
+        let variation = sum(&|k| mean_of(b, k, 6) - wind(b, k, 1) * mean_of(b, k, 2));
+        let station = sum(&|k| stationary[k][b]);
+        let transient = sum(&|k| mean_of(b, k, 5) - mean_of(b, k, 6) - stationary[k][b]);
+        let transient_bl = factor
+            * m[bottom]
+            * (mean_of(b, bottom, 5) - mean_of(b, bottom, 6) - stationary[bottom][b]);
+        let t_impl = if b == 0 {
+            0.5 * implied_water[0]
+        } else {
+            0.5 * (implied_water[b - 1] + implied_water[b])
+        };
+        println!(
+            "  {:>5.1} {:>7.2} {:>8.2} {:>7.2} {:>7.2} {:>7.2} {:>7.2} {:>7.2} {:>7.2}",
+            lat[b].to_degrees(),
+            mean_bl,
+            mean_above,
+            variation,
+            station,
+            transient,
+            transient_bl,
+            total,
+            t_impl,
+        );
+    }
 }
 
 /// Moist static energy per layer (kJ/kg) and its parts, at each band.
