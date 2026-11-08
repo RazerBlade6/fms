@@ -26,18 +26,23 @@ set its status to *Resolved* and say how, rather than deleting it.
 
 ### O-1: Operator errors peak at the 12 pentagons
 
-**Seen (M1.3, M1.5):** three operators have errors that converge in RMS
+**Seen (M1.3, M1.5, M2.2):** several operators have errors that converge in RMS
 (halving when resolution doubles) but whose *maximum* stays fixed, located at or
 next to the 12 pentagons:
 
-| Operator | Max error (k=16 → k=32) | RMS error (k=16 → k=32) |
+| Operator | Max error (k = 16 → 32 [→ 64]) | RMS error (k = 16 → 32 [→ 64]) |
 |---|---|---|
 | TRiSK tangential reconstruction | 0.62% → 0.71% | 0.094% → 0.039% |
 | Perot cell-vector reconstruction | 2.0% → 2.0% | 0.30% → 0.15% |
 | Vertex vorticity (Rossby–Haurwitz) | 6.3% → 5.8% of peak | 1.4% → 0.7% of peak |
+| Divergence (M2.2) | 1.24% → 1.15% → 1.13% | 0.13% → 0.058% → 0.028% |
+| Laplacian, div(grad) (M2.2) | 1.11% → 1.15% → 1.16% | 0.22% → 0.075% → 0.032% |
+| Kinetic energy (M2.2) | 1.74% → 1.53% → 1.50% | 0.25% → 0.081% → 0.032% |
 
 This matches the literature (Peixoto 2016, *Accuracy analysis of mimetic finite
-volume operators on geodesic grids*).
+volume operators on geodesic grids*). The divergence and Laplacian maxima sit in the
+hexagons right next to the pentagons. Three or more cells away the error is
+about 5× smaller (`cargo run --release -p fms-geo --example divergence_error`).
 
 **Why it matters:** fixed local errors at the pentagons can leave a spurious
 wavenumber-5 / 12-point pattern in long GCM runs ("grid imprinting"), e.g. in

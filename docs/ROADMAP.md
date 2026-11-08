@@ -62,7 +62,7 @@ Added after the M1 review: tooling the GCM work depends on.
    to check diurnal and seasonal cycles and energy drift in the steps below.
 - [x] 1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine
    grid, then aggregate to the coarse grid, keeping sub-grid terrain statistics.
-- [ ] 2. **Discrete operators**: TRiSK gradient, divergence, curl, kinetic energy and
+- [x] 2. **Discrete operators**: TRiSK gradient, divergence, curl, kinetic energy and
    tangential-velocity reconstruction. Test: convergence against analytic
    spherical-harmonic fields; mass and energy conservation.
 - [ ] 3. **Shallow-water model (explicit)**: single layer. Pass Williamson test cases

@@ -12,6 +12,7 @@ pub mod hilbert;
 pub mod icosahedron;
 pub mod locate;
 pub mod mesh;
+pub mod operators;
 pub mod spherical;
 pub mod two_level;
 
@@ -20,4 +21,5 @@ pub use locate::CellLocator;
 pub use mesh::{
     CellId, Edge, EdgeId, LloydOptions, LloydReport, MeshQuality, SphereMesh, VertexId,
 };
+pub use operators::Operators;
 pub use two_level::TwoLevelMap;
