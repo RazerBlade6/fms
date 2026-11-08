@@ -76,6 +76,17 @@ impl Case {
         }
     }
 
+    /// The fastest wind (m s⁻¹) over the standard run, with a little margin,
+    /// for choosing a semi-implicit time step: case 2 keeps its initial 38.6;
+    /// case 5 accelerates from 20 to about 40; case 6 peaks near 100.
+    pub fn max_wind(&self) -> f64 {
+        match self {
+            Self::SteadyZonal { .. } => TC2_U0,
+            Self::Mountain => 42.0,
+            Self::RossbyHaurwitz => 105.0,
+        }
+    }
+
     /// Short name for files and messages.
     pub fn name(&self) -> &'static str {
         match self {

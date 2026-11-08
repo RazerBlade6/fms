@@ -129,12 +129,14 @@ and gravity.
 | `--alpha DEG` | 0 | Case 2: tilt of the flow relative to the poles (45 sends it over the pentagons) |
 | `--days D` | the case's standard length | How long to run |
 | `--frames N`, `--fps N` | 61, 12 | GIF frames (including the start) and speed |
-| `--courant C` | 0.5 | Time step as a fraction of the gravity-wave limit |
+| `--semi-implicit` | off | Step with semi-implicit leapfrog (implicit gravity waves, RAW filter) instead of RK4. The step is then limited only by the wind and the Coriolis term: 5–7× longer |
+| `--courant C` | 0.5 (RK4), 0.6 (semi-implicit) | Time step as a fraction of the stability limit. For RK4 the limit is gravity waves plus wind; semi-implicit uses the case's peak wind over the run |
 
 Outputs: `sw.surface_height.gif` (with wind arrows), and PNGs of the final
 `sw.surface_height`, `sw.vorticity`, `sw.wind` and, for case 2,
 `sw.height_error`. The run prints the time step, speed, and the relative change
-in total mass (round-off) and energy (a tiny loss from the RK4 time stepping).
+in total mass (round-off) and energy (a tiny change from the time stepping).
+Semi-implicit runs also print the mean conjugate-gradient iterations per step.
 Use `--climate-frequency` for resolution, and a small `--terrain-frequency`
 (e.g. 90) to skip building the unused fine grid.
 

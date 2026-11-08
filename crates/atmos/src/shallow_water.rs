@@ -135,6 +135,11 @@ impl<'a> ShallowWater<'a> {
         &self.ops
     }
 
+    /// Coriolis parameter at vertices (s⁻¹).
+    pub fn coriolis(&self) -> &[f64] {
+        &self.coriolis
+    }
+
     /// Bottom topography at cells (m).
     pub fn topography(&self) -> &[f64] {
         &self.topography

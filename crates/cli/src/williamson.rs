@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use clap::Args;
 use fms_atmos::williamson::{Case, DAY, GRAVITY, RADIUS};
-use fms_atmos::{ShallowWater, State};
+use fms_atmos::{Diagnostics, SemiImplicit, SemiImplicitOptions, ShallowWater, State};
 use fms_fields::{ColorScale, FieldId, FieldKey, FieldSpec, Location, Quantity};
 use fms_geo::Operators;
 use fms_sim::World;
@@ -33,9 +33,14 @@ pub struct WilliamsonArgs {
     /// GIF frames per second.
     #[arg(long, default_value_t = 12)]
     fps: u16,
-    /// Courant number for the time step (RK4 is stable to about 0.7).
-    #[arg(long, default_value_t = 0.5)]
-    courant: f64,
+    /// Step semi-implicitly (leapfrog, implicit gravity waves) instead of with
+    /// explicit RK4. Allows a step limited by the wind, not gravity waves.
+    #[arg(long)]
+    semi_implicit: bool,
+    /// Courant number for the time step. Default: 0.5 for RK4 (gravity waves
+    /// plus wind), 0.6 semi-implicit (wind and Coriolis only).
+    #[arg(long)]
+    courant: Option<f64>,
     #[command(flatten)]
     image: ImageArgs,
 }
@@ -132,24 +137,45 @@ pub fn run(mut args: WilliamsonArgs) -> Result<(), String> {
 
     let setup = case.setup(mesh, geometry);
     let topography = setup.topography.clone();
-    let mut model = ShallowWater::new(
+    let model = ShallowWater::new(
         Operators::new(mesh, geometry, RADIUS),
         GRAVITY,
         setup.coriolis,
         setup.topography,
     );
-    let mut state = setup.state;
+    let state = setup.state;
     let days = args.days.unwrap_or(case.days());
-    let dt_max = model.stable_dt(&state, args.courant);
+    let explicit_dt = model.stable_dt(&state, 0.5);
+    let dt_max = if args.semi_implicit {
+        SemiImplicit::stable_dt(&model, case.max_wind(), args.courant.unwrap_or(0.6))
+    } else {
+        model.stable_dt(&state, args.courant.unwrap_or(0.5))
+    };
     let steps_per_day = (DAY / dt_max).ceil() as u64;
     let dt = DAY / steps_per_day as f64;
     let total = (days * steps_per_day as f64).round() as u64;
     let frame_count = u64::from(args.frames.max(2));
     eprintln!(
-        "{}: {} cells, dt = {dt:.1} s, {total} steps over {days} days",
+        "{}: {} cells, {}, dt = {dt:.1} s ({:.1}× the explicit limit), {total} steps over {days} days",
         case.name(),
-        mesh.n_cells()
+        mesh.n_cells(),
+        if args.semi_implicit {
+            "semi-implicit"
+        } else {
+            "RK4"
+        },
+        dt / explicit_dt,
     );
+    let initial = state.clone();
+    let mut stepper = if args.semi_implicit {
+        let options = SemiImplicitOptions::for_state(&state);
+        Stepper::SemiImplicit(Box::new(SemiImplicit::new(model, state, dt, options, 0.5)))
+    } else {
+        Stepper::Explicit {
+            model: Box::new(model),
+            state,
+        }
+    };
 
     let publish = |state: &State| {
         let mut surface = world.fields.write(fields.surface);
@@ -175,29 +201,47 @@ pub fn run(mut args: WilliamsonArgs) -> Result<(), String> {
 
     let key = fields.surface.key();
     let overlay = (!args.image.no_arrows).then_some(fields.wind.key());
-    let start = model.diagnostics(&state);
+    let start = stepper.diagnostics();
     let t = Instant::now();
     let mut frames = Vec::with_capacity(frame_count as usize);
     let mut done = 0;
-    for k in 0..frame_count {
+    publish(&initial);
+    frames.push({
+        let mut frame = capture(&world, key, overlay);
+        frame.stamp = "DAY 0.0".into();
+        frame
+    });
+    // The semi-implicit stepper takes its first step on creation.
+    if args.semi_implicit {
+        done = 1;
+    }
+    for k in 1..frame_count {
         let target = total * k / (frame_count - 1);
-        for _ in done..target {
-            model.step(&mut state, dt);
+        while done < target {
+            stepper.step(dt);
+            done += 1;
         }
-        done = target;
-        publish(&state);
+        publish(stepper.state());
         let mut frame = capture(&world, key, overlay);
         frame.stamp = format!("DAY {:.1}", done as f64 * dt / DAY);
         frames.push(frame);
     }
     let elapsed = t.elapsed();
-    let end = model.diagnostics(&state);
+    let end = stepper.diagnostics();
     eprintln!(
         "ran in {elapsed:.1?} ({:.0} steps/s); mass change {:+.1e}, energy change {:+.1e}",
         total as f64 / elapsed.as_secs_f64(),
         end.mass / start.mass - 1.0,
         end.energy / start.energy - 1.0,
     );
+    if let Stepper::SemiImplicit(si) = &stepper {
+        let stats = si.solver_stats();
+        eprintln!(
+            "Helmholtz: {:.1} conjugate-gradient iterations per step, worst residual {:.1e}",
+            stats.iterations as f64 / stats.solves.max(1) as f64,
+            stats.worst_residual
+        );
+    }
 
     args.image.out_dir = args.image.out_dir.join(case.name());
     ensure_dir(&args.image.out_dir)?;
@@ -237,6 +281,40 @@ pub fn run(mut args: WilliamsonArgs) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Either time-stepping scheme behind one interface.
+enum Stepper<'a> {
+    Explicit {
+        model: Box<ShallowWater<'a>>,
+        state: State,
+    },
+    SemiImplicit(Box<SemiImplicit<'a>>),
+}
+
+impl Stepper<'_> {
+    fn step(&mut self, dt: f64) {
+        match self {
+            Self::Explicit { model, state } => model.step(state, dt),
+            Self::SemiImplicit(si) => {
+                si.step();
+            }
+        }
+    }
+
+    fn state(&self) -> &State {
+        match self {
+            Self::Explicit { state, .. } => state,
+            Self::SemiImplicit(si) => si.state(),
+        }
+    }
+
+    fn diagnostics(&self) -> Diagnostics {
+        match self {
+            Self::Explicit { model, state } => model.diagnostics(state),
+            Self::SemiImplicit(si) => si.model().diagnostics(si.state()),
+        }
+    }
 }
 
 fn model_vorticity(

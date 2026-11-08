@@ -22,6 +22,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-10 | [Field names must be `'static` strings](#o-10-field-names-must-be-static-strings) | Fields | Scheduled: M4 step 2 |
 | O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
 | O-12 | [Shallow-water steps are overhead-bound](#o-12-shallow-water-steps-are-overhead-bound) | Performance | Scheduled: M2 step 16 |
+| O-13 | [Semi-implicit steps are long but expensive](#o-13-semi-implicit-steps-are-long-but-expensive) | Performance | Scheduled: M2 step 16 |
 
 ---
 
@@ -163,9 +164,36 @@ chunk of 4096 elements per thread (`fms_geo::operators::MIN_CHUNK`) won 11×
 on small meshes, but large ones are still dominated by per-call overhead.
 
 **Why it's acceptable for now:** correctness first. The roadmap's target is
-speed 2 (~340 steps/s) for the full two-layer model, so this needs work, but
-the semi-implicit step (M2 step 4) will change the step count anyway.
+speed 2 (~340 steps/s) for the full two-layer model, so this needs work. The
+semi-implicit step (M2 step 4) makes it worse per step; see O-13.
 
 **Plan:** M2 step 16. Options: fuse operators into fewer passes (one loop over
 edges per stage instead of several), run a whole stage per parallel task over
 mesh partitions, and precompute per-edge factors like `lₑ/(dₑ r)`.
+
+### O-13: Semi-implicit steps are long but expensive
+
+**Seen (M2.4):** semi-implicit leapfrog runs the Williamson cases stably at
+4.7–7.3× the explicit time step, with the same accuracy. But on the 20k climate
+grid it is only 1.35–1.9× faster in wall time (case 5: 15.3 s against 21.3 s
+for RK4). Each step needs a Helmholtz solve, and conjugate gradient with a
+diagonal preconditioner takes ~36 iterations at 7× the explicit step. The
+iteration count grows with the gravity-wave Courant number, roughly in
+proportion to Δt. Every iteration is several small parallel calls, which pay
+the overhead of O-12.
+
+Also: the step must be chosen from the fastest wind *expected* over the run,
+not the current wind (`SemiImplicit::stable_dt` takes a design maximum).
+Williamson case 5 starts at 20 m/s and accelerates to 40 m/s; a step sized for
+the initial wind blew up.
+
+**Why it's acceptable for now:** the scheme is correct, conserves mass to
+round-off, and is already a net win. Per-step cost is a performance problem.
+
+**Plan:** M2 step 16, together with O-12. Options: a better preconditioner
+(geometric multigrid on the icosahedral refinement hierarchy, or a Chebyshev
+polynomial preconditioner, which needs no dot products); fusing each CG
+iteration into fewer passes; a looser tolerance (1e-6 halves the iterations
+again without measurable error, since mass is restored exactly). M2 step 13
+(deriving `dt` from the CFL limit) should use a design maximum wind for the
+same reason as above.
