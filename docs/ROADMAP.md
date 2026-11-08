@@ -120,6 +120,16 @@ Added after the M1 review: tooling the GCM work depends on.
    to ~0.1 W/m² (time stepping).
    Known gaps: the subtropics rain out their own evaporation (O-22), the
    water cycle is too strong (O-24), clouds are calibrated (O-25).
+- [ ] 9.5. **N-layer vertical structure**: generalize the two-layer model to
+    any number of σ layers with arbitrary interfaces: the Arakawa–Suarez
+    (1983) energy-conserving vertical scheme, one vertical mode per layer in
+    the semi-implicit solver, flux-corrected humidity transport across every
+    interface, and radiation and moist physics per layer. The climate stays
+    on two layers; step 10 moves it to three, with a thin bottom layer for
+    the boundary layer, and recalibrates once. Test: two layers reproduce
+    step 9 to round-off (Held–Suarez, baroclinic wave, energy and water
+    budgets); with three to five layers, mass, Θ, water and energy are
+    conserved and Held–Suarez and the moist aquaplanet run stably.
 - [ ] 10. **Land surface**: surface energy balance, bulk fluxes, boundary-layer friction,
     bucket soil moisture, snow cover and albedo, orographic precipitation using the
     sub-grid terrain statistics. Needs a diagnosed surface wind, not the
