@@ -71,7 +71,11 @@ Added after the M1 review: tooling the GCM work depends on.
    gravity-wave terms; Helmholtz solver (preconditioned conjugate gradient). Rerun
    the Williamson tests at the larger `dt`.
 - [ ] 5. **2-layer dry dynamical core**: sigma coordinates, hydrostatic balance,
-   potential temperature per layer, a surface-pressure equation.
+   potential temperature per layer, a surface-pressure equation. Equal-mass
+   layers (σ = 0.5); explicit RK4 first, then semi-implicit with a vertical-mode
+   split. Tests: an atmosphere at rest over mountains stays at rest; mass and
+   energy conserved; baroclinic instability grows at the rate linear theory
+   predicts.
 - [ ] 6. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
    friction. Mid-latitude jets and baroclinic eddies should appear.
 - [ ] 7. **Dissipation and safety**: hyperdiffusion, sponge layer, global energy and

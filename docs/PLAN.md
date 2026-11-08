@@ -205,6 +205,16 @@ crates never depend on `app`. Everything except `app` runs headless.
   - large-scale condensation and simple convective adjustment
   - orographic lift using the sub-grid terrain statistics
   - boundary-layer friction
+- **Vertical structure** (decided at M2.5): two equal-mass sigma layers
+  (`σ = p/p_s`, interface at σ = 0.5, model top at p = 0), the classic Phillips
+  two-level model. Prognostic: surface pressure, the wind in each layer, and
+  potential temperature per layer (stored mass-weighted, `p_s θ`, so total mass
+  and total θ are conserved to round-off). Vertical differencing follows
+  Arakawa & Suarez (1983): layer Exner functions are mass-weighted layer means
+  of `(p/p₀)^κ`, and the hydrostatic relation uses the same interface θ as
+  vertical advection. Together these conserve total energy (kinetic + enthalpy
+  + surface potential) exactly in the spatial discretization, and keep an
+  isentropic atmosphere at rest over mountains exactly at rest.
 - **Semi-implicit time stepping** (as in SPEEDY): fast gravity waves are solved
   implicitly, so the timestep is limited by advection (winds) rather than wave speed.
   At the default resolution this gives a base step of ~20–30 min. See §4.6.

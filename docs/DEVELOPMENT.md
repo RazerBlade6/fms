@@ -9,7 +9,7 @@ The toolchain is pinned in `rust-toolchain.toml` (Rust 1.99.1 with rustfmt and
 clippy); `rustup` installs it automatically on first build.
 
 ```sh
-cargo test --workspace                                 # all tests (~10 s once built; the Williamson runs are most of it)
+cargo test --workspace                                 # all tests (~30 s once built; the Williamson and two-layer runs are most of it)
 cargo clippy --workspace --all-targets -- -D warnings  # lints, as CI runs them
 cargo fmt --all                                        # format
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # API docs, as CI builds them
@@ -18,7 +18,10 @@ cargo run --release -p fms-cli -- --help               # the headless runner
 
 Use `--release` for anything that builds full-size grids. Debug builds use
 `opt-level = 1` so tests stay reasonably fast, but grid construction is still
-~10× slower than release.
+~10× slower than release. The numerical crates `fms-geo` and `fms-atmos` build
+at `opt-level = 3` even in debug, because their tests run multi-day simulations
+(debug info is kept; drop the override in `Cargo.toml` if you need to step
+through optimized-out code).
 
 ## Repository layout
 
