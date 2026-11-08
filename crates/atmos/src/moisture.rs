@@ -91,7 +91,9 @@ const DAY: f64 = 86_400.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CloudParams {
     /// Level σ of the high and low cloud sheets; each takes its cover from
-    /// the layer it lies in.
+    /// the layer it lies in. Keep them off the layer interfaces: a sheet on
+    /// one belongs to the layer above it, which at the climate's σ = 0.25 is
+    /// the nearly dry stratospheric layer.
     pub sigma: [f64; 2],
     /// Albedo of overcast high and low cloud.
     pub albedo: [f64; 2],
@@ -111,7 +113,7 @@ pub struct CloudParams {
 impl Default for CloudParams {
     fn default() -> Self {
         Self {
-            sigma: [0.25, 0.9],
+            sigma: [0.3, 0.9],
             albedo: [0.4, 0.5],
             emissivity: [0.8, 1.0],
             critical_humidity: [0.15, 0.3],

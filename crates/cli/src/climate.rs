@@ -1,4 +1,4 @@
-//! `fms climate`: the layered model (three layers by default, the bottom one
+//! `fms climate`: the layered model (four layers by default, the bottom one
 //! the boundary layer) driven by radiation and moist physics over a slab
 //! aquaplanet, on the world's planet (orbit, CO₂, surface
 //! pressure). Spins up, then averages the final year: zonal means, a global

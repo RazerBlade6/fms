@@ -55,6 +55,8 @@ pub struct SurfaceLayerParams {
     pub max_entrainment: f64,
     /// Shallow cumulus mass flux at cloud base per unit `ρ w*` (Grant 2001).
     pub cumulus: f64,
+    /// Factor on the drag coefficient, for sensitivity experiments (1).
+    pub drag_factor: f64,
 }
 
 impl Default for SurfaceLayerParams {
@@ -66,6 +68,7 @@ impl Default for SurfaceLayerParams {
             entrainment: 0.2,
             max_entrainment: 0.05,
             cumulus: 0.03,
+            drag_factor: 1.0,
         }
     }
 }
@@ -184,7 +187,7 @@ pub fn exchange(params: &SurfaceLayerParams, surface: Surface, air: &SurfaceAir)
             air.gravity * z * (tv_air - tv_surface) / (0.5 * (tv_air + tv_surface) * speed * speed);
         let cn = neutral(z, z0, z0);
         let (fm, fh) = stability(ri, z, z0, cn);
-        let drag = cn * fm;
+        let drag = params.drag_factor * cn * fm;
         u_star = drag.sqrt() * speed;
         result = Exchange {
             wind_ratio: ratio,

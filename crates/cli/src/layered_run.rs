@@ -31,7 +31,7 @@ pub const SAMPLES_PER_DAY: u64 = 4;
 pub struct DynamicsArgs {
     /// Interior layer interfaces in σ = p/p_s, top down, comma-separated
     /// (e.g. `0.4,0.85` for three layers with a thin bottom one). Default:
-    /// `0.5` (two layers), or the climate's three layers for `fms climate`.
+    /// `0.5` (two layers), or the climate's four layers for `fms climate`.
     #[arg(long, value_delimiter = ',', num_args = 1..)]
     pub levels: Option<Vec<f64>>,
     /// Design maximum wind for the time step (m s⁻¹). The run stops if a

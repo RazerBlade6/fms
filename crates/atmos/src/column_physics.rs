@@ -60,9 +60,12 @@ pub use crate::moisture::LATENT_HEAT;
 
 const DAY: f64 = 86_400.0;
 
-/// The climate's interior layer interfaces (σ): three layers, the bottom
-/// one (~1.4 km) the boundary layer.
-pub const CLIMATE_LEVELS: [f64; 2] = [0.5, 0.85];
+/// The climate's interior layer interfaces (σ): four layers. The bottom one
+/// (~1.4 km) is the boundary layer. The top is split at 250 hPa so that the
+/// Hadley outflow (σ 0.25–0.5) is not averaged with the stratosphere, which
+/// inflates its moist static energy and suppresses the subtropical eddy
+/// momentum flux.
+pub const CLIMATE_LEVELS: [f64; 3] = [0.25, 0.5, 0.85];
 /// Volumetric heat capacity of water (J m⁻³ K⁻¹).
 const WATER_HEAT_CAPACITY: f64 = 1000.0 * 4186.0;
 
@@ -241,6 +244,9 @@ struct SurfaceFlux {
     /// 10 m wind speed (m s⁻¹) and surface stress (N m⁻²).
     wind: f64,
     stress: f64,
+    /// Eastward and northward stress of the surface on the air (N m⁻²).
+    stress_east: f64,
+    stress_north: f64,
 }
 
 /// The radiative–convective forcing of the layered model: radiation, moist
@@ -506,6 +512,8 @@ impl<'a> ColumnPhysics<'a> {
                     convective_velocity: w_star,
                     wind: x.wind,
                     stress: momentum * x.wind,
+                    stress_east: -momentum * x.wind_ratio * e,
+                    stress_north: -momentum * x.wind_ratio * nn,
                 }
             })
             .collect();
@@ -885,6 +893,36 @@ impl Forcing for ColumnPhysics<'_> {
                 "Shallow cumulus mass flux out of the boundary layer",
                 "g m-2 s-1",
                 self.surface.iter().map(|s| 1e3 * s.cumulus).collect(),
+            ),
+            field(
+                "atm.surface_stress_east",
+                "Eastward surface stress on the air",
+                "N m-2",
+                self.surface.iter().map(|s| s.stress_east).collect(),
+            ),
+            field(
+                "atm.surface_stress_north",
+                "Northward surface stress on the air",
+                "N m-2",
+                self.surface.iter().map(|s| s.stress_north).collect(),
+            ),
+            field(
+                "rad.free_troposphere_heating",
+                "Radiative heating of the layers above the boundary layer",
+                "W m-2",
+                self.radiation
+                    .iter()
+                    .map(|f| f.layers[..lowest].iter().sum())
+                    .collect(),
+            ),
+            field(
+                "rad.clear_free_troposphere_heating",
+                "Clear-sky radiative heating of the layers above the boundary layer",
+                "W m-2",
+                self.clear
+                    .iter()
+                    .map(|f| f.layers[..lowest].iter().sum())
+                    .collect(),
             ),
             field(
                 "atm.convective_velocity",

@@ -149,7 +149,9 @@ Added after the M1 review: tooling the GCM work depends on.
       - make the shortwave independent of the layering (O-27): the
         near-infrared band carried separately, each layer's absorption from
         the cumulative water path;
-      - move the climate to three layers with a thin (~1.4 km) bottom one;
+      - move the climate to four layers (σ 0.25/0.5/0.85): a thin (~1.4 km)
+        bottom one, and a top split at 250 hPa so that the Hadley outflow
+        isn't averaged with the stratosphere;
       - diagnose a 10 m surface wind from the bottom layer (log profile,
         roughness, stability), replacing the lower-layer wind
         ([OBSERVATIONS.md](OBSERVATIONS.md) O-18);
@@ -158,7 +160,7 @@ Added after the M1 review: tooling the GCM work depends on.
       - return friction's and diffusion's dissipated energy as heat (O-21);
       - stability-dependent mixing out of the bottom layer that keeps
         evaporated water near the surface (O-22);
-      - recalibrate once on three layers.
+      - recalibrate once on four layers.
 
       Tests: surface sunlight converges with more layers; the subtropics
       rain ≲2 mm/day; Held–Suarez-like surface westerlies under the jets;

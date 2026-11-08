@@ -216,7 +216,7 @@ with two layers the lower gets friction at 0.3/day and the upper none.
 | `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
 | `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion, as for `fms baroclinic` |
-| `--levels S,…` | 0.5 (`fms climate`: 0.5,0.85) | Interior layer interfaces in σ, top down: `0.5,0.85` is three layers with a thin bottom one (the climate's boundary layer), `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
+| `--levels S,…` | 0.5 (`fms climate`: 0.25,0.5,0.85) | Interior layer interfaces in σ, top down: `0.25,0.5,0.85` is four layers with a thin bottom one (the climate's boundary layer), `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
 
 With more than two layers, "upper" in the maps, tables and charts means the
 layer holding 250 hPa (the jets) and "lower" the lowest layer.
@@ -240,7 +240,7 @@ design wind defaults to 120 m/s) and `fms climate`.
 
 ### Climate
 
-`fms climate` runs the layered model (three layers, the bottom one a
+`fms climate` runs the layered model (four layers, the bottom one a
 boundary layer with surface drag, bulk fluxes and entrainment; its physics
 assumes a thin bottom layer, see `--levels`) driven by sunlight, radiation and
 moisture (evaporation, convection, condensation, rain and snow, clouds)

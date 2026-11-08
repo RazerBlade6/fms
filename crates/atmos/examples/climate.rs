@@ -1,4 +1,4 @@
-//! The layered model (the climate's three layers unless `FMS_LEVELS` gives
+//! The layered model (the climate's four layers unless `FMS_LEVELS` gives
 //! other interior interfaces, comma-separated) driven by radiation and moist
 //! physics over a slab aquaplanet (Earth's orbit and CO₂): global means,
 //! cloud effects, the energy and water budgets, and zonal means. For
@@ -13,6 +13,10 @@
 //! a month; run e.g. `0.3` years with `FMS_AVERAGE=60`; compare with
 //! Blackburn et al. 2013); `FMS_AVERAGE` sets the
 //! final averaging window in days (default a year).
+//!
+//! `FMS_DRAG` scales the surface drag coefficient and `FMS_DIFFUSION_TIME`
+//! the hyperdiffusion's e-folding time, for sensitivity experiments. The run
+//! ends with Hadley-cell diagnostics per latitude band.
 //!
 //! Environment overrides (see `PhysicsParams` and `MoistureParams`):
 //! `FMS_CO2`, `FMS_MAX_WIND`, `FMS_ALBEDO_HIGH`, `FMS_ALBEDO_LOW`,
@@ -90,6 +94,7 @@ fn main() {
         m.reevaporation = env("FMS_REEVAP", m.reevaporation);
         m.convection_time = env("FMS_CONV_TIME", m.convection_time);
     }
+    params.surface_layer.drag_factor = env("FMS_DRAG", 1.0);
     println!("{:?}", params.moisture);
 
     let levels = std::env::var("FMS_LEVELS").map_or(Levels::new(&CLIMATE_LEVELS), |v| {
@@ -117,7 +122,8 @@ fn main() {
     println!("single column: T_s {surface_temperature:.1} K");
     let dt = LayeredSemiImplicit::stable_dt(&model, env("FMS_MAX_WIND", 120.0), 0.6);
     let dt = DAY / (DAY / dt).ceil();
-    let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
+    let mut diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
+    diffusion.e_folding *= env("FMS_DIFFUSION_TIME", 1.0);
     let start_surface = if let Some(sst) = fixed_sst {
         mesh.cell_centers()
             .iter()
@@ -172,6 +178,8 @@ fn main() {
     let mut last_year = None;
     // Zonal-mean winds (east, north) per layer.
     let mut winds = vec![vec![0.0f64; 2 * n_layers]; nb];
+    // Per band and layer: zonal means of u·v, θ, q, Φ and T.
+    let mut layer_means = vec![vec![[0.0f64; 5]; n_layers]; nb];
     let t = Instant::now();
     while si.steps() < total {
         si.step();
@@ -212,6 +220,39 @@ fn main() {
                 {
                     winds[b][2 * k] += e;
                     winds[b][2 * k + 1] += n;
+                }
+                let uv: Vec<f64> = east.iter().zip(&north).map(|(e, n)| e * n).collect();
+                for (b, x) in bands.mean(&geometry, &uv).into_iter().enumerate() {
+                    layer_means[b][k][0] += x;
+                }
+            }
+            {
+                let st = si.state();
+                let model = si.model();
+                let (mut th, mut q, mut phi, mut t) = (
+                    vec![vec![0.0; nc]; n_layers],
+                    vec![vec![0.0; nc]; n_layers],
+                    vec![vec![0.0; nc]; n_layers],
+                    vec![vec![0.0; nc]; n_layers],
+                );
+                for i in 0..nc {
+                    let ps = st.ps[i];
+                    let theta: Vec<f64> = (0..n_layers).map(|k| st.theta_ps[k][i] / ps).collect();
+                    let g = model.geopotentials_at(ps, &theta, 0.0);
+                    let ex = model.layer_exner(ps);
+                    for k in 0..n_layers {
+                        th[k][i] = theta[k];
+                        q[k][i] = st.q_ps[k][i] / ps;
+                        phi[k][i] = g[k];
+                        t[k][i] = theta[k] * ex[k];
+                    }
+                }
+                for k in 0..n_layers {
+                    for (j, f) in [&th[k], &q[k], &phi[k], &t[k]].into_iter().enumerate() {
+                        for (b, x) in bands.mean(&geometry, f).into_iter().enumerate() {
+                            layer_means[b][k][j + 1] += x;
+                        }
+                    }
                 }
             }
         }
@@ -335,4 +376,173 @@ fn main() {
         );
     }
     println!("  largest |psi| at the boundary layer's top: {psi_max:.0}e9 kg/s");
+
+    // Hadley-cell diagnostics: the balances that set the overturning.
+    let field =
+        |name: &str, b: usize| zonal[names.iter().position(|n| *n == name).unwrap()][b] / samples;
+    let cp = Gas::EARTH_AIR.heat_capacity;
+    let two_pi_a = 2.0 * std::f64::consts::PI * RADIUS;
+    let omega = planet.rotation_rate();
+    let m: Vec<f64> = ds.iter().map(|d| d * ps_mean / GRAVITY).collect();
+    let bottom = n_layers - 1;
+    let mean_of = |b: usize, k: usize, j: usize| layer_means[b][k][j] / samples;
+    let wind = |b: usize, k: usize, c: usize| winds[b][2 * k + c] / samples;
+    let mse = |b: usize, k: usize| {
+        cp * mean_of(b, k, 4) + mean_of(b, k, 3) + LATENT_HEAT * mean_of(b, k, 2)
+    };
+    let dse = |b: usize, k: usize| cp * mean_of(b, k, 4) + mean_of(b, k, 3);
+    // Column momentum flux (kg s⁻²): eddy and total.
+    let flux = |b: usize, eddy: bool| -> f64 {
+        (0..n_layers)
+            .map(|k| {
+                let total = mean_of(b, k, 0);
+                m[k] * if eddy {
+                    total - wind(b, k, 0) * wind(b, k, 1)
+                } else {
+                    total
+                }
+            })
+            .sum()
+    };
+    // Atmospheric column energy input (W m⁻²).
+    let input = |b: usize| {
+        let toa = field("rad.absorbed_shortwave", b) - field("rad.outgoing_longwave", b);
+        let surface = field("rad.surface_shortwave", b)
+            - field("rad.surface_longwave", b)
+            - field("atm.sensible_heat_flux", b)
+            - field("atm.latent_heat_flux", b);
+        toa - surface
+    };
+    let edges: Vec<f64> = (0..=nb)
+        .map(|j| -std::f64::consts::FRAC_PI_2 + j as f64 * std::f64::consts::PI / nb as f64)
+        .collect();
+    let band_area =
+        |b: usize| two_pi_a * RADIUS * (fms_math::sin(edges[b + 1]) - fms_math::sin(edges[b]));
+    let mean_input: f64 = (0..nb).map(|b| input(b) * band_area(b)).sum::<f64>() / area;
+    // Implied northward energy transport (PW) at each band's northern edge.
+    let mut implied = vec![0.0; nb];
+    let mut acc = 0.0;
+    for (b, x) in implied.iter_mut().enumerate() {
+        acc += (input(b) - mean_input) * band_area(b);
+        *x = acc / 1e15;
+    }
+    println!(
+        "\n  Hadley diagnostics (psi in 1e9 kg/s, northward-positive flow above the level; stress mN/m²; [u'v'] m²/s²; heating K/day of the free troposphere; descent g/m²/s; energy W/m², PW, kJ/kg)"
+    );
+    println!(
+        "  lat   psi_0.5 psi_bl psi_ek  tau_x tau_tot tau_edd  uv'_0  uv'_1  Q_clr  Q_all descent  F_atm  T_impl  T_mmc   dh dh_eff"
+    );
+    let dp_free = levels_bottom_top(&ds) * ps_mean;
+    // The layers above σ = 0.5, for a streamfunction that means the same
+    // thing however the layers are divided.
+    let upper = {
+        let mut sigma = 0.0;
+        ds.iter()
+            .take_while(|d| {
+                sigma += **d;
+                sigma <= 0.5 + 1e-9
+            })
+            .count()
+            .max(1)
+    };
+    for b in 0..nb {
+        let phi = lat[b];
+        let cosp = fms_math::cos(phi);
+        let f = 2.0 * omega * fms_math::sin(phi);
+        let psi_top: f64 =
+            two_pi_a * cosp * (0..upper).map(|k| m[k] * wind(b, k, 1)).sum::<f64>() / 1e9;
+        let psi_bl: f64 =
+            two_pi_a * cosp * (0..bottom).map(|k| m[k] * wind(b, k, 1)).sum::<f64>() / 1e9;
+        let tau = field("atm.surface_stress_east", b);
+        let psi_ek = if phi.abs() > 8f64.to_radians() {
+            two_pi_a * cosp * tau / f / 1e9
+        } else {
+            f64::NAN
+        };
+        // τ = (1/(a cos²φ)) ∂(cos²φ F)/∂φ, centred over neighbouring bands.
+        let implied_tau = |eddy: bool| {
+            if b == 0 || b + 1 == nb {
+                return f64::NAN;
+            }
+            let g = |c: usize| fms_math::cos(lat[c]).powi(2) * flux(c, eddy);
+            (g(b + 1) - g(b - 1)) / (lat[b + 1] - lat[b - 1]) / (RADIUS * cosp * cosp)
+        };
+        let to_k_day = |w: f64| w * GRAVITY / (cp * dp_free) * DAY;
+        let q_clr = field("rad.clear_free_troposphere_heating", b);
+        let q_all = field("rad.free_troposphere_heating", b);
+        let descent = -q_all / (dse(b, 0) - dse(b, bottom - 1)) * 1e3;
+        let t_mmc: f64 = two_pi_a
+            * cosp
+            * (0..n_layers)
+                .map(|k| m[k] * wind(b, k, 1) * mse(b, k))
+                .sum::<f64>()
+            / 1e15;
+        let t_impl = if b == 0 {
+            0.5 * implied[0]
+        } else {
+            0.5 * (implied[b - 1] + implied[b])
+        };
+        // Gross moist stability, whatever the layering (kJ/kg): the h of the
+        // flow above the boundary layer, weighted by its mass flux, minus the
+        // boundary layer's.
+        let dh_eff = (0..bottom)
+            .map(|k| m[k] * wind(b, k, 1) * (mse(b, k) - mse(b, bottom)))
+            .sum::<f64>()
+            / (0..bottom).map(|k| m[k] * wind(b, k, 1)).sum::<f64>()
+            / 1e3;
+        println!(
+            "  {:>5.1} {:>7.0} {:>6.0} {:>6.0} {:>6.1} {:>7.1} {:>7.1} {:>6.1} {:>6.1} {:>6.2} {:>6.2} {:>7.2} {:>6.1} {:>7.2} {:>6.2} {:>5.1} {:>6.1}",
+            phi.to_degrees(),
+            psi_top,
+            psi_bl,
+            psi_ek,
+            1e3 * tau,
+            1e3 * implied_tau(false),
+            1e3 * implied_tau(true),
+            mean_of(b, 0, 0) - wind(b, 0, 0) * wind(b, 0, 1),
+            mean_of(b, 1, 0) - wind(b, 1, 0) * wind(b, 1, 1),
+            to_k_day(q_clr),
+            to_k_day(q_all),
+            descent,
+            input(b),
+            t_impl,
+            t_mmc,
+            (mse(b, 0) - mse(b, bottom)) / 1e3,
+            dh_eff,
+        );
+    }
+    let rows: Vec<(f64, Vec<[f64; 4]>)> = (nb / 2..nb)
+        .map(|b| {
+            let layers = (0..n_layers)
+                .map(|k| {
+                    [
+                        mse(b, k) / 1e3,
+                        cp * mean_of(b, k, 4) / 1e3,
+                        mean_of(b, k, 3) / 1e3,
+                        LATENT_HEAT * mean_of(b, k, 2) / 1e3,
+                    ]
+                })
+                .collect();
+            (lat[b].to_degrees(), layers)
+        })
+        .collect();
+    print_mse(&rows);
+}
+
+/// Moist static energy per layer (kJ/kg) and its parts, at each band.
+fn print_mse(rows: &[(f64, Vec<[f64; 4]>)]) {
+    println!("\n  Moist static energy by layer (kJ/kg): h = c_p T + Φ + L q");
+    for (lat, layers) in rows {
+        let parts: Vec<String> = layers
+            .iter()
+            .enumerate()
+            .map(|(k, [h, t, phi, lq])| format!("h_{k} {h:.1} (c_pT {t:.1} Φ {phi:.1} Lq {lq:.1})"))
+            .collect();
+        println!("  {lat:>5.1}  {}", parts.join("  "));
+    }
+}
+
+/// σ thickness of the layers above the boundary layer.
+fn levels_bottom_top(ds: &[f64]) -> f64 {
+    ds[..ds.len() - 1].iter().sum()
 }
