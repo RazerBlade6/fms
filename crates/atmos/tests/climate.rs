@@ -3,14 +3,14 @@
 //! close, and (slow, run with `--ignored`) the equilibrium climate is that of
 //! an ice-free, Earth-like aquaplanet.
 
-use fms_atmos::column_physics::{CLIMATE_LEVELS, LATENT_HEAT, initial_state};
+use fms_atmos::column_physics::{ApeSst, CLIMATE_LEVELS, LATENT_HEAT, initial_state};
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
     ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
     LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
-use fms_planet::Planet;
+use fms_geo::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_planet::{Planet, PlanetParams};
 
 const DAY: f64 = 86_400.0;
 
@@ -323,4 +323,104 @@ fn the_equilibrium_climate_is_an_earthlike_aquaplanet() {
     // time-stepping error, ~0.1 W/m² with moist physics (measured 0.12).
     assert!(uptake.abs() < 1.0, "still drifting: {uptake} W/m²");
     assert!((asr - olr - uptake - removed).abs() < 0.2);
+}
+
+#[test]
+#[ignore = "slow: 180 days at fixed sea temperatures (~1.5 minutes); run with --ignored"]
+fn the_fixed_sst_aquaplanet_has_trades_and_a_rain_belt() {
+    // The Aqua-Planet Experiment's CONTROL sea temperatures on a perpetual
+    // equinox, days 60–180 (the atmosphere settles in a month). Measured:
+    // rain 2.5–2.9 mm/day at 25° and 5.9–6.1 at 5° (Earth's subtropics rain
+    // ~2: O-22, a limit of the circulation rather than the boundary layer),
+    // bottom-layer easterlies of about −6 m/s at 15° and westerlies of about
+    // +6 at 35°.
+    let planet = Planet::new(PlanetParams {
+        obliquity_deg: 0.0,
+        eccentricity: 0.0,
+        ..PlanetParams::earth()
+    })
+    .0;
+    let (mesh, _) = SphereMesh::centroidal(16, LloydOptions::default());
+    let geometry = MeshGeometry::new(&mesh);
+    let params = PhysicsParams::default();
+    let model = LayeredModel::new(
+        Operators::new(&mesh, &geometry, RADIUS),
+        GRAVITY,
+        Gas::EARTH_AIR,
+        Levels::new(&CLIMATE_LEVELS),
+        mesh.vertices()
+            .iter()
+            .map(|p| 2.0 * planet.rotation_rate() * p.z)
+            .collect(),
+        vec![0.0; mesh.n_cells()],
+    )
+    .with_humidity_profile(params.radiation);
+    let (state, _) = initial_state(&model, &planet, &params);
+    let dt = LayeredSemiImplicit::stable_dt(&model, 120.0, 0.6);
+    let dt = DAY / (DAY / dt).ceil();
+    let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
+    let sst = mesh
+        .cell_centers()
+        .iter()
+        .map(|&p| ApeSst::Control.at(fms_geo::coords::to_lat_lon(p).0))
+        .collect();
+    let physics =
+        ColumnPhysics::new(&model, &planet, params, 0.0, &state, sst).with_prescribed_surface();
+    let model = model
+        .with_hyperdiffusion(diffusion)
+        .with_dissipative_heating()
+        .with_forcing(Box::new(physics));
+    let mut si =
+        LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5);
+    const BANDS: usize = 18;
+    let band = |lat: f64| ((lat + 90.0) / 10.0) as usize;
+    let bands = LatitudeBands::new(&mesh, &geometry, BANDS);
+    let (mut rain, mut wind, mut samples) = (vec![0.0; BANDS], vec![0.0; BANDS], 0.0);
+    let bottom = si.model().levels().count() - 1;
+    while (si.steps() as f64) * dt < 180.0 * DAY {
+        si.step();
+        si.check().expect("the fixed-SST aquaplanet blew up");
+        if (si.steps() as f64) * dt > 60.0 * DAY && si.steps() % 8 == 0 {
+            let fields = si.model().forcing().unwrap().cell_fields();
+            let p = fields
+                .iter()
+                .find(|f| f.name == "atm.precipitation")
+                .unwrap();
+            for (s, x) in rain.iter_mut().zip(bands.mean(&geometry, &p.values)) {
+                *s += x;
+            }
+            let v = geometry.reconstruct_vectors(&mesh, &si.state().u[bottom]);
+            let east: Vec<f64> = mesh
+                .cell_centers()
+                .iter()
+                .zip(&v)
+                .map(|(&p, &v)| fms_geo::zonal::east_north(p, v).0)
+                .collect();
+            for (s, x) in wind.iter_mut().zip(bands.mean(&geometry, &east)) {
+                *s += x;
+            }
+            samples += 1.0;
+        }
+    }
+    let rain_at = |lat: f64| rain[band(lat)] / samples;
+    let wind_at = |lat: f64| wind[band(lat)] / samples;
+    eprintln!(
+        "rain 5°/25°: {:.2}/{:.2} N, {:.2}/{:.2} S mm/day; bottom-layer wind 15°/35°: {:+.1}/{:+.1} N, {:+.1}/{:+.1} S m/s",
+        rain_at(5.0),
+        rain_at(25.0),
+        rain_at(-5.0),
+        rain_at(-25.0),
+        wind_at(15.0),
+        wind_at(35.0),
+        wind_at(-15.0),
+        wind_at(-35.0),
+    );
+    for hemisphere in [1.0, -1.0] {
+        let (equator, subtropics) = (rain_at(hemisphere * 5.0), rain_at(hemisphere * 25.0));
+        assert!(subtropics < 3.3, "subtropics rain {subtropics} mm/day");
+        assert!(equator > 1.5 * subtropics, "no rain belt: {equator}");
+        let (trades, westerlies) = (wind_at(hemisphere * 15.0), wind_at(hemisphere * 35.0));
+        assert!(trades < -2.0, "trades {trades} m/s");
+        assert!(westerlies > 2.0, "westerlies {westerlies} m/s");
+    }
 }

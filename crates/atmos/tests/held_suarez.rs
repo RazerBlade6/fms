@@ -6,6 +6,7 @@
 //! days of statistics). The full benchmark (1200 days at k = 32) is
 //! `fms held-suarez`; see docs/CLI.md.
 
+use fms_atmos::column_physics::CLIMATE_LEVELS;
 use std::sync::OnceLock;
 
 use fms_atmos::williamson::{GRAVITY, OMEGA, RADIUS};
@@ -285,11 +286,18 @@ fn the_energy_budget_is_steady_and_closed() {
 
 #[test]
 fn more_layers_spin_up_westerly_jets() {
-    // Held–Suarez on three layers (a thin bottom one, σ 0.85–1) and five:
-    // 200 days at the long step without blowing up, mass conserved, and
-    // westerly jets in both hemispheres at the layer holding 250 hPa.
+    // Held–Suarez on three layers (a thin bottom one, σ 0.85–1), the
+    // climate's four and five: 200 days at the long step without blowing
+    // up, mass conserved, and westerly jets in both hemispheres at the layer
+    // holding 250 hPa. On the climate's layers (O-18) the lowest layer's
+    // winds under the jets are westerly too.
     const DAYS: u64 = 200;
-    for levels in [Levels::new(&[0.4, 0.85]), Levels::equal_mass(5)] {
+    for levels in [
+        Levels::new(&[0.4, 0.85]),
+        Levels::new(&CLIMATE_LEVELS),
+        Levels::equal_mass(5),
+    ] {
+        let climate_layers = levels.interior() == CLIMATE_LEVELS;
         let n = levels.count();
         let jet_layer = levels.layer_of(0.25);
         let model = model_with(levels);
@@ -339,6 +347,11 @@ fn more_layers_spin_up_westerly_jets() {
         assert!((end.mass / start.mass - 1.0).abs() < 1e-12);
         for (_, jet) in jets {
             assert!(jet > 15.0, "{n} layers: jet only {jet} m/s");
+        }
+        if climate_layers {
+            for wind in surface {
+                assert!(wind > 0.0, "{n} layers: {wind} m/s under the jet");
+            }
         }
     }
 }

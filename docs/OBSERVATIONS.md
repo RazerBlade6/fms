@@ -27,16 +27,16 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-15 | [Baroclinic growth is ~75% of local theory](#o-15-baroclinic-growth-is-75-of-local-theory) | Dynamics | Accepted |
 | O-16 | [No sponge layer](#o-16-no-sponge-layer) | Dynamics | Accepted |
 | O-17 | [Zig-zag vertex modes limit explicit hyperdiffusion](#o-17-zig-zag-vertex-modes-limit-explicit-hyperdiffusion) | Numerics | Accepted |
-| O-18 | [Two layers have no surface wind](#o-18-two-layers-have-no-surface-wind) | Dynamics | Scheduled: M2 step 10 |
+| O-18 | [Two layers have no surface wind](#o-18-two-layers-have-no-surface-wind) | Dynamics | Resolved: M2.10.1 |
 | O-19 | [Radiation is calibrated, not resolved](#o-19-radiation-is-calibrated-not-resolved) | Radiation | Accepted |
 | O-20 | [No cloud or ice feedbacks yet](#o-20-no-cloud-or-ice-feedbacks-yet) | Radiation | Scheduled: M2 steps 10–11 (clouds done in step 9) |
-| O-21 | [Dissipated kinetic energy leaks out of the planet](#o-21-dissipated-kinetic-energy-leaks-out-of-the-planet) | Energy | Scheduled: M2 step 10 |
-| O-22 | [The subtropics rain out their own evaporation](#o-22-the-subtropics-rain-out-their-own-evaporation) | Moisture | Scheduled: M2 step 10 |
-| O-23 | [An ice-free aquaplanet runs ~9 K warmer than Earth](#o-23-an-ice-free-aquaplanet-runs-9-k-warmer-than-earth) | Climate | Scheduled: M2 steps 11–12, 15 |
+| O-21 | [Dissipated kinetic energy leaks out of the planet](#o-21-dissipated-kinetic-energy-leaks-out-of-the-planet) | Energy | Resolved: M2.10.1 |
+| O-22 | [The subtropics rain out their own evaporation](#o-22-the-subtropics-rain-out-their-own-evaporation) | Moisture | Improved: M2.10.1; rest in M2 step 15 |
+| O-23 | [An ice-free aquaplanet runs warmer than Earth](#o-23-an-ice-free-aquaplanet-runs-warmer-than-earth) | Climate | Scheduled: M2 steps 11–12, 15 |
 | O-24 | [The water cycle is too strong](#o-24-the-water-cycle-is-too-strong) | Moisture | Scheduled: M2 step 15 |
 | O-25 | [Clouds are calibrated from layer-mean humidity](#o-25-clouds-are-calibrated-from-layer-mean-humidity) | Clouds | Accepted |
 | O-26 | [Strong easterlies aloft at the equator](#o-26-strong-easterlies-aloft-at-the-equator) | Dynamics | Watching |
-| O-27 | [Shortwave water absorption depends on the layering](#o-27-shortwave-water-absorption-depends-on-the-layering) | Radiation | Scheduled: M2 step 10 |
+| O-27 | [Shortwave water absorption depends on the layering](#o-27-shortwave-water-absorption-depends-on-the-layering) | Radiation | Resolved: M2.10.1 |
 | O-28 | [More than two layers make the vertical modes non-normal](#o-28-more-than-two-layers-make-the-vertical-modes-non-normal) | Numerics | Accepted |
 | O-29 | [The layered core is ~12% slower than the two-layer one](#o-29-the-layered-core-is-12-slower-than-the-two-layer-one) | Performance | Scheduled: M2 step 16 |
 
@@ -343,6 +343,12 @@ jets sit at 32° (in the 0–0.4 layer) with −2 m/s under them, so a thin
 bottom layer alone isn't the whole answer; step 10's surface drag and
 boundary-layer mixing replace Held–Suarez's friction there.
 
+**Resolved (M2.10.1):** the climate's four layers diagnose a 10 m wind from
+the thin bottom layer (log profile, ocean roughness, stability). The bottom
+layer has easterly trades (about −6 m/s at 15°) and westerlies (about +6 at
+35°) at fixed APE sea temperatures, and on these layers Held–Suarez has
+westerlies of +3 to +4 m/s under its jets, where three layers had −2.
+
 ### O-19: Radiation is calibrated, not resolved
 
 **Seen (M2.8):** a few of the radiation scheme's parameters are effective
@@ -438,6 +444,11 @@ the dissipated kinetic energy as heat there (frictional heating in the lower
 layer, and the diffusion's loss spread where it occurs), so the top of the
 atmosphere balances in equilibrium.
 
+**Resolved (M2.10.1):** surface drag, boundary-layer mixing and
+hyperdiffusion return their kinetic energy as heat. After five slab years the
+top of the atmosphere balances: ASR − OLR is −0.03 W/m², all of it the slab's
+uptake, with the energy budget closing to the time-stepping error.
+
 ### O-22: The subtropics rain out their own evaporation
 
 **Seen (M2.9):** in the aquaplanet the Hadley circulation is about Earth's
@@ -466,7 +477,24 @@ reshapes it anyway. But without a fix the world has no subtropical deserts.
 under the lower layer, or a thin third layer) that holds the evaporated
 water near the surface. Check that the subtropics then rain ≲2 mm/day.
 
-### O-23: An ice-free aquaplanet runs ~9 K warmer than Earth
+**Update (M2.10.1):** the boundary layer is in, and at fixed APE CONTROL sea
+temperatures the subtropics rain 2.5–2.9 mm/day at 25° (down from 4.4), still
+above the target. The cause is not the boundary layer. Raising the
+condensation thresholds to saturation only reaches 2.5, and venting the
+boundary layer harder rains the same water out a layer higher: evaporation
+minus rain at 25° stays at 1.2–1.4 mm/day in every experiment. It is set by
+the water the circulation exports. The Hadley cell ends near 25°, so it barely
+dries the 20–30° band, and transient eddies carry water poleward across 15°
+at about three-quarters of the rate the cell brings it equatorward, which also
+weakens the ITCZ (6 mm/day). This doesn't change with resolution (k = 16, 24
+and 32 agree: 5.8, 5.1 and 5.3×10⁸ kg/s at 15°), and stationary eddies and
+time variations of the zonal mean are near zero. The APE paper's text gives
+no eddy flux at 15° to compare with.
+
+**Revisit:** M2 step 15's tuning pass, with the width of the Hadley cell and
+the tropical eddy moisture flux as the first things to check.
+
+### O-23: An ice-free aquaplanet runs warmer than Earth
 
 **Seen (M2.9):** with Earth's orbit and CO₂ and Earth-like clouds and
 humidity, the 3-D aquaplanet settles at ~297 K after 5 years (Earth: 288;
@@ -490,6 +518,11 @@ the poles.
 (which cools an aquaplanet's equator by ~8 K and moves its ice edge
 10–15° poleward; Bhatnagar et al. 2026); M2 step 15's tuning pass then
 checks the global mean against Earth's 288 K.
+
+**Update (M2.10.1):** on four layers with recalibrated clouds the ice-free
+slab aquaplanet settles at 290.7 K, about 3 K warmer than Earth (albedo 0.322,
+OLR 230.7 W/m²). Ice and land will cool it further, so step 15 sets the final
+temperature.
 
 ### O-24: The water cycle is too strong
 

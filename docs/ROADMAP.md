@@ -145,7 +145,7 @@ Added after the M1 review: tooling the GCM work depends on.
     on the layering (O-27); with more than one interface the vertical modes
     are non-normal (O-28).
 - [ ] 10. **Boundary layer and land surface**, in two reviewed parts:
-    - [ ] 10.1. **Boundary layer** (on the aquaplanet):
+    - [x] 10.1. **Boundary layer** (on the aquaplanet):
       - make the shortwave independent of the layering (O-27): the
         near-infrared band carried separately, each layer's absorption from
         the cumulative water path;
@@ -166,6 +166,15 @@ Added after the M1 review: tooling the GCM work depends on.
       rain ≲2 mm/day; Held–Suarez-like surface westerlies under the jets;
       the top of the atmosphere balances in equilibrium; energy and water
       budgets close.
+
+      Done, with one target unmet. Four layers (σ 0.25/0.5/0.85); surface
+      sunlight agrees to 0.03 W/m² across layerings; Held–Suarez has +3 to
+      +4 m/s under its jets; five slab years settle at 290.7 K with the top
+      of the atmosphere balanced (O-23). At fixed APE CONTROL sea
+      temperatures: Hadley cell 80×10⁹ kg/s at 15° (45 on three layers),
+      imbalance +14 W/m² (APE ~13), albedo 0.31, rain 3.4 mm/day. Unmet:
+      the subtropics rain 2.5–2.9 mm/day, set by the circulation rather
+      than the boundary layer (O-22, for step 15).
     - [ ] 10.2. **Land surface**:
       - terrain into the climate run: surface geopotential, land fraction
         and sub-grid height spread per cell (check spurious σ-coordinate
