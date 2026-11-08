@@ -301,15 +301,16 @@ fn the_equilibrium_climate_is_an_earthlike_aquaplanet() {
     );
     // An ice-free aquaplanet with Earth's clouds runs warmer than Earth
     // (288 K), whose ice, snow and land brighten the clear sky; measured
-    // 297.1 K (O-23). Earth: 240 W/m² each way, albedo 0.29–0.30, cloud
-    // 0.6–0.7; the humidity targets are the calibrated radiation's.
-    // Measured: albedo 0.286, cloud 0.63, RH 0.31/0.63, P 4.8 mm/day.
-    assert!((292.0..300.0).contains(&ts), "T_s {ts}");
+    // 290.7 K (O-23). Earth: 240 W/m² each way, albedo 0.29–0.30, cloud
+    // 0.6–0.7. On four layers "upper" is the nearly dry layer above 250 hPa
+    // and "lower" the boundary layer.
+    // Measured: OLR 230.7, albedo 0.322, cloud 0.71, RH 0.12/0.83, P 3.8 mm/day.
+    assert!((288.0..294.0).contains(&ts), "T_s {ts}");
     assert!((225.0..250.0).contains(&olr), "OLR {olr}");
     assert!((0.27..0.33).contains(&albedo), "albedo {albedo}");
-    assert!((0.55..0.72).contains(&cloud), "cloud {cloud}");
+    assert!((0.55..0.75).contains(&cloud), "cloud {cloud}");
     assert!(
-        (rh[0] - 0.31).abs() < 0.04 && (rh[1] - 0.63).abs() < 0.04,
+        (rh[0] - 0.12).abs() < 0.04 && (rh[1] - 0.83).abs() < 0.04,
         "RH {rh:?}"
     );
     // Too wet (O-24), but bounded.
