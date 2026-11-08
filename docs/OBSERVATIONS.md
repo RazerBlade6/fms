@@ -23,6 +23,8 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
 | O-12 | [Shallow-water steps are overhead-bound](#o-12-shallow-water-steps-are-overhead-bound) | Performance | Scheduled: M2 step 16 |
 | O-13 | [Semi-implicit steps are long but expensive](#o-13-semi-implicit-steps-are-long-but-expensive) | Performance | Scheduled: M2 step 16 |
+| O-14 | [The undamped core collapses to the grid scale](#o-14-the-undamped-core-collapses-to-the-grid-scale) | Dynamics | Scheduled: M2 step 7 |
+| O-15 | [Baroclinic growth is ~75% of local theory](#o-15-baroclinic-growth-is-75-of-local-theory) | Dynamics | Accepted |
 
 ---
 
@@ -197,3 +199,40 @@ iteration into fewer passes; a looser tolerance (1e-6 halves the iterations
 again without measurable error, since mass is restored exactly). M2 step 13
 (deriving `dt` from the CFL limit) should use a design maximum wind for the
 same reason as above.
+
+### O-14: The undamped core collapses to the grid scale
+
+**Seen (M2.5):** in `fms baroclinic` the storms mature around day 7. Then
+fronts and vortices sharpen to single cells (lower-layer vorticity reaches
+7×10⁻⁴ s⁻¹, about 7f), winds pass 130 m/s, and the run blows up on day 8.
+RK4 at the explicit step does the same through day 7 (132 vs 134 m/s), so this
+is the inviscid equations cascading enstrophy to the grid scale with nothing
+to remove it, not a time-stepping fault. The semi-implicit run dies first only
+because its step was sized for 80 m/s winds.
+
+**Why it's acceptable for now:** every inviscid grid-point model does this;
+dissipation is a planned step.
+
+**Plan:** M2 step 7 adds hyperdiffusion. Note that Held–Suarez (step 6) runs
+~1000 days and cannot work without it (Held & Suarez 1994 used ∇⁸ diffusion),
+so hyperdiffusion must come before or with step 6.
+
+### O-15: Baroclinic growth is ~75% of local theory
+
+**Seen (M2.5):** on a balanced sheared jet, wavenumber-6 perturbations grow at
+0.83 /day (k = 16) and 0.78 /day (k = 32), against 1.10 /day from two-level
+quasi-geostrophic theory on the local β-plane at 45° N (Phillips 1954; Holton
+§8.2), using the model's own internal gravity-wave speed for the deformation
+radius. RK4 and semi-implicit agree to three digits. Below the critical shear
+(11 m/s) nothing grows, as theory predicts, and the fastest-growing zonal
+wavenumber is 6 in both model and theory.
+
+**Why it's acceptable:** local theory assumes waves with no north–south
+structure on a flat β-plane. On the sphere the unstable zone is about 30° of
+latitude wide; adding that meridional wavenumber to the theory gives a factor
+of about 0.73. So local theory is an upper bound, and the tests check 0.6–1.0
+of it.
+
+**Revisit if:** a sharper check is wanted. That needs the linear stability
+problem of the spherical jet solved numerically (an eigenvalue problem in
+latitude) as the reference.

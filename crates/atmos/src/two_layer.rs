@@ -154,6 +154,19 @@ impl TwoLayerState {
     }
 }
 
+/// Linear gravity-wave terms about a resting, flat reference state, in the
+/// variables `y = (p_s', θ₀', θ₁')` and layer divergences `δ = (δ₀, δ₁)`:
+/// `∂y/∂t = B δ` and `∂uₖ/∂t = −∇(J y)ₖ`. Their product `A = J B` is the
+/// gravity-wave matrix.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Linearization {
+    /// `J`: rows `(M₀, M₁)`, columns `(p_s', θ₀', θ₁')`, where
+    /// `Mₖ = Φₖ + c_p θ̄ₖ Pₖ` is the layer's pressure-gradient potential.
+    pub j: [[f64; 3]; 2],
+    /// `B`: rows `(p_s', θ₀', θ₁')`, columns `(δ₀, δ₁)`.
+    pub b: [[f64; 2]; 3],
+}
+
 /// Global integrals for checking conservation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TwoLayerDiagnostics {
@@ -336,9 +349,22 @@ impl<'a> TwoLayer<'a> {
     /// internal modes ([`TwoLayer::gravity_wave_speeds`]); the semi-implicit
     /// scheme treats exactly these terms implicitly.
     pub fn gravity_wave_matrix(&self, ps: f64, theta: [f64; 2]) -> [[f64; 2]; 2] {
+        let Linearization { j, b } = self.linearization(ps, theta);
+        let mut a = [[0.0; 2]; 2];
+        for (r, row) in a.iter_mut().enumerate() {
+            for (c, out) in row.iter_mut().enumerate() {
+                *out = (0..3).map(|i| j[r][i] * b[i][c]).sum();
+            }
+        }
+        a
+    }
+
+    /// The linear gravity-wave terms about a resting, flat state with surface
+    /// pressure `ps` and layer potential temperatures `theta` (see
+    /// [`Linearization`]).
+    pub fn linearization(&self, ps: f64, theta: [f64; 2]) -> Linearization {
         let s = self.sigma;
         let th_hat = 0.5 * (theta[0] + theta[1]);
-        // B: rows (p_s', θ₀', θ₁'), columns (δ₀, δ₁).
         let b = [
             [-ps * s, -ps * (1.0 - s)],
             [
@@ -347,7 +373,8 @@ impl<'a> TwoLayer<'a> {
             ],
             [-s * (th_hat - theta[1]), s * (th_hat - theta[1])],
         ];
-        // J: rows (M₀, M₁), columns (p_s', θ₀', θ₁'), by central differences.
+        // J by central differences of Mₖ = Φₖ + c_p θ̄ₖ Pₖ (θ̄ frozen in the
+        // second term, as in the pressure-gradient force).
         let cp = self.gas.heat_capacity;
         let potential = |ps: f64, th: [f64; 2]| -> [f64; 2] {
             let phi = self.geopotentials_at(ps, th, 0.0);
@@ -357,7 +384,7 @@ impl<'a> TwoLayer<'a> {
                 phi[1] + cp * theta[1] * exner[1],
             ]
         };
-        let (ep, et) = (1.0e-2 * ps.abs().max(1.0) * 1e-3, 1.0e-3);
+        let (ep, et) = (1.0e-5 * ps.abs().max(1.0), 1.0e-3);
         let mut j = [[0.0; 3]; 2];
         let (hi, lo) = (potential(ps + ep, theta), potential(ps - ep, theta));
         for k in 0..2 {
@@ -372,13 +399,7 @@ impl<'a> TwoLayer<'a> {
                 j[k][1 + l] = (hi[k] - lo[k]) / (2.0 * et);
             }
         }
-        let mut a = [[0.0; 2]; 2];
-        for (r, row) in a.iter_mut().enumerate() {
-            for (c, out) in row.iter_mut().enumerate() {
-                *out = (0..3).map(|i| j[r][i] * b[i][c]).sum();
-            }
-        }
-        a
+        Linearization { j, b }
     }
 
     /// Phase speeds `[external, internal]` (m s⁻¹) of linear gravity waves

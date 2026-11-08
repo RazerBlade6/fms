@@ -12,9 +12,11 @@
 //! fms patterns                                 # analytic test fields (edges, vertices, vectors)
 //! fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2  # time series at a point
 //! fms williamson --case 5                     # shallow-water flow over a mountain
+//! fms baroclinic                              # two-layer core: storms on a sheared jet
 //! ```
 
 mod arrows;
+mod baroclinic;
 mod chart;
 mod colormap;
 mod font;
@@ -67,6 +69,9 @@ enum Command {
     /// Run a Williamson shallow-water test case (2, 5 or 6) on the climate
     /// grid; write a GIF and final-state PNGs to `output/williamsonN/`.
     Williamson(williamson::WilliamsonArgs),
+    /// Run the two-layer dry core on a sheared jet seeded with small waves
+    /// and render the growing baroclinic storms to `output/baroclinic/`.
+    Baroclinic(baroclinic::BaroclinicArgs),
 }
 
 #[derive(Args, Clone)]
@@ -215,6 +220,7 @@ fn main() -> ExitCode {
         Command::Patterns(args) => render_patterns(args),
         Command::Probe(args) => probe(args),
         Command::Williamson(args) => williamson::run(args),
+        Command::Baroclinic(args) => baroclinic::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

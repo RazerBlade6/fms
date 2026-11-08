@@ -70,7 +70,7 @@ Added after the M1 review: tooling the GCM work depends on.
 - [x] 4. **Semi-implicit time stepping**: leapfrog with the RAW filter; implicit
    gravity-wave terms; Helmholtz solver (preconditioned conjugate gradient). Rerun
    the Williamson tests at the larger `dt`.
-- [ ] 5. **2-layer dry dynamical core**: sigma coordinates, hydrostatic balance,
+- [x] 5. **2-layer dry dynamical core**: sigma coordinates, hydrostatic balance,
    potential temperature per layer, a surface-pressure equation. Equal-mass
    layers (σ = 0.5); explicit RK4 first, then semi-implicit with a vertical-mode
    split. Tests: an atmosphere at rest over mountains stays at rest; mass and

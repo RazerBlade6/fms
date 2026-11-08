@@ -20,6 +20,7 @@ cargo build --release -p fms-cli
 | `fms patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
 | `fms probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
 | `fms williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
+| `fms baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
 
 ### Cell, edge and vertex fields
 
@@ -140,6 +141,32 @@ Semi-implicit runs also print the mean conjugate-gradient iterations per step.
 Use `--climate-frequency` for resolution, and a small `--terrain-frequency`
 (e.g. 90) to skip building the unused fine grid.
 
+### Baroclinic storms
+
+`fms baroclinic` runs the two-layer dry dynamical core (semi-implicit) on the
+climate grid. It starts from a zonal jet in gradient and thermal-wind balance
+(faster aloft, colder poles), seeds zonal waves 4–8 at 45° N and S, and lets
+baroclinic instability grow them into mid-latitude storms. They take about 4
+days to become visible and mature by about day 7.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--shear U` | 40 | Upper minus lower layer wind at the equator (m/s). Unstable above ~11 m/s |
+| `--stability K` | 40 | Upper minus lower layer potential temperature (K) |
+| `--seed K` | 0.5 | Amplitude of each seeded wave (K) |
+| `--days D` | 7 | Simulated days (see below) |
+| `--frames N`, `--fps N` | 57, 12 | GIF frames and speed |
+| `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
+
+Outputs: `dyn.surface_pressure.gif` (with lower-layer wind arrows), and PNGs of
+the final `dyn.surface_pressure`, `dyn.theta_lower`, `dyn.vorticity_lower`,
+`dyn.wind_upper` and `dyn.wind_lower`.
+
+The core has no dissipation yet (ROADMAP M2 step 7). Past about day 7, fronts
+collapse to the grid scale, winds exceed 130 m/s and the run blows up. The
+command stops with an error when that happens ([OBSERVATIONS.md](OBSERVATIONS.md)
+O-14).
+
 ### Point probes
 
 `fms probe` reads each field at the cell nearest the requested point, on that
@@ -184,4 +211,5 @@ fms dump -f terrain.elevation -f terrain.surface_height_stddev \
 fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles at the equator
 fms probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
 fms williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
+fms baroclinic --terrain-frequency 90                      # storms growing on a jet, 7 days
 ```
