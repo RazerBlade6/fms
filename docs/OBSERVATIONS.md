@@ -23,8 +23,10 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
 | O-12 | [Shallow-water steps are overhead-bound](#o-12-shallow-water-steps-are-overhead-bound) | Performance | Scheduled: M2 step 16 |
 | O-13 | [Semi-implicit steps are long but expensive](#o-13-semi-implicit-steps-are-long-but-expensive) | Performance | Scheduled: M2 step 16 |
-| O-14 | [The undamped core collapses to the grid scale](#o-14-the-undamped-core-collapses-to-the-grid-scale) | Dynamics | Scheduled: M2 step 6 |
+| O-14 | [The undamped core collapses to the grid scale](#o-14-the-undamped-core-collapses-to-the-grid-scale) | Dynamics | Resolved: M2 step 6 |
 | O-15 | [Baroclinic growth is ~75% of local theory](#o-15-baroclinic-growth-is-75-of-local-theory) | Dynamics | Accepted |
+| O-16 | [No sponge layer](#o-16-no-sponge-layer) | Dynamics | Accepted |
+| O-17 | [Zig-zag vertex modes limit explicit hyperdiffusion](#o-17-zig-zag-vertex-modes-limit-explicit-hyperdiffusion) | Numerics | Accepted |
 
 ---
 
@@ -217,6 +219,17 @@ dissipation is a planned step.
 cannot work without it (Held & Suarez 1994 used ∇⁸ diffusion), so the
 dissipation step was moved ahead of it: Held–Suarez is now step 7.
 
+**Resolved (M2.6):** the diagnosis above was half right. The day-8 blow-up
+was winds outrunning a step sized for 80 m/s. With a step sized for faster
+winds the inviscid core survives a month, but it does collapse. On the
+default 30 m/s-shear jet at 10k cells, vorticity sharpens to
+1.4×10⁻³ s⁻¹ (14f) by day 30, winds reach 129 m/s, and the energy error grows
+to ~10⁻⁵. With ∇⁴ hyperdiffusion (`crates/atmos/src/diffusion.rs`), the same
+storms keep |ζ| below 3×10⁻⁴ s⁻¹ and peak at 105 m/s, and the energy budget
+closes to within 1% of what diffusion removes. Blow-ups now stop the run at
+the first unhealthy step and write a diagnostic dump (`fms baroclinic`;
+`crates/atmos/src/safety.rs`). The default storm run lasts 30 days.
+
 ### O-15: Baroclinic growth is ~75% of local theory
 
 **Seen (M2.5):** on a balanced sheared jet, wavenumber-6 perturbations grow at
@@ -236,3 +249,48 @@ of it.
 **Revisit if:** a sharper check is wanted. That needs the linear stability
 problem of the spherical jet solved numerically (an eigenvalue problem in
 latitude) as the reference.
+
+### O-16: No sponge layer
+
+**Seen (M2.6):** the roadmap step listed a sponge layer: extra damping near the
+model top that absorbs upward-propagating gravity waves before they reflect
+off the lid.
+
+**Why it's acceptable:** with two layers and the top at p = 0 there is no
+vertical room for one. A sponge works over several upper levels; here it
+would be Rayleigh friction on half the atmosphere. The two-layer model also
+has only one internal gravity-wave mode, which the semi-implicit scheme
+already handles, and Held–Suarez's Rayleigh friction (M2 step 7) acts at the
+surface, not the top.
+
+**Revisit if:** the model gets more vertical levels.
+
+### O-17: Zig-zag vertex modes limit explicit hyperdiffusion
+
+**Seen (M2.6):** a hexagonal C-grid has about twice as many vertices as cells.
+The extra rotational modes zig-zag between neighbouring vertices, and the
+vertex Laplacian reaches 3.7× higher than the cell Laplacian
+(λ·d² = 28.8 vs 7.8 at 10k cells). Hyperdiffusion set to damp the shortest
+*cell* wave in `τ` damps these modes `3.7ⁿ` times faster: 14× for ∇⁴, 190×
+for ∇⁸. Explicit diffusion, lagged over a leapfrog step, is only stable for
+`Δt` below that fastest e-folding time. So the default `τ` is the shortest the
+step allows with a 2× margin: 5 h at 20k cells, 7.5 h at 10k. ∇⁸, as in
+Held & Suarez (1994), would need `τ ≈ 370 Δt` (about 3 days at 20k cells),
+which leaves the 2–4 cell scales almost undamped. Normalizing the rotational
+part to the vertex grid instead was tried and fails: then vorticity at the
+cell scale is barely damped, and the storms still collapse.
+
+Separately, the TRiSK vector Laplacian is inconsistent (it doesn't converge
+pointwise): ~1% RMS error in its divergent part and ~12% in its rotational
+part, at every resolution.
+
+**Why it's acceptable:** ∇⁴ at the default strength does the job. Storms live
+30 days with smooth fields, and large-scale waves are untouched (wave-6
+baroclinic growth changes by 0.5%). The Laplacian errors only matter at
+scales where the damping is negligible anyway.
+
+**Revisit if:** the eddies look too damped at mid scales, or Held–Suarez
+(M2 step 7) needs a sharper filter. Options: implicit diffusion (one CG
+solve per step; its matrix is well conditioned at these strengths), or
+filtering the vertex modes separately.
+

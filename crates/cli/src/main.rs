@@ -22,6 +22,7 @@ mod colormap;
 mod font;
 mod patterns;
 mod render;
+mod run_log;
 mod view;
 mod williamson;
 

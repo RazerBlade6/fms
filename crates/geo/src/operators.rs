@@ -19,6 +19,8 @@
 //! - `Σₑ 2Aₑ gradient(h)ₑ Fₑ = −Σᵢ Aᵢ hᵢ divergence(F)ᵢ`, with `Aₑ = lₑdₑ/2`
 //!   (gradient and divergence are adjoint, so pressure work exchanges energy
 //!   without creating it)
+//! - `Σₑ 2Aₑ uₑ tangential_gradient(ψ)ₑ = Σ_v A_v ψ_v curl(u)_v`, and
+//!   `divergence(tangential_gradient(ψ)) = 0`
 //! - `Σᵢ Aᵢ kinetic_energy(u)ᵢ = Σₑ Aₑ uₑ²`
 //! - `Σ_v A_v cell_to_vertex(h)_v = Σᵢ Aᵢ hᵢ`
 //! - TRiSK weights are antisymmetric, so the Coriolis term does no work
@@ -33,6 +35,7 @@
 //! | divergence, Laplacian | fixed, ~1.1% at the pentagons | 1st order |
 //! | tangential velocity | fixed, ~0.6% at the pentagons | ~1.5 order |
 //! | kinetic energy | fixed, ~1.5% at the pentagons | ~1.3 order |
+//! | vector Laplacian | not convergent | fixed: ~1% divergent, ~12% rotational part |
 //!
 //! The fixed local errors at the pentagons are tracked in [OBSERVATIONS.md] O-1.
 //!
@@ -166,6 +169,33 @@ impl<'a> Operators<'a> {
                     .map(|(&e, s)| s * g.dual_edge_lengths[e as usize] * u[e as usize])
                     .sum();
                 *out = sum / (g.vertex_areas[v as usize] * r);
+            });
+    }
+
+    /// Derivative of a vertex scalar along each edge tangent `tₑ`:
+    /// `(ψ[vertices[1]] − ψ[vertices[0]]) / lₑ`.
+    ///
+    /// The adjoint of [`curl`](Self::curl):
+    /// `Σₑ 2Aₑ uₑ tangential_gradient(ψ)ₑ = Σ_v A_v ψ_v curl(u)_v`. Its divergence
+    /// is zero (a closed loop of differences around each cell), so
+    /// `−tangential_gradient(ψ)` is the flow of stream function `ψ`, and the
+    /// vector Laplacian is `∇²u = gradient(δ) − tangential_gradient(ζ)`.
+    pub fn tangential_gradient(&self, psi: &[f64], out: &mut [f64]) {
+        self.check(
+            psi.len(),
+            self.mesh.n_vertices(),
+            out.len(),
+            self.mesh.n_edges(),
+        );
+        let edges = self.mesh.edges();
+        let l = &self.geometry.edge_lengths;
+        let r = self.radius;
+        out.par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .enumerate()
+            .for_each(|(e, out)| {
+                let [a, b] = edges[e].vertices;
+                *out = (psi[b as usize] - psi[a as usize]) / (l[e] * r);
             });
     }
 

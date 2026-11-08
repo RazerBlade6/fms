@@ -143,29 +143,48 @@ Use `--climate-frequency` for resolution, and a small `--terrain-frequency`
 
 ### Baroclinic storms
 
-`fms baroclinic` runs the two-layer dry dynamical core (semi-implicit) on the
-climate grid. It starts from a zonal jet in gradient and thermal-wind balance
-(faster aloft, colder poles), seeds zonal waves 4–8 at 45° N and S, and lets
-baroclinic instability grow them into mid-latitude storms. They take about 4
-days to become visible and mature by about day 7.
+`fms baroclinic` runs the two-layer dry dynamical core (semi-implicit, with
+∇⁴ hyperdiffusion) on the climate grid. It starts from a zonal jet in
+gradient and thermal-wind balance (faster aloft, colder poles), seeds zonal
+waves 4–8 at 45° N and S, and lets baroclinic instability grow them into
+mid-latitude storms. They become visible after about 5 days, peak around
+day 17, and then slowly decay. There is no surface friction yet (that comes
+with Held–Suarez), so the eddies drive lower-layer westerlies of 40+ m/s,
+and polar surface pressure falls to ~840 hPa to balance them.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--shear U` | 40 | Upper minus lower layer wind at the equator (m/s). Unstable above ~11 m/s |
+| `--shear U` | 30 | Upper minus lower layer wind at the equator (m/s). Unstable above ~11 m/s |
 | `--stability K` | 40 | Upper minus lower layer potential temperature (K) |
 | `--seed K` | 0.5 | Amplitude of each seeded wave (K) |
-| `--days D` | 7 | Simulated days (see below) |
-| `--frames N`, `--fps N` | 57, 12 | GIF frames and speed |
-| `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
+| `--days D` | 30 | Simulated days |
+| `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
+| `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
+| `--diffusion-order N` | 4 | Hyperdiffusion order: 4 (∇⁴), 6 or 8 |
+| `--e-folding H` | auto | Damping time of the shortest resolved wave (hours). Default: the strongest the step allows with a 2× margin (about 5 h at 20k cells). See [OBSERVATIONS.md](OBSERVATIONS.md) O-17 |
+| `--inviscid` | off | No hyperdiffusion: fronts and vortices collapse to the grid scale |
 
-Outputs: `dyn.surface_pressure.gif` (with lower-layer wind arrows), and PNGs of
-the final `dyn.surface_pressure`, `dyn.theta_lower`, `dyn.vorticity_lower`,
-`dyn.wind_upper` and `dyn.wind_lower`.
+Outputs in `output/baroclinic/`:
+- `dyn.surface_pressure.gif`, with lower-layer wind arrows;
+- PNGs of the final `dyn.surface_pressure`, `dyn.theta_lower`,
+  `dyn.vorticity_lower`, `dyn.wind_upper` and `dyn.wind_lower`;
+- `diagnostics.csv`, four samples per day. Columns: total mass, θ, kinetic
+  and total energy, the energy removed by diffusion so far, the relative
+  drifts, the energy-budget residual (energy change not explained by
+  diffusion, i.e. time-stepping error), max wind, and the surface-pressure
+  and θ ranges.
 
-The core has no dissipation yet (ROADMAP M2 step 6). Past about day 7, fronts
-collapse to the grid scale, winds exceed 130 m/s and the run blows up. The
-command stops with an error when that happens ([OBSERVATIONS.md](OBSERVATIONS.md)
-O-14).
+The state is checked after every step. The run stops if any value isn't
+finite, a wind passes the step's Courant limit (`--max-wind` / 0.6, about
+200 m/s by default), or surface pressure or θ leaves generous physical
+bounds. The error says what failed, where and when. A dump goes to
+`output/baroclinic/blowup/`:
+- `report.txt`: the problem, its location, the run settings, the last
+  healthy state's extremes, and the last 12 diagnostics samples;
+- `diagnostics.csv`;
+- PNGs of the last healthy state.
+
+The GIF up to that point is written as usual.
 
 ### Point probes
 
@@ -211,5 +230,5 @@ fms dump -f terrain.elevation -f terrain.surface_height_stddev \
 fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles at the equator
 fms probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
 fms williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
-fms baroclinic --terrain-frequency 90                      # storms growing on a jet, 7 days
+fms baroclinic --terrain-frequency 90                      # a storm life cycle on a jet, 30 days
 ```

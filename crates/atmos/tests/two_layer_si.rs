@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 
 use fms_atmos::williamson::{Case, GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, ShearedFlow, TwoLayer, TwoLayerSemiImplicit, TwoLayerSemiImplicitOptions, TwoLayerState,
+    Gas, HyperdiffusionOptions, ShearedFlow, TwoLayer, TwoLayerSemiImplicit,
+    TwoLayerSemiImplicitOptions, TwoLayerState,
 };
 use fms_geo::coords::to_lat_lon;
 use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -172,12 +173,19 @@ fn isothermal_rest_over_a_mountain_stays_nearly_at_rest() {
 }
 
 /// Growth rate (per day) of a 0.01 K wavenumber-6 θ seed at 45° N, against
-/// an unperturbed control, fitted from day 2 to day 8.
-fn growth(shear: f64) -> f64 {
+/// an unperturbed control, fitted from day 2 to day 8; optionally with the
+/// default (strongest stable) ∇⁴ hyperdiffusion.
+fn growth(shear: f64, diffuse: bool) -> f64 {
     let (m, g) = mesh();
     let flow = sheared(shear);
     let seeded = |seed: f64| {
-        let model = model(false);
+        let mut model = model(false);
+        if diffuse {
+            let dt = TwoLayerSemiImplicit::stable_dt(&model, MAX_WIND, COURANT);
+            let dt = DAY / (DAY / dt).ceil();
+            let options = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
+            model = model.with_hyperdiffusion(options);
+        }
         let mut state = flow.state(&model);
         for k in 0..2 {
             for (i, &p) in m.cell_centers().iter().enumerate() {
@@ -230,15 +238,27 @@ fn baroclinic_instability_at_a_long_step() {
     // 0.827 /day; the semi-implicit scheme 0.828 /day at 45 m/s.
     let reference = model(false);
     let lat = 45f64.to_radians();
-    let stable = growth(10.0);
+    let stable = growth(10.0, false);
     let (theory, _) = sheared(45.0).phillips_growth_rate(&reference, 6, lat);
-    let unstable = growth(45.0);
+    let unstable = growth(45.0, false);
     let ratio = unstable / (theory * DAY);
     eprintln!(
         "growth: {stable:.3} /day at 10 m/s, {unstable:.3} /day at 45 m/s (ratio {ratio:.2})"
     );
     assert!(stable < 0.05, "subcritical wave grew at {stable} /day");
     assert!((0.6..1.0).contains(&ratio), "growth ratio {ratio}");
+}
+
+#[test]
+fn hyperdiffusion_leaves_baroclinic_growth_alone() {
+    // Scale-selective: wavenumber 6 is far from the grid scale, so its growth
+    // barely changes.
+    let (inviscid, diffused) = (growth(45.0, false), growth(45.0, true));
+    eprintln!("growth: {inviscid:.3} /day inviscid, {diffused:.3} /day with ∇⁴");
+    assert!(
+        (diffused / inviscid - 1.0).abs() < 0.03,
+        "{inviscid} vs {diffused}"
+    );
 }
 
 #[test]

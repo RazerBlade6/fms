@@ -228,6 +228,50 @@ fn curl_converges_at_first_order() {
     c.assert_orders(0.9, 0.9);
 }
 
+/// The vector Laplacian of [`velocity`], split into its divergent part
+/// `∇(∇²χ)` and rotational part `k × ∇(∇²ψ)`.
+fn velocity_laplacian(p: DVec3) -> (DVec3, DVec3) {
+    let grad_delta = tangent(p, DVec3::new(-12.0 * p.x, 12.0 * p.y, -0.6));
+    let grad_zeta = tangent(p, -12.0 * DVec3::new(p.y * p.z, p.x * p.z, p.x * p.y));
+    (grad_delta, p.cross(grad_zeta))
+}
+
+#[test]
+fn vector_laplacian_error_is_bounded() {
+    // ∇²u = gradient(δ) − tangential_gradient(ζ): the operator hyperdiffusion
+    // uses. Each part differentiates a quantity that is only first-order
+    // accurate (the divergence near the pentagons; the vorticity everywhere,
+    // as it is stored at circumcentres), so neither converges: RMS errors stay
+    // at ~1% (divergent part) and ~12% (rotational part) at every resolution,
+    // and the maximum of the divergent part grows at the pentagons. This is
+    // the known inconsistency of the TRiSK vector Laplacian. It is harmless
+    // for hyperdiffusion, whose job is to damp the grid scale: at the scales
+    // where the error matters the damping is negligible anyway.
+    let divergent = Convergence::measure("∇δ part", |m, g| {
+        let ops = Operators::new(m, g, 1.0);
+        let u = normal_components(g, velocity);
+        let mut div = vec![0.0; m.n_cells()];
+        ops.divergence(&u, &mut div);
+        let mut got = vec![0.0; m.n_edges()];
+        ops.gradient(&div, &mut got);
+        errors(&got, &normal_components(g, |p| velocity_laplacian(p).0))
+    });
+    let rotational = Convergence::measure("k×∇ζ part", |m, g| {
+        let ops = Operators::new(m, g, 1.0);
+        let u = normal_components(g, velocity);
+        let mut zeta = vec![0.0; m.n_vertices()];
+        ops.curl(&u, &mut zeta);
+        let mut got = vec![0.0; m.n_edges()];
+        ops.tangential_gradient(&zeta, &mut got);
+        got.iter_mut().for_each(|x| *x = -*x);
+        errors(&got, &normal_components(g, |p| velocity_laplacian(p).1))
+    });
+    divergent.assert_orders(-1.2, -0.1);
+    rotational.assert_orders(-0.1, -0.1);
+    assert!(divergent.errors.iter().all(|e| e.1 < 0.02));
+    assert!(rotational.errors.iter().all(|e| e.1 < 0.15 && e.0 < 0.6));
+}
+
 #[test]
 fn tangential_velocity_converges_in_rms() {
     let c = Convergence::measure("tangential", |m, g| {
@@ -408,6 +452,41 @@ fn gradient_and_divergence_are_adjoint() {
         &cell_areas(g),
     );
     assert!((lhs - rhs).abs() < 1e-12 * lhs.abs(), "{lhs} vs {rhs}");
+}
+
+#[test]
+fn tangential_gradient_is_the_adjoint_of_curl() {
+    // Σₑ 2Aₑ uₑ tgrad(ψ)ₑ = Σ_v A_v ψ_v curl(u)_v, so the rotational part of
+    // the vector Laplacian, −tgrad(curl u), is negative definite.
+    let (m, g) = mesh(32);
+    let ops = Operators::new(m, g, R);
+    let psi = noise(m.n_vertices(), 6);
+    let u = noise(m.n_edges(), 7);
+    let mut tgrad = vec![0.0; m.n_edges()];
+    let mut zeta = vec![0.0; m.n_vertices()];
+    ops.tangential_gradient(&psi, &mut tgrad);
+    ops.curl(&u, &mut zeta);
+    let edge_areas = ops.edge_areas();
+    let lhs: f64 = (0..m.n_edges())
+        .map(|e| 2.0 * edge_areas[e] * u[e] * tgrad[e])
+        .sum();
+    let rhs: f64 = (0..m.n_vertices())
+        .map(|v| g.vertex_areas[v] * R * R * psi[v] * zeta[v])
+        .sum();
+    assert!((lhs - rhs).abs() < 1e-12 * lhs.abs(), "{lhs} vs {rhs}");
+}
+
+#[test]
+fn stream_function_flow_has_no_divergence() {
+    let (m, g) = mesh(32);
+    let ops = Operators::new(m, g, R);
+    let psi = noise(m.n_vertices(), 8);
+    let mut u = vec![0.0; m.n_edges()];
+    let mut div = vec![0.0; m.n_cells()];
+    ops.tangential_gradient(&psi, &mut u);
+    ops.divergence(&u, &mut div);
+    let scale = u.iter().fold(0.0f64, |a, b| a.max(b.abs())) / (m.mean_spacing() * R);
+    assert!(div.iter().all(|d| d.abs() < 1e-12 * scale));
 }
 
 #[test]

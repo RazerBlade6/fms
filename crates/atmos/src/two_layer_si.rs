@@ -38,12 +38,21 @@
 //! Because the new surface pressure and `Θ` come from the divergence of the
 //! new winds, which has no net source, total mass and total `Θ` are conserved
 //! to round-off whatever the solver tolerance.
+//!
+//! # Diffusion
+//!
+//! The model's hyperdiffusion ([`crate::diffusion`]) is evaluated at the old
+//! level and added to `N`: `xⁿ⁺¹ = xⁿ⁻¹ + 2Δt D(xⁿ⁻¹) + …`. Centred in time,
+//! diffusion would be unstable under leapfrog; lagged, it is stable while
+//! `Δt` times the fastest damping rate is below 1. The energy it removes is
+//! accumulated in [`TwoLayerSemiImplicit::dissipated_energy`].
 
 use fms_geo::Operators;
 use fms_geo::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::helmholtz::{Helmholtz, SolveReport, dot};
+use crate::safety::{self, BlowUp, Health, Limits};
 use crate::semi_implicit::SolverStats;
 use crate::two_layer::{Linearization, TwoLayer, TwoLayerState};
 
@@ -127,8 +136,11 @@ pub struct TwoLayerSemiImplicit<'a> {
     current: TwoLayerState,
     steps: u64,
     stats: SolverStats,
+    /// Energy added by diffusion so far (J; negative).
+    dissipated: f64,
     // Scratch.
     tendency: TwoLayerState,
+    diffusion: TwoLayerState,
     next: TwoLayerState,
     big_u: [Vec<f64>; 2],
     m: [Vec<f64>; 2],
@@ -143,6 +155,10 @@ pub struct TwoLayerSemiImplicit<'a> {
 impl<'a> TwoLayerSemiImplicit<'a> {
     /// Start from `state` with step `dt` (s). Takes the first step at once,
     /// with RK4 substeps at Courant number `start_courant` (e.g. 0.5).
+    ///
+    /// # Panics
+    /// If the model has hyperdiffusion too strong for `dt`:
+    /// `dt · max_rate ≥ 1` ([`crate::Hyperdiffusion::max_rate`]).
     pub fn new(
         mut model: TwoLayer<'a>,
         state: TwoLayerState,
@@ -150,6 +166,13 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         options: TwoLayerSemiImplicitOptions,
         start_courant: f64,
     ) -> Self {
+        if let Some(d) = model.hyperdiffusion() {
+            assert!(
+                dt * d.max_rate() < 1.0,
+                "lagged hyperdiffusion is unstable at this step: Δt × fastest damping rate = {:.2} (must be < 1); lengthen the e-folding time",
+                dt * d.max_rate()
+            );
+        }
         let ops = *model.operators();
         let reference = options
             .reference
@@ -167,6 +190,9 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             .ceil()
             .max(1.0);
         let mut current = state.clone();
+        let mut diffusion = state.clone();
+        model.diffusion_tendency(&state, &mut diffusion);
+        let dissipated = dt * model.energy_tendency(&state, &diffusion);
         for _ in 0..substeps as u64 {
             model.step(&mut current, dt / substeps);
         }
@@ -187,7 +213,9 @@ impl<'a> TwoLayerSemiImplicit<'a> {
             current,
             steps: 1,
             stats: SolverStats::default(),
+            dissipated,
             tendency: state.clone(),
+            diffusion,
             next: state,
             big_u: [edges(), edges()],
             m: [cells(), cells()],
@@ -208,6 +236,44 @@ impl<'a> TwoLayerSemiImplicit<'a> {
     /// The current state.
     pub fn state(&self) -> &TwoLayerState {
         &self.current
+    }
+
+    /// The current state, mutably: for experiments such as injecting a
+    /// fault. Only the current time level changes, not the previous one.
+    pub fn state_mut(&mut self) -> &mut TwoLayerState {
+        &mut self.current
+    }
+
+    /// Energy added by hyperdiffusion since the start (J; negative). With
+    /// it, `energy(now) − energy(start) − dissipated_energy()` is the
+    /// time-stepping error.
+    pub fn dissipated_energy(&self) -> f64 {
+        self.dissipated
+    }
+
+    /// Fastest wind (m s⁻¹) the step can advect stably: Courant number 1 on
+    /// the shortest dual edge.
+    pub fn courant_limit(&self) -> f64 {
+        let min_d = self
+            .ops
+            .geometry()
+            .dual_edge_lengths
+            .iter()
+            .fold(f64::MAX, |a, &b| a.min(b))
+            * self.ops.radius();
+        min_d / self.dt
+    }
+
+    /// Safety limits for this run: the Courant limit and bounds about the
+    /// reference state ([`Limits::around`]).
+    pub fn limits(&self) -> Limits {
+        let (p_bar, th_bar) = self.reference;
+        Limits::around(self.courant_limit(), p_bar, th_bar)
+    }
+
+    /// Check the current state against [`limits`](Self::limits).
+    pub fn check(&self) -> Result<Health, BlowUp> {
+        safety::check(&self.current, &self.limits())
     }
 
     /// The underlying model.
@@ -315,7 +381,15 @@ impl<'a> TwoLayerSemiImplicit<'a> {
         };
         let mut current = std::mem::replace(&mut self.current, empty);
         self.model.tendency(&current, &mut self.tendency);
+        // Hyperdiffusion, lagged to the old level.
+        let diffuse = self.model.hyperdiffusion().is_some();
+        if diffuse {
+            self.model
+                .diffusion_tendency(&self.previous, &mut self.diffusion);
+            self.dissipated += dt * self.model.energy_tendency(&self.previous, &self.diffusion);
+        }
         let t = &self.tendency;
+        let d = &self.diffusion;
 
         // Divergences of uⁿ and uⁿ⁻¹.
         for k in 0..2 {
@@ -336,7 +410,8 @@ impl<'a> TwoLayerSemiImplicit<'a> {
                     let t_y = if r == 0 {
                         t.ps[i]
                     } else {
-                        (t.theta_ps[r - 1][i] - th_bar[r - 1] * t.ps[i]) / p_bar
+                        let diffusion = if diffuse { d.theta_ps[r - 1][i] } else { 0.0 };
+                        (t.theta_ps[r - 1][i] + diffusion - th_bar[r - 1] * t.ps[i]) / p_bar
                     };
                     let b_now = b[r][0] * div[0][i] + b[r][1] * div[1][i];
                     let b_old = b[r][0] * div_prev[0][i] + b[r][1] * div_prev[1][i];
@@ -355,12 +430,15 @@ impl<'a> TwoLayerSemiImplicit<'a> {
                 .enumerate()
                 .for_each(|(i, c)| *c = 2.0 * m_now[k][i] - m_prev[k][i]);
             ops.gradient(&self.cells, &mut self.grad);
-            let (prev_u, t_u, grad) = (&self.previous.u[k], &t.u[k], &self.grad);
+            let (prev_u, t_u, d_u, grad) = (&self.previous.u[k], &t.u[k], &d.u[k], &self.grad);
             self.big_u[k]
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
-                .for_each(|(e, u)| *u = prev_u[e] + 2.0 * dt * t_u[e] + dt * grad[e]);
+                .for_each(|(e, u)| {
+                    let diffusion = if diffuse { d_u[e] } else { 0.0 };
+                    *u = prev_u[e] + 2.0 * dt * (t_u[e] + diffusion) + dt * grad[e];
+                });
         }
 
         // rhs = J Y + Δt A ∇·U.

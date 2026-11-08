@@ -76,13 +76,18 @@ Added after the M1 review: tooling the GCM work depends on.
    split. Tests: an atmosphere at rest over mountains stays at rest; mass and
    energy conserved; baroclinic instability grows at the rate linear theory
    predicts.
-- [ ] 6. **Dissipation and safety**: hyperdiffusion, sponge layer, global energy and
-   mass diagnostics, automatic blow-up detection with a diagnostic dump. Moved
-   ahead of Held–Suarez at the end of M2.5: without dissipation the core
-   collapses to the grid scale ~8 days into a storm life cycle
-   ([OBSERVATIONS.md](OBSERVATIONS.md) O-14).
+- [x] 6. **Dissipation and safety**: hyperdiffusion, global energy and mass
+   diagnostics, automatic blow-up detection with a diagnostic dump. Moved ahead
+   of Held–Suarez at the end of M2.5: without dissipation the core collapses to
+   the grid scale ~8 days into a storm life cycle
+   ([OBSERVATIONS.md](OBSERVATIONS.md) O-14). Done as ∇⁴ (order configurable),
+   at the strongest strength the step allows (O-17). The sponge layer is
+   deferred until there are more levels (O-16). Tests: a storm life cycle
+   survives 30 days with mass and θ exact and the energy budget closed; rest
+   over a mountain is untouched; blow-ups are caught before they become NaNs.
 - [ ] 7. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
-   friction. Mid-latitude jets and baroclinic eddies should appear.
+   friction. Mid-latitude jets and baroclinic eddies should appear. Use ∇⁴, not
+   the paper's ∇⁸ ([OBSERVATIONS.md](OBSERVATIONS.md) O-17).
 - [ ] 8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
    CO₂/pressure-dependent optical depth. Replaces the Held–Suarez forcing.
    Test: global energy balance closes.
