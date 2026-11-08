@@ -21,6 +21,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-9 | [Vector fields render as arrows only](#o-9-vector-fields-render-as-arrows-only) | Tooling | Watching |
 | O-10 | [Field names must be `'static` strings](#o-10-field-names-must-be-static-strings) | Fields | Scheduled: M4 step 2 |
 | O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
+| O-12 | [Shallow-water steps are overhead-bound](#o-12-shallow-water-steps-are-overhead-bound) | Performance | Scheduled: M2 step 16 |
 
 ---
 
@@ -43,6 +44,12 @@ This matches the literature (Peixoto 2016, *Accuracy analysis of mimetic finite
 volume operators on geodesic grids*). The divergence and Laplacian maxima sit in the
 hexagons right next to the pentagons. Three or more cells away the error is
 about 5× smaller (`cargo run --release -p fms-geo --example divergence_error`).
+
+The first flow to show it is Williamson case 2 (M2.3): the l2 height error
+converges at second order, but l∞ stalls at ~5e-4 because of sharp error
+dipoles at exactly the 12 pentagons (`fms williamson --case 2`, then look at
+`output/williamson2/sw.height_error.png`). They are ±1.5 m against a 3 km
+fluid depth after 5 days.
 
 **Why it matters:** fixed local errors at the pentagons can leave a spurious
 wavenumber-5 / 12-point pattern in long GCM runs ("grid imprinting"), e.g. in
@@ -145,3 +152,20 @@ mostly behaves right, and nothing reads the land/sea split yet.
 **Revisit when:** the slab ocean (M2 step 11) needs a real ocean mask: take the
 ocean to be the below-sea-level region connected to the open sea, and leave
 closed basins to hydrology's lakes and depressions.
+
+### O-12: Shallow-water steps are overhead-bound
+
+**Seen (M2.3):** the RK4 shallow-water model runs about 226 steps/s on the 20k
+climate grid with 15 threads, about 4.4 ms per step. That's 4 stages of about
+15 operator calls each, so each call costs ~70 µs, mostly in thread
+scheduling: a single thread is 7× faster on a 2.5k mesh. Setting a minimum
+chunk of 4096 elements per thread (`fms_geo::operators::MIN_CHUNK`) won 11×
+on small meshes, but large ones are still dominated by per-call overhead.
+
+**Why it's acceptable for now:** correctness first. The roadmap's target is
+speed 2 (~340 steps/s) for the full two-layer model, so this needs work, but
+the semi-implicit step (M2 step 4) will change the step count anyway.
+
+**Plan:** M2 step 16. Options: fuse operators into fewer passes (one loop over
+edges per stage instead of several), run a whole stage per parallel task over
+mesh partitions, and precompute per-edge factors like `lₑ/(dₑ r)`.

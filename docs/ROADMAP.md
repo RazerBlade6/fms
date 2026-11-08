@@ -65,7 +65,7 @@ Added after the M1 review: tooling the GCM work depends on.
 - [x] 2. **Discrete operators**: TRiSK gradient, divergence, curl, kinetic energy and
    tangential-velocity reconstruction. Test: convergence against analytic
    spherical-harmonic fields; mass and energy conservation.
-- [ ] 3. **Shallow-water model (explicit)**: single layer. Pass Williamson test cases
+- [x] 3. **Shallow-water model (explicit)**: single layer. Pass Williamson test cases
    2 (steady geostrophic flow), 5 (flow over a mountain) and 6 (Rossby–Haurwitz wave).
 - [ ] 4. **Semi-implicit time stepping**: leapfrog with the RAW filter; implicit
    gravity-wave terms; Helmholtz solver (preconditioned conjugate gradient). Rerun

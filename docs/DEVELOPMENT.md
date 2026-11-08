@@ -9,7 +9,7 @@ The toolchain is pinned in `rust-toolchain.toml` (Rust 1.99.1 with rustfmt and
 clippy); `rustup` installs it automatically on first build.
 
 ```sh
-cargo test --workspace                                 # all tests (a few seconds once built)
+cargo test --workspace                                 # all tests (~10 s once built; the Williamson runs are most of it)
 cargo clippy --workspace --all-targets -- -D warnings  # lints, as CI runs them
 cargo fmt --all                                        # format
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # API docs, as CI builds them

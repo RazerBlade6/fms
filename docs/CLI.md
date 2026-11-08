@@ -19,6 +19,7 @@ cargo build --release -p fms-cli
 | `fms animate [-f NAME]` | Run and write `output/NAME.gif`; defaults to a year of `planet.daily_insolation` |
 | `fms patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
 | `fms probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
+| `fms williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 
 ### Cell, edge and vertex fields
 
@@ -109,6 +110,34 @@ The importer sets `terrain.elevation`. These fields are derived from it:
 | `terrain.surface_height_stddev` | climate | Spread of surface height inside the cell (sub-grid mountains) |
 | `terrain.mean_slope` | climate | Mean slope of the terrain cells inside |
 
+### Shallow-water test cases
+
+`fms williamson` runs the single-layer shallow-water model (the core the GCM is
+built from) on the climate grid, using the standard test cases of Williamson
+et al. (1992). It ignores the planet: the cases fix Earth's radius, rotation
+and gravity.
+
+| Case | Flow | Standard length | What to look for |
+|---|---|---|---|
+| 2 | Steady zonal flow in geostrophic balance | 5 days | Nothing should change; `sw.height_error` shows the error against the exact solution |
+| 5 | Zonal flow over a 2 km conical mountain | 15 days | A Rossby wave train downstream of the mountain (30° N, 90° W) |
+| 6 | Rossby–Haurwitz wave, wavenumber 4 | 14 days | The pattern moves east at ~11.6°/day without changing shape |
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--case N` | required | 2, 5 or 6 |
+| `--alpha DEG` | 0 | Case 2: tilt of the flow relative to the poles (45 sends it over the pentagons) |
+| `--days D` | the case's standard length | How long to run |
+| `--frames N`, `--fps N` | 61, 12 | GIF frames (including the start) and speed |
+| `--courant C` | 0.5 | Time step as a fraction of the gravity-wave limit |
+
+Outputs: `sw.surface_height.gif` (with wind arrows), and PNGs of the final
+`sw.surface_height`, `sw.vorticity`, `sw.wind` and, for case 2,
+`sw.height_error`. The run prints the time step, speed, and the relative change
+in total mass (round-off) and energy (a tiny loss from the RK4 time stepping).
+Use `--climate-frequency` for resolution, and a small `--terrain-frequency`
+(e.g. 90) to skip building the unused fine grid.
+
 ### Point probes
 
 `fms probe` reads each field at the cell nearest the requested point, on that
@@ -152,4 +181,5 @@ fms dump -f terrain.elevation -f terrain.surface_height_stddev \
     --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif   # Earth's terrain on both grids
 fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles at the equator
 fms probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
+fms williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
 ```

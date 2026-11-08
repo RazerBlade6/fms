@@ -481,3 +481,37 @@ fn linear_shallow_water_conserves_energy() {
         kinetic + potential
     );
 }
+
+#[test]
+fn pv_flux_does_no_work() {
+    // Σₑ 2Aₑ Fₑ (q F⊥)ₑ = 0 for any q and F: the nonlinear Coriolis term
+    // only turns the flow.
+    let (m, g) = mesh(32);
+    let ops = Operators::new(m, g, R);
+    let q = noise(m.n_edges(), 12);
+    let f = noise(m.n_edges(), 13);
+    let mut out = vec![0.0; m.n_edges()];
+    ops.pv_flux(&q, &f, &mut out);
+    let areas = ops.edge_areas();
+    let work: f64 = (0..m.n_edges())
+        .map(|e| 2.0 * areas[e] * f[e] * out[e])
+        .sum();
+    let scale: f64 = (0..m.n_edges())
+        .map(|e| (2.0 * areas[e] * f[e] * out[e]).abs())
+        .sum();
+    assert!(work.abs() < 1e-13 * scale, "work {work} of {scale}");
+}
+
+#[test]
+fn pv_flux_with_constant_q_is_the_tangential_flux() {
+    let (m, g) = mesh(16);
+    let ops = Operators::new(m, g, R);
+    let f = noise(m.n_edges(), 14);
+    let q = vec![2.5e-8; m.n_edges()];
+    let (mut a, mut b) = (vec![0.0; m.n_edges()], vec![0.0; m.n_edges()]);
+    ops.pv_flux(&q, &f, &mut a);
+    ops.tangential(&f, &mut b);
+    for (x, y) in a.iter().zip(&b) {
+        assert!((x - 2.5e-8 * y).abs() < 1e-20, "{x} vs {}", 2.5e-8 * y);
+    }
+}

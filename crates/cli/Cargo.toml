@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+fms-atmos.workspace = true
 fms-fields.workspace = true
 fms-geo.workspace = true
 fms-math.workspace = true

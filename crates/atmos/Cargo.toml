@@ -12,6 +12,9 @@ fms-geo.workspace = true
 fms-fields.workspace = true
 fms-sched.workspace = true
 fms-planet.workspace = true
+fms-math.workspace = true
+glam.workspace = true
+rayon.workspace = true
 
 [lints]
 workspace = true

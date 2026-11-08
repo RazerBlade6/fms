@@ -11,6 +11,7 @@
 //! fms animate -f planet.toa_insolation --days 1 --frames 48
 //! fms patterns                                 # analytic test fields (edges, vertices, vectors)
 //! fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2  # time series at a point
+//! fms williamson --case 5                     # shallow-water flow over a mountain
 //! ```
 
 mod arrows;
@@ -20,6 +21,7 @@ mod font;
 mod patterns;
 mod render;
 mod view;
+mod williamson;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -62,6 +64,9 @@ enum Command {
     Patterns(PatternArgs),
     /// Record fields at one location over time: a CSV plus a line chart.
     Probe(ProbeArgs),
+    /// Run a Williamson shallow-water test case (2, 5 or 6) on the climate
+    /// grid; write a GIF and final-state PNGs to `output/williamsonN/`.
+    Williamson(williamson::WilliamsonArgs),
 }
 
 #[derive(Args, Clone)]
@@ -209,6 +214,7 @@ fn main() -> ExitCode {
         Command::Animate(args) => animate(args),
         Command::Patterns(args) => render_patterns(args),
         Command::Probe(args) => probe(args),
+        Command::Williamson(args) => williamson::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
