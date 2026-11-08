@@ -23,7 +23,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
 | O-12 | [Shallow-water steps are overhead-bound](#o-12-shallow-water-steps-are-overhead-bound) | Performance | Scheduled: M2 step 16 |
 | O-13 | [Semi-implicit steps are long but expensive](#o-13-semi-implicit-steps-are-long-but-expensive) | Performance | Scheduled: M2 step 16 |
-| O-14 | [The undamped core collapses to the grid scale](#o-14-the-undamped-core-collapses-to-the-grid-scale) | Dynamics | Scheduled: M2 step 7 |
+| O-14 | [The undamped core collapses to the grid scale](#o-14-the-undamped-core-collapses-to-the-grid-scale) | Dynamics | Scheduled: M2 step 6 |
 | O-15 | [Baroclinic growth is ~75% of local theory](#o-15-baroclinic-growth-is-75-of-local-theory) | Dynamics | Accepted |
 
 ---
@@ -213,9 +213,9 @@ because its step was sized for 80 m/s winds.
 **Why it's acceptable for now:** every inviscid grid-point model does this;
 dissipation is a planned step.
 
-**Plan:** M2 step 7 adds hyperdiffusion. Note that Held–Suarez (step 6) runs
-~1000 days and cannot work without it (Held & Suarez 1994 used ∇⁸ diffusion),
-so hyperdiffusion must come before or with step 6.
+**Plan:** M2 step 6 adds hyperdiffusion. Held–Suarez runs ~1000 days and
+cannot work without it (Held & Suarez 1994 used ∇⁸ diffusion), so the
+dissipation step was moved ahead of it: Held–Suarez is now step 7.
 
 ### O-15: Baroclinic growth is ~75% of local theory
 

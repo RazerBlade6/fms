@@ -32,7 +32,7 @@ pub struct BaroclinicArgs {
     /// Seed amplitude (K) of each of zonal waves 4–8 at 45° N and S.
     #[arg(long, default_value_t = 0.5)]
     seed: f64,
-    /// Simulated days. The core has no dissipation yet (ROADMAP M2 step 7),
+    /// Simulated days. The core has no dissipation yet (ROADMAP M2 step 6),
     /// so once the storms mature (about day 7) fronts collapse to the grid
     /// scale and the run blows up.
     #[arg(long, default_value_t = 7.0)]
@@ -232,7 +232,7 @@ pub fn run(mut args: BaroclinicArgs) -> Result<(), String> {
         }
         if !max_u.is_finite() || s.ps.iter().any(|p| !p.is_finite()) {
             return Err(format!(
-                "the model blew up by day {:.1} (no dissipation yet; see ROADMAP M2 step 7)",
+                "the model blew up by day {:.1} (no dissipation yet; see ROADMAP M2 step 6)",
                 si.steps() as f64 * dt / DAY
             ));
         }

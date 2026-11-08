@@ -162,7 +162,7 @@ Outputs: `dyn.surface_pressure.gif` (with lower-layer wind arrows), and PNGs of
 the final `dyn.surface_pressure`, `dyn.theta_lower`, `dyn.vorticity_lower`,
 `dyn.wind_upper` and `dyn.wind_lower`.
 
-The core has no dissipation yet (ROADMAP M2 step 7). Past about day 7, fronts
+The core has no dissipation yet (ROADMAP M2 step 6). Past about day 7, fronts
 collapse to the grid scale, winds exceed 130 m/s and the run blows up. The
 command stops with an error when that happens ([OBSERVATIONS.md](OBSERVATIONS.md)
 O-14).

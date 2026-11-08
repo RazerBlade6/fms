@@ -76,10 +76,13 @@ Added after the M1 review: tooling the GCM work depends on.
    split. Tests: an atmosphere at rest over mountains stays at rest; mass and
    energy conserved; baroclinic instability grows at the rate linear theory
    predicts.
-- [ ] 6. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
+- [ ] 6. **Dissipation and safety**: hyperdiffusion, sponge layer, global energy and
+   mass diagnostics, automatic blow-up detection with a diagnostic dump. Moved
+   ahead of Held–Suarez at the end of M2.5: without dissipation the core
+   collapses to the grid scale ~8 days into a storm life cycle
+   ([OBSERVATIONS.md](OBSERVATIONS.md) O-14).
+- [ ] 7. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
    friction. Mid-latitude jets and baroclinic eddies should appear.
-- [ ] 7. **Dissipation and safety**: hyperdiffusion, sponge layer, global energy and
-   mass diagnostics, automatic blow-up detection with a diagnostic dump.
 - [ ] 8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
    CO₂/pressure-dependent optical depth. Replaces the Held–Suarez forcing.
    Test: global energy balance closes.
