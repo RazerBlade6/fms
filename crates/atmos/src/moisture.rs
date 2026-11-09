@@ -286,14 +286,31 @@ const GAUSS: [(f64, f64); 4] = [
 /// (midpoint steps of at most 0.05 in ln p). Returns the temperature and
 /// humidity at `p_to`.
 pub fn lift(gas: Gas, t: f64, q: f64, p: f64, p_to: f64) -> (f64, f64) {
+    let (t, q, _) = lift_from(gas, t, q, p, p_to, None);
+    (t, q)
+}
+
+/// [`lift`], given the saturation humidity at the start if it is known, and
+/// returning the one at the end if the last step computed it.
+fn lift_from(
+    gas: Gas,
+    t: f64,
+    q: f64,
+    p: f64,
+    p_to: f64,
+    known: Option<f64>,
+) -> (f64, f64, Option<f64>) {
     let (r, cp) = (gas.gas_constant, gas.heat_capacity);
     let span = fms_math::ln(p / p_to);
     if span <= 0.0 {
-        return (t, q);
+        return (t, q, known);
     }
     let steps = (span / 0.05).ceil().max(1.0);
     let h = span / steps;
-    let (mut t, mut q, mut lnp) = (t, q, fms_math::ln(p));
+    // Pressure falls by this factor every half step.
+    let half = fms_math::exp(-0.5 * h);
+    let steps = steps as u64;
+    let (mut t, mut q, mut p, mut known) = (t, q, p, known);
     let slope = |t: f64, qs: f64, q: f64| -> (f64, bool) {
         if q < qs {
             // Dry: θ conserved, dT/d ln p = κ T.
@@ -306,25 +323,21 @@ pub fn lift(gas: Gas, t: f64, q: f64, p: f64, p_to: f64) -> (f64, f64) {
             )
         }
     };
-    // Saturation humidity at the current point, when the last step left it.
-    let mut known = None;
-    for _ in 0..steps as u64 {
-        let qs = known
-            .take()
-            .unwrap_or_else(|| saturation_humidity(t, fms_math::exp(lnp)));
+    for i in 0..steps {
+        let qs = known.take().unwrap_or_else(|| saturation_humidity(t, p));
         let (s1, _) = slope(t, qs, q);
-        let t_mid = t - 0.5 * h * s1;
-        let qs_mid = saturation_humidity(t_mid, fms_math::exp(lnp - 0.5 * h));
-        let (s2, saturated) = slope(t_mid, qs_mid, q);
+        let (t_mid, p_mid) = (t - 0.5 * h * s1, p * half);
+        let (s2, saturated) = slope(t_mid, saturation_humidity(t_mid, p_mid), q);
         t -= h * s2;
-        lnp -= h;
+        // The last step ends exactly at `p_to`.
+        p = if i + 1 == steps { p_to } else { p_mid * half };
         if saturated {
-            let qs = saturation_humidity(t, fms_math::exp(lnp));
+            let qs = saturation_humidity(t, p);
             q = q.min(qs);
             known = Some(qs);
         }
     }
-    (t, q)
+    (t, q, known)
 }
 
 /// The convective reference: layer-mean temperatures of a surface-air
@@ -348,13 +361,14 @@ pub fn convective_reference(setting: &Setting, column: &MoistColumn, surface_q: 
     // The parcel only cools as it rises: once it is colder than the
     // stratosphere, the rest of the top layer is at the floor.
     let mut floored = false;
+    let mut known = None;
     for &(k, s, w) in nodes.iter() {
         if floored {
             reference[k] += w * column.stratosphere;
             continue;
         }
         let p_to = s * ps;
-        (t, q) = lift(setting.gas, t, q, p, p_to);
+        (t, q, known) = lift_from(setting.gas, t, q, p, p_to, known);
         p = p_to;
         let value = if k == 0 {
             floored = t <= column.stratosphere;

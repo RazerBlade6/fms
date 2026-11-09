@@ -13,7 +13,10 @@
 // Small dense matrices and per-layer arrays are indexed together.
 #![allow(clippy::needless_range_loop)]
 
+use std::sync::OnceLock;
+
 use crate::layered::Gas;
+use crate::radiation::ProfileShape;
 
 /// Most layers a model may have (bounds the per-column scratch arrays).
 pub const MAX_LAYERS: usize = 16;
@@ -25,6 +28,18 @@ pub struct Levels {
     interfaces: Vec<f64>,
     /// `δσₖ` per layer.
     dsigma: Vec<f64>,
+    profile: ProfileCache,
+}
+
+/// Memoized constants of the in-layer temperature profile
+/// ([`crate::radiation`]). Not part of the levels' identity.
+#[derive(Clone, Debug, Default)]
+struct ProfileCache(OnceLock<ProfileShape>);
+
+impl PartialEq for ProfileCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Levels {
@@ -45,7 +60,11 @@ impl Levels {
             "interfaces must increase strictly within (0, 1): {interior:?}"
         );
         let dsigma = interfaces.windows(2).map(|w| w[1] - w[0]).collect();
-        Self { interfaces, dsigma }
+        Self {
+            interfaces,
+            dsigma,
+            profile: ProfileCache::default(),
+        }
     }
 
     /// Two layers split at `sigma`.
@@ -61,6 +80,11 @@ impl Levels {
         assert!(n >= 1, "at least one layer");
         let interior: Vec<f64> = (1..n).map(|k| k as f64 / n as f64).collect();
         Self::new(&interior)
+    }
+
+    /// The memoized profile constants, computed by `init` on first use.
+    pub(crate) fn profile_shape(&self, init: impl FnOnce() -> ProfileShape) -> &ProfileShape {
+        self.profile.0.get_or_init(init)
     }
 
     /// Number of layers `N`.

@@ -297,10 +297,14 @@ fn planck_tail(x: f64) -> f64 {
     }
     if x >= 1.0 {
         let terms = (2.0 + 40.0 / x) as usize;
+        // e^{−nx}, by repeated multiplication.
+        let step = fms_math::exp(-x);
+        let mut decay = 1.0;
         (1..=terms)
             .map(|n| {
                 let n = n as f64;
-                fms_math::exp(-n * x)
+                decay *= step;
+                decay
                     * (x * x * x / n
                         + 3.0 * x * x / (n * n)
                         + 6.0 * x / (n * n * n)
@@ -442,13 +446,70 @@ fn humidity_shape(sigma: f64) -> f64 {
     ((sigma - 0.02) / 0.98).max(0.0)
 }
 
+/// Constants of the in-layer profile for one set of levels, gas and
+/// exponent `β = RΓ/g`: `(σ/σ̄ₖ)^β` where the model always needs it. `σ̄ₖ` is
+/// the level whose Exner function is layer `k`'s mean, as a fraction of the
+/// surface pressure (the same for every column).
+#[derive(Clone, Debug)]
+pub(crate) struct ProfileShape {
+    kappa: f64,
+    beta: f64,
+    mean_sigma: Vec<f64>,
+    /// At each layer's Gauss nodes.
+    nodes: Vec<[f64; 4]>,
+    /// At each interface, for the layer above it and the one below.
+    interfaces: Vec<[f64; 2]>,
+}
+
+impl ProfileShape {
+    fn new(levels: &Levels, gas: Gas, beta: f64) -> Self {
+        let kappa = gas.kappa();
+        let mean_sigma: Vec<f64> = levels
+            .layer_exner(gas, REFERENCE_PRESSURE)
+            .into_iter()
+            .map(|e| fms_math::pow(e, 1.0 / kappa))
+            .collect();
+        let factor = |k: usize, s: f64| fms_math::pow(s / mean_sigma[k], beta);
+        let nodes = (0..levels.count())
+            .map(|k| {
+                let (a, b) = levels.bounds(k);
+                GAUSS.map(|(x, _)| factor(k, 0.5 * (a + b) + 0.5 * (b - a) * x))
+            })
+            .collect();
+        let interfaces = levels
+            .interior()
+            .iter()
+            .enumerate()
+            .map(|(j, &s)| [factor(j, s), factor(j + 1, s)])
+            .collect();
+        Self {
+            kappa,
+            beta,
+            mean_sigma,
+            nodes,
+            interfaces,
+        }
+    }
+
+    /// The levels' memoized constants if they are for this gas and `β`,
+    /// otherwise the same values computed afresh.
+    fn of(levels: &Levels, gas: Gas, beta: f64) -> std::borrow::Cow<'_, Self> {
+        let shape = levels.profile_shape(|| Self::new(levels, gas, beta));
+        if shape.kappa == gas.kappa() && shape.beta == beta {
+            std::borrow::Cow::Borrowed(shape)
+        } else {
+            std::borrow::Cow::Owned(Self::new(levels, gas, beta))
+        }
+    }
+}
+
 /// The temperature profile within the layers: each follows the lapse rate
 /// `Γ` through its mean temperature `Tₖ` at `pₖ` (the pressure whose Exner
 /// function is the layer mean): `T(p) = Tₖ (p/pₖ)^{RΓ/g}`.
 #[derive(Clone, Debug)]
 pub(crate) struct Profile<'l> {
-    temperature: Vec<f64>,
-    p_mean: Vec<f64>,
+    temperature: &'l [f64],
+    shape: std::borrow::Cow<'l, ProfileShape>,
     beta: f64,
     ps: f64,
     levels: &'l Levels,
@@ -461,12 +522,13 @@ impl<'l> Profile<'l> {
         levels: &'l Levels,
         ps: f64,
         gravity: f64,
-        t: &[f64],
+        t: &'l [f64],
     ) -> Self {
+        let beta = gas.gas_constant * params.lapse_rate / gravity;
         Self {
-            temperature: t.to_vec(),
-            p_mean: levels.mean_pressures(gas, ps),
-            beta: gas.gas_constant * params.lapse_rate / gravity,
+            temperature: t,
+            shape: ProfileShape::of(levels, gas, beta),
+            beta,
             ps,
             levels,
         }
@@ -478,13 +540,24 @@ impl<'l> Profile<'l> {
 
     /// Layer `k`'s profile at `s` (extended beyond the layer if need be).
     pub(crate) fn in_layer(&self, k: usize, s: f64) -> f64 {
-        self.temperature[k] * fms_math::pow(s * self.ps / self.p_mean[k], self.beta)
+        self.temperature[k] * fms_math::pow(s / self.shape.mean_sigma[k], self.beta)
+    }
+
+    /// Layer `k`'s profile at its Gauss node `g`.
+    fn at_node(&self, k: usize, g: usize) -> f64 {
+        self.temperature[k] * self.shape.nodes[k][g]
+    }
+
+    /// At interface `j`, the profile of the layer above it (`side` 0) or
+    /// below it (1).
+    fn at_interface(&self, j: usize, side: usize) -> f64 {
+        self.temperature[j + side] * self.shape.interfaces[j][side]
     }
 
     /// Temperature at interface `j` (below layer `j`): the layer below's
     /// profile there.
     fn interface(&self, j: usize) -> f64 {
-        self.in_layer(j + 1, self.levels.interior()[j])
+        self.at_interface(j, 1)
     }
 }
 
@@ -525,9 +598,9 @@ fn saturation_of(profile: &Profile) -> Vec<LayerSaturation> {
         .map(|k| {
             let (a, b) = profile.levels.bounds(k);
             let (mut mean, mut shaped) = (0.0, 0.0);
-            for (x, w) in GAUSS {
+            for (g, (x, w)) in GAUSS.into_iter().enumerate() {
                 let s = 0.5 * (a + b) + 0.5 * (b - a) * x;
-                let q = saturation_humidity(profile.in_layer(k, s), s * ps);
+                let q = saturation_humidity(profile.at_node(k, g), s * ps);
                 mean += 0.5 * w * q;
                 shaped += 0.5 * w * humidity_shape(s) * q;
             }
@@ -560,7 +633,7 @@ pub fn interface_humidity_ratios(
             std::array::from_fn(|side| {
                 let k = j + side;
                 let at = humidity_shape(sigma)
-                    * saturation_humidity(profile.in_layer(k, sigma), sigma * ps);
+                    * saturation_humidity(profile.at_interface(j, side), sigma * ps);
                 if sat[k].shaped > 0.0 {
                     at / sat[k].shaped
                 } else {
