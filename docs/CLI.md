@@ -88,8 +88,10 @@ Values outside the ranges are clamped with a warning (PLAN §4.1).
 ### Terrain
 
 Without a heightmap the world is a blank ocean, 4000 m deep everywhere.
-`--heightmap FILE` (accepted by every command) makes a global equirectangular
-heightmap the terrain:
+`--continent` (accepted by every command) makes the terrain one idealized
+rectangular continent with a mountain ridge near its west coast.
+`--heightmap FILE` (likewise) makes a global equirectangular heightmap the
+terrain:
 
 | Option | Meaning |
 |---|---|
@@ -246,12 +248,15 @@ assumes a thin bottom layer, see `--levels`) driven by sunlight, radiation and
 moisture (evaporation, convection, condensation, rain and snow, clouds)
 instead of an idealized forcing (PLAN §4.2), on the world's planet: its
 orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
-`--surface-pressure`). Until land and ocean arrive (M2 steps 10–11) the
-surface is one 10 m slab of water everywhere, an ice-free aquaplanet, which
-runs warmer than Earth ([OBSERVATIONS.md](OBSERVATIONS.md) O-23; see also
-O-22, O-24, O-25). The run starts at rest from a single-column
-radiative–convective equilibrium with its humidity. It takes a few model
-years to settle and averages the final year.
+`--surface-pressure`, the sea-level value). The atmosphere flows over the
+world's terrain (`--continent`, `--heightmap`), lightly smoothed
+([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Until land and ocean arrive (M2
+steps 10–11) the surface is one 10 m slab of water everywhere, even on
+mountains, an ice-free aquaplanet, which runs warmer than Earth (O-23; see
+also O-22, O-24, O-25). The run starts at rest from a single-column
+radiative–convective equilibrium with its humidity, in hydrostatic balance
+with the terrain. It takes a few model years to settle and averages the
+final year.
 
 | Option | Default | Meaning |
 |---|---|---|

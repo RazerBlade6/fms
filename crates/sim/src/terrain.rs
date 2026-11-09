@@ -8,8 +8,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use fms_fields::{ColorScale, FieldError, FieldId, FieldRegistry, FieldSpec, Location};
-use fms_worldgen::subgrid::{slope, surface_height};
-use fms_worldgen::{HeightmapError, LoadOptions, TerrainStats};
+use fms_worldgen::subgrid::{slope, smooth_height, surface_height};
+use fms_worldgen::{Continent, HeightmapError, LoadOptions, TerrainStats};
 
 use crate::World;
 
@@ -21,6 +21,12 @@ pub const BLANK_OCEAN_ELEVATION: f64 = -4000.0;
 /// files are box-averaged down to this while loading; ~16 pixels per cell is
 /// plenty for a good cell mean.
 const PIXELS_PER_CELL_SPACING: f64 = 4.0;
+
+/// Smoothing passes for the terrain the atmosphere sees. On Earth at 10k
+/// cells, ten bring the persistent σ-coordinate wind error from 5.7 to
+/// 0.87 m/s, near the 0.58 of forty, for 9% of the highest cell's height
+/// ([`smooth_height`]; `docs/OBSERVATIONS.md` O-30).
+const SURFACE_SMOOTHING_PASSES: usize = 10;
 
 /// Handles to the terrain fields.
 #[derive(Clone, Copy, Debug)]
@@ -165,6 +171,28 @@ impl World {
             read_seconds,
             resample_seconds: t.elapsed().as_secs_f64(),
         })
+    }
+
+    /// Make the terrain the default idealized [`Continent`].
+    pub fn set_idealized_continent(&mut self) {
+        let elevation = Continent::default().elevation(self.terrain.mesh.cell_centers());
+        self.set_elevation(elevation);
+    }
+
+    /// Surface geopotential of each climate cell (m² s⁻²): gravity times the
+    /// mean surface height, smoothed so the σ-coordinate dynamics can carry
+    /// it. Exactly zero on a world with no land.
+    pub fn surface_geopotential(&self) -> Vec<f64> {
+        let gravity = self.planet.params().gravity;
+        smooth_height(
+            &self.fields.read(self.core.terrain.surface_height),
+            &self.climate.mesh,
+            &self.climate.geometry,
+            SURFACE_SMOOTHING_PASSES,
+        )
+        .iter()
+        .map(|z| gravity * z)
+        .collect()
     }
 
     /// Recompute slope and the climate grid's terrain statistics from the

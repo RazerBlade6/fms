@@ -175,28 +175,47 @@ Added after the M1 review: tooling the GCM work depends on.
       imbalance +14 W/m² (APE ~13), albedo 0.31, rain 3.4 mm/day. Unmet:
       the subtropics rain 2.5–2.9 mm/day, set by the circulation rather
       than the boundary layer (O-22, for step 15).
-    - [ ] 10.2. **Land surface**:
-      - terrain into the climate run: surface geopotential, land fraction
-        and sub-grid height spread per cell (check spurious σ-coordinate
-        winds over steep terrain);
-      - land and ocean tiles per cell, each with its own surface
-        temperature and fluxes, weighted by land fraction (the ocean tile
-        stays the 10 m slab until step 11);
-      - land energy balance: a skin temperature over a thin soil heat
-        store, solved implicitly;
-      - Manabe bucket soil moisture with runoff;
-      - snow mass, melt and snow albedo;
-      - orographic rain and sub-grid orographic drag from the height
-        spread;
-      - single-column test cases for the boundary layer and convection
-        (BOMEX trade cumulus, DYCOMS stratocumulus): the column physics as
-        a per-column function forced by the cases' prescribed large-scale
-        tendencies, checked against their observations and large-eddy
-        simulations in seconds per run.
-
-      Developed on an idealized continent, then run on the Earth
-      heightmap. Tests: energy and water budgets close (soil water and
-      snow included); land swings more than ocean daily and seasonally.
+    - [ ] 10.2. **Land surface**, developed on an idealized continent, then
+      run on the Earth heightmap:
+      - [x] 10.2.1. **Terrain in the climate run**: surface geopotential
+        from the world's terrain; a resting start in hydrostatic balance
+        with it (the planet's surface pressure is the sea-level value); an
+        idealized continent (`--continent`). Test: a stratified atmosphere
+        at rest over the continent stays nearly at rest, measuring the
+        spurious σ-coordinate winds; smooth the terrain if they demand it.
+        Done, with ten conservative diffusion passes over the terrain the
+        atmosphere sees: the persistent wind error on Earth at 10k cells
+        falls from 5.7 to 0.87 m/s, 0.48 over the continent, 0.01 flat
+        (O-30). 1.2 years of full physics run stably on the continent and
+        on Earth's terrain, energy closing to under 0.01 W/m². The surface
+        is still the slab until the next step.
+      - [ ] 10.2.2. **Land and ocean tiles**: land fraction into the
+        physics; each cell has a land and an ocean tile with its own surface
+        temperature, albedo, roughness, radiation and fluxes, weighted by
+        land fraction (land starts as a slab; the ocean tile stays the 10 m
+        slab until step 11). Tests: no land reproduces the aquaplanet bit
+        for bit; energy and water budgets close with tiles.
+      - [ ] 10.2.3. **Land energy balance**: a skin temperature over a thin
+        soil heat store, solved implicitly. Tests: the implicit solve
+        against an analytic case; land swings more than ocean daily and
+        seasonally.
+      - [ ] 10.2.4. **Soil water**: Manabe bucket limiting evaporation, with
+        runoff. Test: the water budget closes with soil water and runoff.
+      - [ ] 10.2.5. **Snow**: snow mass, melt and snow albedo. Test: energy
+        and water budgets close through melting; snow comes and goes with
+        the seasons.
+      - [ ] 10.2.6. **Sub-grid orography**: orographic rain and drag from
+        the height spread. Test: more rain on the windward side of the
+        ridge than the lee; the drag slows the flow over rough terrain and
+        its energy returns as heat.
+      - [ ] 10.2.7. **Single-column cases** for the boundary layer and
+        convection (BOMEX trade cumulus, DYCOMS stratocumulus): the column
+        physics as a per-column function forced by the cases' prescribed
+        large-scale tendencies, checked against their observations and
+        large-eddy simulations in seconds per run.
+      - [ ] 10.2.8. **Earth run and close-out**: the full model on the
+        Earth heightmap, with terrain land, ocean, soil water and snow
+        together; energy and water budgets close over a year.
 - [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
     Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
     over a 150 m deep layer per ocean cell, horizontal diffusion in both,

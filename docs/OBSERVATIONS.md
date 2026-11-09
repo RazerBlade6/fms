@@ -39,6 +39,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-27 | [Shortwave water absorption depends on the layering](#o-27-shortwave-water-absorption-depends-on-the-layering) | Radiation | Resolved: M2.10.1 |
 | O-28 | [More than two layers make the vertical modes non-normal](#o-28-more-than-two-layers-make-the-vertical-modes-non-normal) | Numerics | Accepted |
 | O-29 | [The layered core is ~12% slower than the two-layer one](#o-29-the-layered-core-is-12-slower-than-the-two-layer-one) | Performance | Scheduled: M2 step 16 |
+| O-30 | [Terrain is smoothed, and spreads over coastal ocean](#o-30-terrain-is-smoothed-and-spreads-over-coastal-ocean) | Terrain | Watching |
 
 ---
 
@@ -662,3 +663,37 @@ performance budget's margin at this stage.
 **Plan:** M2 step 16 (performance pass): profile first; then stack arrays
 of `MAX_LAYERS` in the per-column physics, and reuse buffers.
 
+### O-30: Terrain is smoothed, and spreads over coastal ocean
+
+**Seen (M2.10.2.1):** a stratified atmosphere at rest over Earth's unsmoothed
+terrain at 10k cells holds a persistent wind error of 5.7 m/s at the steepest
+cells, measured by damping the winds with a one-day timescale for 15 days. It
+is 15.6 m/s if released and left undamped. So the atmosphere sees the surface
+height after ten conservative diffusion passes (`smooth_height`), which give:
+
+| Passes | Highest cell | Persistent error |
+|---|---|---|
+| 0 | 5300 m | 5.70 m/s |
+| 5 | 4982 m | 1.27 m/s |
+| 10 | 4842 m | 0.87 m/s |
+| 20 | 4468 m | 0.66 m/s |
+| 40 | 3786 m | 0.58 m/s |
+
+Two side effects:
+
+- Terrain spreads onto all-ocean cells next to steep coasts: of 6802 at 10k
+  cells, 236 end up above 100 m and 8 above 500 m (Greenland and Antarctic
+  margins).
+- The resting start isn't discretely balanced, because the layers sample a
+  continuous profile. It radiates gravity waves of ~5 m/s in the first day,
+  independent of how steep the terrain is.
+
+**Why it's acceptable for now:** the remaining error is well below the winds
+that matter, and it does not grow with resolution (0.83 m/s at 20k cells with
+20 passes). The start's waves disperse and are damped in spin-up. Mountains
+lose some height at the grid scale, as in any GCM; sub-grid effects are step
+10.2.6's job.
+
+**Revisit when:** the ocean tile arrives (M2 step 10.2.2). An ocean surface
+at height is colder and at lower pressure than sea level, so check whether
+the lifted cells matter or the smoothing should hold the ocean at sea level.

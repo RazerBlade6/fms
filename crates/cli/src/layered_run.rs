@@ -64,6 +64,7 @@ pub fn build_model<'w>(
     args: &DynamicsArgs,
     max_wind: f64,
     levels: &[f64],
+    surface_geopotential: Vec<f64>,
 ) -> Result<Setup<'w>, String> {
     let params = *world.planet.params();
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
@@ -84,7 +85,7 @@ pub fn build_model<'w>(
         Gas::EARTH_AIR,
         Levels::new(interior),
         mesh.vertices().iter().map(|p| 2.0 * omega * p.z).collect(),
-        vec![0.0; mesh.n_cells()],
+        surface_geopotential,
     );
     let max_wind = args.max_wind.unwrap_or(max_wind);
     if max_wind <= 0.0 {

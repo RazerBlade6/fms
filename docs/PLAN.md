@@ -125,7 +125,9 @@ over time. The app is built so it can grow into a civilisation simulator later.
   which conserves global totals exactly. Sub-grid terrain statistics (land
   fraction, mean and standard deviation of surface height, mean slope) are kept
   so the climate grid still feels mountains it can't resolve. Surface height is
-  the land surface, or sea level over ocean.
+  the land surface, or sea level over ocean. The atmosphere sees that height
+  after ten conservative diffusion passes, which the σ-coordinate pressure
+  gradient needs ([OBSERVATIONS.md](OBSERVATIONS.md) O-30).
 - **Coarse → fine**: barycentric interpolation on the coarse Delaunay triangle,
   then corrected for altitude using the lapse rate for display and for hydrology.
 - Cells are stored as struct-of-arrays, with neighbours in compressed sparse-row

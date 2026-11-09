@@ -8,7 +8,9 @@
 use std::fmt::Write as _;
 
 use clap::Args;
-use fms_atmos::column_physics::{CLIMATE_LEVELS, LATENT_HEAT, initial_state};
+use fms_atmos::column_physics::{
+    CLIMATE_LEVELS, LATENT_HEAT, initial_state, initial_surface_temperature,
+};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_geo::LatitudeBands;
@@ -159,7 +161,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
 
     // Start from the single column's equilibrium, at rest, with its
     // humidity.
-    let setup = build_model(&world, &args.dynamics, MAX_WIND, &CLIMATE_LEVELS)?;
+    let setup = build_model(
+        &world,
+        &args.dynamics,
+        MAX_WIND,
+        &CLIMATE_LEVELS,
+        world.surface_geopotential(),
+    )?;
     let model = setup
         .model
         .with_humidity_profile(params.radiation)
@@ -174,7 +182,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         params,
         0.0,
         &state,
-        vec![surface_temperature; nc],
+        initial_surface_temperature(&model, &params, surface_temperature),
     );
     // Where each wanted field sits in the physics' list.
     let fields_now = physics.cell_fields();

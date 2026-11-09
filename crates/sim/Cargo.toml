@@ -21,6 +21,7 @@ glam.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
+fms-math.workspace = true
 png.workspace = true
 
 [lints]

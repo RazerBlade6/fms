@@ -35,6 +35,42 @@ pub fn slope(surface: &[f64], mesh: &SphereMesh, geometry: &MeshGeometry, radius
         .collect()
 }
 
+/// A few grid-scale diffusion passes over a climate-grid `height` (any
+/// units), conserving its area mean: the terrain the σ-coordinate dynamics
+/// can carry. Steep cell-to-cell steps leave a persistent error in the
+/// pressure gradient (see `docs/OBSERVATIONS.md` O-30). Each pass diffuses
+/// by a fixed fraction of the smallest cell's area, so the filter's width is
+/// a fixed number of cells at any resolution, and it is monotone: heights
+/// stay within their original range, and a flat surface stays exactly flat.
+pub fn smooth_height(
+    height: &[f64],
+    mesh: &SphereMesh,
+    geometry: &MeshGeometry,
+    passes: usize,
+) -> Vec<f64> {
+    const DIFFUSION: f64 = 0.08;
+    let smallest = geometry
+        .cell_areas
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let mut h = height.to_vec();
+    let mut net = vec![0.0; h.len()];
+    for _ in 0..passes {
+        net.fill(0.0);
+        for (e, edge) in mesh.edges().iter().enumerate() {
+            let [a, b] = edge.cells.map(|c| c as usize);
+            let flux = geometry.edge_lengths[e] / geometry.dual_edge_lengths[e] * (h[b] - h[a]);
+            net[a] += flux;
+            net[b] -= flux;
+        }
+        for ((h, n), area) in h.iter_mut().zip(&net).zip(&geometry.cell_areas) {
+            *h += DIFFUSION * smallest / area * n;
+        }
+    }
+    h
+}
+
 /// Sub-grid terrain statistics, one value per climate cell.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainStats {
@@ -74,5 +110,44 @@ impl TerrainStats {
             surface_height,
             mean_slope: restrict(slope),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fms_geo::LloydOptions;
+
+    fn grid() -> (SphereMesh, MeshGeometry) {
+        let (mesh, _) = SphereMesh::centroidal(8, LloydOptions::default());
+        let geometry = MeshGeometry::new(&mesh);
+        (mesh, geometry)
+    }
+
+    #[test]
+    fn smoothing_conserves_the_mean_and_stays_in_range() {
+        let (mesh, geometry) = grid();
+        let height: Vec<f64> = (0..mesh.n_cells())
+            .map(|i| if i % 7 == 0 { 3000.0 } else { 0.0 })
+            .collect();
+        let smooth = smooth_height(&height, &mesh, &geometry, 10);
+        let mean = |h: &[f64]| -> f64 {
+            h.iter()
+                .zip(&geometry.cell_areas)
+                .map(|(x, a)| x * a)
+                .sum::<f64>()
+        };
+        assert!((mean(&smooth) / mean(&height) - 1.0).abs() < 1e-13);
+        let peak = smooth.iter().copied().fold(f64::MIN, f64::max);
+        let lowest = smooth.iter().copied().fold(f64::MAX, f64::min);
+        assert!(peak < 3000.0, "peak {peak}");
+        assert!(lowest >= 0.0, "lowest {lowest}");
+    }
+
+    #[test]
+    fn a_flat_surface_stays_exactly_flat() {
+        let (mesh, geometry) = grid();
+        let flat = vec![0.0; mesh.n_cells()];
+        assert_eq!(smooth_height(&flat, &mesh, &geometry, 10), flat);
     }
 }

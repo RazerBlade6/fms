@@ -108,6 +108,9 @@ struct WorldArgs {
     /// Elevations (m) of black and white in a PNG heightmap, `MIN,MAX`.
     #[arg(long, value_parser = parse_range, allow_hyphen_values = true)]
     heightmap_range: Option<(f64, f64)>,
+    /// Use an idealized continent with a mountain ridge as the terrain.
+    #[arg(long, conflicts_with = "heightmap")]
+    continent: bool,
     /// Atmospheric CO₂ (ppm, 0–100,000). Default: Earth's 420.
     #[arg(long)]
     co2: Option<f64>,
@@ -282,6 +285,9 @@ fn build_world(args: &WorldArgs) -> Result<World, String> {
     );
     for a in &world.adjustments {
         eprintln!("planet: {a}");
+    }
+    if args.continent {
+        world.set_idealized_continent();
     }
     if let Some(path) = &args.heightmap {
         let import = world

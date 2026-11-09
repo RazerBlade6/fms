@@ -1055,6 +1055,11 @@ impl Forcing for ColumnPhysics<'_> {
 /// The single column has two equal-mass layers; other layers take the mean
 /// temperature of its profile over their range (each layer's lapse rate
 /// through its mean, isothermal above the upper layer's mean level).
+///
+/// Over terrain (the model's surface geopotential) the same temperatures
+/// hold on pressure surfaces, so the column is hydrostatic and at rest: the
+/// planet's surface pressure is the sea-level value, and each cell's follows
+/// from its height.
 pub fn initial_state(
     model: &LayeredModel,
     planet: &Planet,
@@ -1102,24 +1107,134 @@ pub fn initial_state(
     let q = fixed_humidity(params, gas, levels, model.gravity(), ps, &theta0);
     let mesh = model.operators().mesh();
     let (nc, ne) = (mesh.n_cells(), mesh.n_edges());
+    let n = levels.count();
+    let reference = RestProfile::new(
+        gas,
+        ps,
+        theta0[n - 1] * gas.exner(ps),
+        &levels.mean_pressures(gas, ps),
+        &temperature,
+    );
+    // Surface pressure, θ and humidity of each column at rest.
+    let columns: Vec<(f64, Vec<f64>, Vec<f64>)> = model
+        .surface_geopotential()
+        .par_iter()
+        .with_min_len(MIN_CHUNK / 16)
+        .map(|&phi| {
+            if phi == 0.0 {
+                return (ps, theta0.clone(), q.clone());
+            }
+            let p = reference.pressure_at(phi);
+            let theta: Vec<f64> = levels
+                .mean_pressures(gas, p)
+                .iter()
+                .zip(levels.layer_exner(gas, p))
+                .map(|(&pk, e)| reference.temperature(pk) / e)
+                .collect();
+            let q = fixed_humidity(params, gas, levels, model.gravity(), p, &theta);
+            (p, theta, q)
+        })
+        .collect();
     let mut x = 0x2545_F491_4F6C_DD1Du64;
-    let theta: Vec<Vec<f64>> = theta0
-        .iter()
-        .map(|&th| {
-            (0..nc)
-                .map(|_| {
+    let theta: Vec<Vec<f64>> = (0..n)
+        .map(|k| {
+            columns
+                .iter()
+                .map(|c| {
                     x ^= x << 13;
                     x ^= x >> 7;
                     x ^= x << 17;
-                    th + 0.1 * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
+                    c.1[k] + 0.1 * ((x >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
                 })
                 .collect()
         })
         .collect();
-    let n = levels.count();
-    let state = LayeredState::new(vec![ps; nc], vec![vec![0.0; ne]; n], theta)
-        .with_humidity(q.iter().map(|&q| vec![q; nc]).collect());
+    let humidity = (0..n)
+        .map(|k| columns.iter().map(|c| c.2[k]).collect())
+        .collect();
+    let surface_pressure = columns.iter().map(|c| c.0).collect();
+    debug_assert_eq!(columns.len(), nc);
+    let state =
+        LayeredState::new(surface_pressure, vec![vec![0.0; ne]; n], theta).with_humidity(humidity);
     (state, eq.surface_temperature)
+}
+
+/// Starting surface temperature per cell (K): `sea_level` (K) at sea level,
+/// falling with height at the radiation's lapse rate.
+pub fn initial_surface_temperature(
+    model: &LayeredModel,
+    params: &PhysicsParams,
+    sea_level: f64,
+) -> Vec<f64> {
+    let lapse = params.radiation.lapse_rate / model.gravity();
+    model
+        .surface_geopotential()
+        .iter()
+        .map(|phi| sea_level - lapse * phi)
+        .collect()
+}
+
+/// A horizontally uniform temperature profile: linear in ln p between the
+/// surface at sea level and each layer's mean level, isothermal above the
+/// top one, and the hydrostatic pressure at a given height in it.
+struct RestProfile {
+    gas_constant: f64,
+    /// `(ln p, T)` from sea level upward.
+    nodes: Vec<(f64, f64)>,
+}
+
+impl RestProfile {
+    /// The profile with temperature `surface` (K) at sea-level pressure `ps`
+    /// (Pa), and `temperature[k]` at pressures `pressure[k]`, layers ordered
+    /// top down.
+    fn new(gas: Gas, ps: f64, surface: f64, pressure: &[f64], temperature: &[f64]) -> Self {
+        let mut nodes = vec![(fms_math::ln(ps), surface)];
+        nodes.extend(
+            pressure
+                .iter()
+                .zip(temperature)
+                .rev()
+                .map(|(&p, &t)| (fms_math::ln(p), t)),
+        );
+        Self {
+            gas_constant: gas.gas_constant,
+            nodes,
+        }
+    }
+
+    /// Temperature (K) at pressure `p` (Pa).
+    fn temperature(&self, p: f64) -> f64 {
+        let x = fms_math::ln(p);
+        for pair in self.nodes.windows(2) {
+            let ((xa, ta), (xb, tb)) = (pair[0], pair[1]);
+            if x >= xb {
+                return ta + (tb - ta) * (xa - x) / (xa - xb);
+            }
+        }
+        self.nodes[self.nodes.len() - 1].1
+    }
+
+    /// Pressure (Pa) at geopotential `phi` (m² s⁻², at or above sea level).
+    ///
+    /// Within a segment `T = T_a + s d` with `d = ln p_a − ln p`, so the
+    /// hypsometric equation `c = (Φ − Φ_a)/R = T_a d + s d²/2` has the
+    /// root `d = 2c / (T_a + √(T_a² + 2 s c))`, regular at `s = 0`.
+    fn pressure_at(&self, phi: f64) -> f64 {
+        let mut c = phi / self.gas_constant;
+        for pair in self.nodes.windows(2) {
+            let ((xa, ta), (xb, tb)) = (pair[0], pair[1]);
+            let span = xa - xb;
+            let thickness = 0.5 * (ta + tb) * span;
+            if c <= thickness {
+                let s = (tb - ta) / span;
+                let d = 2.0 * c / (ta + (ta * ta + 2.0 * s * c).sqrt());
+                return fms_math::exp(xa - d);
+            }
+            c -= thickness;
+        }
+        let (x, t) = self.nodes[self.nodes.len() - 1];
+        fms_math::exp(x - c / t)
+    }
 }
 
 /// Gauss–Legendre nodes on [−1, 1].
@@ -1350,5 +1465,56 @@ impl SingleColumn {
             surface_fluxes: self.surface_fluxes(),
             steps,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GAS: Gas = Gas::EARTH_AIR;
+
+    #[test]
+    fn an_isothermal_rest_profile_has_the_barometric_pressure() {
+        let t = 260.0;
+        let profile = RestProfile::new(GAS, 1.0e5, t, &[3.0e4, 7.0e4, 9.0e4], &[t; 3]);
+        for z in [100.0, 1500.0, 6000.0, 12_000.0] {
+            let phi = 9.81 * z;
+            let expected = 1.0e5 * fms_math::exp(-phi / (GAS.gas_constant * t));
+            let p = profile.pressure_at(phi);
+            assert!(
+                (p / expected - 1.0).abs() < 1e-12,
+                "z {z}: {p} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn pressure_at_inverts_the_hypsometric_integral() {
+        let (p, t) = ([3.0e4, 7.0e4, 9.0e4], [225.0, 265.0, 282.0]);
+        let profile = RestProfile::new(GAS, 1.0e5, 290.0, &p, &t);
+        // Layer thicknesses by the trapezoid in ln p, in segments of 1 Pa.
+        for phi in [500.0, 8_000.0, 30_000.0, 60_000.0] {
+            let target = profile.pressure_at(phi);
+            let mut integral = 0.0;
+            let mut a = 1.0e5;
+            while a > target {
+                let b = (a - 1.0_f64).max(target);
+                let mid = 0.5 * (profile.temperature(a) + profile.temperature(b));
+                integral += GAS.gas_constant * mid * fms_math::ln(a / b);
+                a = b;
+            }
+            assert!((integral / phi - 1.0).abs() < 1e-4, "{integral} vs {phi}");
+        }
+    }
+
+    #[test]
+    fn the_profile_passes_through_its_nodes() {
+        let (p, t) = ([3.0e4, 7.0e4, 9.0e4], [225.0, 265.0, 282.0]);
+        let profile = RestProfile::new(GAS, 1.0e5, 290.0, &p, &t);
+        for (p, t) in p.iter().zip(t) {
+            assert!((profile.temperature(*p) - t).abs() < 1e-9);
+        }
+        assert_eq!(profile.temperature(1.0e3), 225.0);
     }
 }
