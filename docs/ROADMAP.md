@@ -287,6 +287,11 @@ Added after the M1 review: tooling the GCM work depends on.
       error is larger than the 10 m slab's (−0.064 W/m² over 425 days at 640
       cells), a third of that at half the step, and the same with no
       transport.
+    - [ ] 11.1.5. **Early performance pass**: cut the `exp`/`pow` cost in moist
+      physics, flatten and merge the dynamics loops, run inside the rayon
+      pool. Target 1.5× or better at 2.5k cells. Dynamics changes keep the
+      golden hashes; the moist-physics change may move them once, with the
+      climate checked. Step 16 keeps the solver, scheduler and scaling work.
     - [ ] 11.2. **Two-band surface albedo** through radiation and the tiles.
       Test: equal band albedos reproduce today's results bit for bit.
     - [ ] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
