@@ -1,54 +1,85 @@
 # Design Plan
 
-This is the agreed design for the Fantasy Map Simulator: a desktop app for generating,
-editing and simulating fantasy planets. It covers terrain, water, climate and weather
-over time. The app is built so it can grow into a civilisation simulator later.
+This is the agreed design for `fms-climate`: a climate-centred simulator of
+theoretical planets. Given a planet and its terrain, it simulates the atmosphere,
+ocean, ice, land surface, rivers and lakes, and vegetation over time. It is one
+module of the `fms` family (§1.1).
+
+The direction changed on 2026-11-09, from a single fantasy-map app with an
+editor to this family of modules. Terrain editing, plate tectonics and
+civilisation now belong to other modules.
 
 ## 1. Goals
 
 - **Customizable planet**: radius, gravity, rotation speed, axial tilt, year length,
   orbital eccentricity, star luminosity, atmospheric pressure, CO₂ (greenhouse
   strength) and ocean fraction.
-- **Terrain editor**: sculpt elevation, carve rivers, create lakes and seas.
-- **Map modes**: climate (Köppen), biomes, heightmap, contours, wind, temperature,
-  precipitation, ocean currents, sea ice, plates. Any field in the field registry
-  can be shown as a map mode.
+- **Imported worlds**: read `.fmsmap` files ([FMSMAP.md](FMSMAP.md)), import global
+  heightmaps, and ship about a dozen preset worlds.
 - **Auto-generated climates**: climate zones are not assigned by hand. They come
-  out of the simulation and follow from the planet's physical setup.
-- **Time simulation**: pressing Play advances time. Speed 1 = 1 sim-day per second.
-  Speed 5 = the fastest the model can sustain (target is about 1 sim-year per second).
-  A "day" is the planet's own solar day (one day/night cycle), not an Earth day.
-- **Extensibility**: a future civilisation layer (soil fertility, aridity, agents)
-  plugs in without changing the core.
+  out of the simulation and follow from the planet's physical setup. Frozen or
+  otherwise uninhabitable worlds are valid results, not bugs.
+- **Evolving vegetation**: what a world starts with may fade or spread. A drawn
+  desert that the climate doesn't support disappears over time.
+- **A viewer, not an editor**: map modes for climate (Köppen), vegetation,
+  heightmap, contours, wind, temperature, precipitation, ocean currents and sea
+  ice, and any field in the field registry. Pressing Play shows a run live.
+- **Time simulation**: speed 1 = 1 sim-day per second. A "day" is the planet's own
+  solar day (one day/night cycle), not an Earth day. Long runs reach about 10,000
+  years, and at most about 100,000 (§4.7).
+- **Exports**: climate results go back into `.fmsmap` for other modules.
+
+### 1.1 The `fms` family
+
+Separate modules, exchanging `.fmsmap` files. Each uses only the layers it
+simulates and passes the rest through. Splitting them gives up the coupling
+between geology, climate and civilisation, but those run on very different
+timescales, so little is lost and each module can be tested on its own. Where
+coupling matters, files allow loops (geo → climate → geo, or civ → climate).
+
+| Module | Role | Interface |
+|---|---|---|
+| `fms-editor` | The heart of the family: make custom maps in any level of detail | GUI, edits |
+| `fms-climate` | This project: climate and hydrosphere | Viewer only |
+| `fms-geo` | Geological timescales: plate tectonics, erosion (design later) | Viewer only |
+| `fms-civ` | Civilisation simulation and editing (design later) | GUI, edits |
+
+Two typical paths:
+- Editor → geo (let plates build the physical features) → climate (let biomes
+  form) → civ.
+- Editor (a complete map, biomes included) → civ. Without real climate data, civ
+  uses a biome → typical climate table and warns that results may be off.
+
+All modules live in this Cargo workspace for now, because they share the grid,
+format and math code and the format will change often at first. They can split
+into their own repositories once it is stable.
 
 ## 2. Key decisions
 
 | Area | Decision | Rationale |
 |---|---|---|
-| Language | Rust | rayon gives safe parallelism over cells, Cargo is simple, and ECS crates exist for the civ layer |
+| Language | Rust | rayon gives safe parallelism over cells, and Cargo is simple |
 | Platform | Desktop, cross-platform (macOS first) | wgpu targets Metal, DX12 and Vulkan |
-| UI and rendering | `eframe`/`egui` panels + custom `wgpu` renderer | Full control; the sim stays independent of any engine and runs headless |
+| UI and rendering | `eframe`/`egui` panels + custom `wgpu` renderer, shared by the view-only modules | Full control; the sim stays independent of any engine and runs headless |
 | Geometry | Simulation runs on a sphere; flat maps are projections of it | Tilt, Coriolis and latitude need a real sphere; no polar distortion |
 | Sphere grid | Icosahedral geodesic grid (Voronoi hexagons + 12 pentagons) | Cells are nearly uniform with no pole singularity; standard for finite-volume models (ICON, MPAS) |
 | Climate fidelity | Simplified GCM ("GCM-lite"): actual fluid dynamics | Weather emerges from the physics instead of being scripted |
-| Atmosphere | Layered primitive-equation model: any number of σ layers; two until M2 step 10, then three with a thin boundary layer | Two layers are the smallest model that produces Hadley and Ferrel cells, jets and storms on its own; a third resolves the surface wind and the boundary layer's water |
+| Atmosphere | Layered primitive-equation model: any number of σ layers; two until M2 step 10, then four with a thin boundary layer | Two layers are the smallest model that produces Hadley and Ferrel cells, jets and storms on its own; a thin bottom layer resolves the surface wind and the boundary layer's water |
 | Ocean | Two-layer dynamical slab (Ekman/Sverdrup, eddy and diffusive heat transport) + wind-driven gyres + thermodynamic sea ice | Ocean heat transport (western boundary currents) matters for coastal climates |
 | Compute | CPU with rayon first, GPU (wgpu compute) later | Easier to debug the physics; data is laid out as struct-of-arrays so it can be ported |
 | Time stepping | Semi-implicit GCM; base step derived from the CFL limit (~20–30 min at default resolution); slower subsystems run every N steps | Stable and affordable; resolves the day/night cycle |
 | Day length | "1 day" = the planet's solar day (one day/night cycle) | Speed 1 always shows one day/night cycle per second |
-| High speeds | Speed tiers: full GCM at speeds 1–2, cheaper climate mode at 3–5 | Speed 5 cannot afford full dynamics |
+| Long runs | Live runs use the full GCM; long runs alternate a few GCM years with a century or more of vegetation | Vegetation changes over decades to centuries, and 100,000 GCM years would take months |
 | Resolution | Two levels: fine terrain (~1–2.5M cells) and coarse climate grid (~10–40k cells) | Detailed terrain and rivers while keeping the GCM affordable |
-| World gen | One-shot plate layout now; time-stepped plate sim later behind the same interface | Plausible mountain ranges in under 1 s; can be upgraded later |
-| Geology during play | Terrain is static; erosion is an editor tool | Climate can settle, and a future civ layer gets a stable world |
-| Hydrology | Mostly emergent, with manual overrides | Rain feeds runoff that is routed into rivers; depressions become lakes; painted rivers carve the terrain |
-| Live edits | Edits apply while the sim runs, then the climate catches up via spin-up | Sandbox feel |
-| Classification | Köppen–Geiger + Whittaker-style biomes | Familiar categories; both are derived fields |
+| Terrain | Fixed during a run | Mountains change by ~100 m in 100,000 years; tectonics and erosion belong to `fms-geo` |
+| Hydrology | Emergent | Rain feeds runoff that is routed into rivers; depressions become lakes |
+| Classification | Köppen–Geiger as a derived field; vegetation evolves | Familiar categories; a drawn desert has to be able to outlast or lose to the climate |
 | Planet range | Earth-like range + eccentricity; extremes clamped with warnings | Keeps the GCM numerically stable |
-| Edit views | Brushes in both globe and flat views, acting on sphere cells | No projection distortion when painting |
 | Determinism | Seeded RNG, fixed timestep, deterministic reductions; versioned binary saves | Reproducible worlds, exact save/load mid-run, reproducible bugs |
 | Portable math | Transcendental functions (`sin`, `exp`, `atan2`, …) come from the pure-Rust `libm` port via `fms-math`, never std; enforced by `clippy.toml` | std calls the platform C library, which differs between macOS, Windows and Linux; without this, saves would diverge across machines |
-| Undo | Command-based; each stroke stores a sparse diff of the cells it changed; terrain only | Cheap; the climate re-settles after undo instead of rewinding |
 | Validation | Earth benchmark + idealized test planets, run as regression tests | The only honest way to tune a simplified GCM |
+| Interchange | `.fmsmap` files with planet settings and named layers ([FMSMAP.md](FMSMAP.md)) | Modules stay decoupled and each can be tested alone |
+| Layer states | Locked, initial (default) or absent, per layer | A layer can be kept, evolved or generated by the module reading it |
 | First milestone | Headless GCM first | Prove the physics before building UI on top of it |
 
 ## 3. Architecture
@@ -58,11 +89,10 @@ over time. The app is built so it can grow into a civilisation simulator later.
 - A **field** is a named, typed array with one value per cell, edge or vertex of
   one grid level (`terrain` or `climate`). Edges carry normal velocities and
   fluxes; vertices carry vorticity. Examples: `terrain.elevation`,
-  `atmos.surface_temp`, `atmos.wind_u_lower`, `climate.koppen`, and later
-  `soil.fertility` and `civ.population`.
+  `atmos.surface_temp`, `atmos.wind_u_lower` and `climate.koppen`.
 - **Naming convention:** `namespace.field`, both parts `snake_case`. The namespace
   is the owning system or crate (`terrain`, `atmos`, `ocean`, `hydro`, `climate`,
-  `soil`, `civ`, …), so independently written crates can't collide. The registry
+  `land`, …), so independently written crates can't collide. The registry
   rejects names that don't follow it.
   Types: f32, f64, u8, u16, u32, i32. Metadata: units, valid range (also used to
   detect blow-ups), colour-scale hint, single/double buffering, whether the
@@ -77,8 +107,7 @@ over time. The app is built so it can grow into a civilisation simulator later.
 - A **system** declares:
   - which fields it reads and which it writes
   - its tick rate as a multiple of the base step `dt`, or as an event (daily,
-    monthly, on edit); see §4.6
-  - which speed tiers it runs in
+    monthly); see §4.6
 - The **scheduler** guarantees that every step gives the same result as running
   the due systems one after another **in the order they were added**. For
   parallelism, each due system is placed in the earliest stage after every
@@ -100,9 +129,6 @@ over time. The app is built so it can grow into a civilisation simulator later.
   92.76, 93.65, 89.84 and 89.00 days.
 - **Map modes** are renderers over fields: a colormap, contours, vectors or
   particles. A new field gets a basic map mode for free.
-- **Civ layer (future)**: an ECS (`hecs` or `bevy_ecs`) for agents such as
-  settlements and populations. Agents read and write fields through the same registry.
-  Cells themselves are **not** entities; with over a million cells, an ECS would hurt cache performance.
 
 ### 3.2 Grids
 
@@ -138,33 +164,36 @@ over time. The app is built so it can grow into a civilisation simulator later.
 
 ```
 crates/
-  math/       portable transcendental functions (libm), for cross-platform determinism
-  geo/        icosahedral grids, two-level mapping, projections, picking
-  fields/     field registry, SoA storage, serialization
-  sched/      system scheduler (tick rates, R/W sets, determinism)
-  planet/     planet parameters, orbit, insolation
-  worldgen/   Generator trait, plate generator, noise, heightmap import
-  atmos/      layered GCM (dynamics + physics parameterizations)
-  ocean/      slab mixed layer, wind-driven currents, sea ice
-  hydro/      runoff, flow routing, depression filling, lakes, basins
-  climate/    rolling monthly stats, Köppen, biomes, high-speed climate mode
-  sim/        orchestration, speed tiers, spin-up, save/load
-  cli/        headless runner, PNG/field dumps, Earth benchmark
-  app/        eframe/egui + wgpu renderer, brushes, map modes, inspector
+  math/         portable transcendental functions (libm), for cross-platform determinism
+  grid/         icosahedral grids, two-level mapping, projections, picking
+  fields/       field registry, SoA storage, serialization
+  sched/        system scheduler (tick rates, R/W sets, determinism)
+  planet/       planet parameters, orbit, insolation
+  worldgen/     heightmap import, idealized terrain
+  atmos/        layered GCM (dynamics + physics parameterizations)
+  ocean/        slab mixed layer, wind-driven currents, sea ice
+  hydro/        runoff, flow routing, depression filling, lakes, basins
+  climatology/  rolling monthly stats, Köppen, vegetation
+  sim/          orchestration, spin-up, long runs, save/load
+  cli/          the `fms-climate` headless runner, PNG/field dumps, Earth benchmark
+  viewer/       eframe/egui + wgpu renderer, map modes, inspector
 ```
 
-Package names have an `fms-` prefix (`fms-geo`, `fms-sim`, …) to avoid clashing
-with crates.io names. The binaries are `fms` (cli) and `fantasy-map` (app).
+A crate for reading and writing `.fmsmap` joins these in M3 step 0.
 
-Dependencies point one way. The `app` crate depends on the sim crates; the sim
-crates never depend on `app`. Everything except `app` runs headless.
+Package names have an `fms-` prefix (`fms-grid`, `fms-sim`, …) to avoid clashing
+with crates.io names. The binaries are `fms-climate` (`crates/cli`) and
+`fms-viewer` (`crates/viewer`).
+
+Dependencies point one way. The viewer depends on the sim crates; the sim
+crates never depend on it. Everything except the viewer runs headless.
 
 ## 4. Subsystems
 
 ### 4.1 Planet and insolation
 - Orbit is computed from eccentricity and year length (Kepler's equation). Insolation
   at the top of the atmosphere depends on latitude, the sun's declination and the
-  hour angle; the daily mean is used in the cheap climate mode.
+  hour angle; the daily mean is also available as a field.
 - Rotation rate sets the Coriolis parameter, which in turn controls how many
   circulation cells form and how wide they are.
 - Greenhouse strength is a parameterized function of CO₂ and pressure that sets
@@ -216,7 +245,7 @@ crates never depend on `app`. Everything except `app` runs headless.
   layers (`σ = p/p_s`, model top at p = 0) at any interfaces
   (`crates/atmos/src/levels.rs`). Two equal-mass layers (interface at σ = 0.5)
   are the classic Phillips two-level model, the climate's setting until M2
-  step 10 moves it to three with a thin bottom layer. Prognostic: surface
+  step 10 moved it to four (σ 0.25/0.5/0.85) with a thin bottom layer. Prognostic: surface
   pressure, the wind in each layer, and potential temperature per layer
   (stored mass-weighted, `p_s θ`, so total mass and total θ are conserved to
   round-off). Vertical differencing follows Arakawa & Suarez (1983): layer
@@ -293,15 +322,18 @@ et al. (2026), plus a wind-driven gyre:
   steepest-descent paths. Accumulated flow above a threshold becomes a river.
 - Depressions are filled (priority-flood). A filled basin becomes a lake when
   inflow exceeds evaporation. Basins with no outlet produce salt lakes or pans.
-- Painted rivers carve channels into the elevation field, so the result stays
-  physically consistent.
+- Imported river and lake layers follow their layer states (§4.9).
 
-### 4.5 Climate classification
-- Rolling multi-year means of monthly temperature and precipitation per cell.
-- Köppen–Geiger classification (Af, BWh, Cfb, …) and a Whittaker biome layer.
-  Biomes drive surface albedo and roughness, which feed back into the GCM.
+### 4.5 Climate classification and vegetation
+- Rolling multi-year means of monthly temperature and precipitation per cell, and
+  a Köppen–Geiger classification (Af, BWh, Cfb, …) derived from them.
+- **Vegetation is simulated, not derived.** Each land tile carries a vegetation
+  amount, starting from the imported layer (or generated if there is none), that
+  moves towards what the climate supports over decades to centuries. It feeds
+  back on albedo, roughness and soil water, so a bright desert that suppresses
+  its own rain can sustain itself where forest would also have been stable.
 
-### 4.6 Time stepping and speed tiers
+### 4.6 Time stepping and speeds
 
 **Definition of a day.** "Day" always means the planet's own **solar day** (one
 day/night cycle), not an Earth day. Speed 1 = one planetary day per second, at
@@ -328,76 +360,54 @@ Earth-sized planet; each system declares its rate in its scheduler registration)
 | Radiation | every ~3 h |
 | Ocean mixed layer, currents, sea ice | every 1–6 h |
 | Hydrology (runoff, flow routing, lakes) | daily |
-| Climate statistics | accumulated daily; Köppen/biomes reclassified monthly |
-| Future civ systems | daily / monthly / yearly |
+| Climate statistics | accumulated daily; Köppen reclassified monthly; vegetation updated on long-run steps |
 
 Rough throughput: speed 1 at `dt` = 30 min is 48 steps/s, which is trivial. Speed 2
 (~1 week/s) is about 340 steps/s, which a 2-layer model on 20k cells should sustain
-on multiple CPU cores. Faster speeds use climate mode.
+on multiple CPU cores.
 
-**Speed tiers.**
+Speed controls apply to the live GCM. Beyond them, long runs use §4.7.
 
-| Speed | Target | Mode |
-|---|---|---|
-| 1 | 1 day/s | Full GCM |
-| 2 | ~1 week/s | Full GCM |
-| 3 | ~1 month/s | Climate mode |
-| 4 | ~3 months/s | Climate mode |
-| 5 | ~1 year/s (best effort) | Climate mode |
+### 4.7 Spin-up and long runs
+- On import, or when a run starts, an accelerated spin-up runs a few sim-years in
+  the background (oceans set the timescale). The viewer shows progress.
+- **Long runs** alternate two steps: run the GCM for a few years, then step
+  vegetation forward by a century or more on that climate, and repeat. About 30
+  cycles of 3 model years would cover 10,000 years, in about 3 hours at 2.5k cells
+  before any performance work (estimated). Running the GCM alone for 100,000 years
+  would take months.
+- With a fixed orbit and no ice sheets a planet reaches its steady state in a few
+  thousand years, so about 10,000 years is the design target. Orbital drift and
+  ice sheets are possible later additions.
 
-**Climate mode**: during full-GCM runs and spin-up, the model learns a per-cell
-seasonal climatology (means and variances). At high speeds the sim samples weather
-from that climatology with random variation instead of solving the dynamics.
-Switching back to speeds 1–2 restarts the full GCM from a state consistent with
-the climatology.
-
-### 4.7 Spin-up and live edits
-- On world creation, load, or after edits, an accelerated spin-up runs a few
-  sim-years in the background (oceans set the timescale). The UI shows progress.
-- Edits apply right away. Fields that depend on terrain are marked dirty: the
-  grid mapping, hydrology and sub-grid terrain statistics are recomputed for the
-  affected area, then spin-up starts.
-
-### 4.8 World generation
-- `Generator` trait: given planet parameters and a seed, it produces fields
-  (`elevation`, `plate_id`, `crust_type`, `crust_age`, …).
-- **v1: one-shot plate layout**
-  - Split the sphere into Voronoi plates. Each plate gets a rotation pole, an
-    angular velocity, and a continental or oceanic type.
-  - Classify each boundary from the plates' relative motion:
-    - convergent: mountain ranges, subduction trenches, island arcs
-    - divergent: rifts and mid-ocean ridges
-    - transform
-  - Elevation comes from distance to boundaries plus layered noise. Continental
-    shelves are added, and sea level is set from the ocean fraction.
-  - Runs in under 1 s.
-- **Later: time-stepped plate sim** (in the style of Cortial et al. 2019,
-  *Procedural Tectonic Planets*). It implements the same trait and outputs the
-  same fields.
-- Also: a blank-ocean start, and heightmap import (equirectangular PNG/GeoTIFF).
+### 4.8 Importing worlds
+- Worlds arrive as `.fmsmap` files ([FMSMAP.md](FMSMAP.md)), as global heightmaps
+  (equirectangular PNG/GeoTIFF), or as presets, which are shipped `.fmsmap` files.
   The Earth benchmark uses heightmap import.
+- Also: a blank-ocean start, and an idealized continent for development.
+- Terrain is not edited here. Making worlds is `fms-editor`'s job and building
+  them with plates is `fms-geo`'s.
 
-### 4.9 Editor
-- Brushes in both the globe and flat views. Mouse positions are converted to cells
-  on the sphere, so projections never distort a stroke.
-- Tools: raise, lower, smooth, flatten, noise, erode (hydraulic and thermal),
-  set sea level, paint river, fill lake.
-- Undo/redo: each stroke is a command holding a sparse before/after diff of the
-  cells it changed.
+### 4.9 Layer states
+Each imported layer the climate could also simulate is locked (kept as is),
+initial (the default: started from, then free to evolve) or absent (generated).
+See [FMSMAP.md](FMSMAP.md).
 
-### 4.10 Visualization
+### 4.10 Viewer
+- View only. The rendering is shared with `fms-geo`'s viewer.
 - Globe (orbit camera) and flat projections (equirectangular first, more later).
 - Map modes: heightmap, contours, temperature, precipitation, wind (animated
   particles), ocean currents, sea ice and snow, clouds and precipitation overlay,
-  Köppen, biomes, plates, plus any registry field.
-- HUD showing date, season and speed; Play/Pause; speeds 1–5.
+  Köppen, vegetation, plus any registry field.
+- HUD showing date, season and speed; Play/Pause; live speeds and long runs.
 - Cell inspector: click a cell to see its current values and annual climate graphs
   (temperature and precipitation by month).
 
 ### 4.11 Persistence
-- Versioned binary save format holding planet parameters, all persistent fields,
-  sim clock, RNG state and the full undo stack. Fields are tagged by name and
-  version so older saves can be migrated.
+- **Exchange**: results other modules use go into `.fmsmap` ([FMSMAP.md](FMSMAP.md)).
+- **Resume saves**: a climate-only versioned binary format holding planet
+  parameters, all persistent fields, sim clock and RNG state. Fields are tagged by
+  name and version so older saves can be migrated.
 - Determinism contract: same save + same build = bit-identical sim, on any
   thread count and on any of macOS, Windows and Linux. Parallel reductions use
   a fixed order, and transcendental math goes through `fms-math` (`libm`).
@@ -418,6 +428,8 @@ the climatology.
   - the Sahara and Atacama are deserts and the Amazon and Congo are rainforests
   - monsoons appear
   - Köppen agreement with observed maps exceeds a target threshold
+- **Vegetation**: on a run long enough to settle, a drawn desert the climate
+  doesn't support fades, and one it does persists.
 - **Determinism tests**: running twice from the same save must give
   bit-identical results.
 - These tests run before each push as regression checks.
@@ -501,27 +513,18 @@ Names only, as a reading list. Grouped by subsystem.
 - Freezing point of seawater (as a function of salinity)
 - Semtner zero-layer sea-ice model, and Stefan's law of ice growth
 
-### 6.8 Hydrology and erosion
+### 6.8 Hydrology
 - Water balance (P − E), runoff
 - Steepest-descent flow direction (D8 analogue on a hex mesh) and flow accumulation
 - Priority-flood depression filling (Barnes et al. 2014)
 - Lake water balance (inflow vs. evaporation), which decides endorheic or salt lakes
-- Stream power law (river incision, for the erosion tool)
-- Particle/droplet hydraulic erosion; thermal erosion using the angle of repose (talus)
 
 ### 6.9 Climate statistics and classification
 - Welford's online algorithm (running mean and variance)
 - Köppen–Geiger criteria (Peel et al. 2007 version)
-- Whittaker biome diagram
 - Potential evapotranspiration (Thornthwaite or Priestley–Taylor), for aridity
-- Climate-mode weather generator: AR(1) autoregressive process plus a Markov
-  chain for wet/dry days (Richardson-type stochastic weather generator)
 
-### 6.10 World generation and geometry
-- Spherical Voronoi diagram (plates)
-- Rigid rotation of plates about an Euler pole (v = ω × r)
-- Airy isostasy (continental vs. oceanic elevation)
-- Fractal noise: simplex noise, fractional Brownian motion, domain warping
+### 6.10 Geometry
 - Rodrigues' rotation formula; spherical linear interpolation (slerp);
   barycentric interpolation
 - Map projections: equirectangular, later Mollweide and orthographic
@@ -546,7 +549,8 @@ Milestones and their steps are tracked in [ROADMAP.md](ROADMAP.md).
 | Risk | Mitigation |
 |---|---|
 | GCM numerical instability | Conservative CFL margin, diffusion/filtering, clamped planet parameters, idealized tests |
-| High-speed tier looks unconvincing | Learn the climatology from enough GCM years; validate the climate mode's statistics against full-GCM runs |
+| Long runs drift from the live GCM | Validate vegetation outcomes against runs with the GCM stepped throughout, over shorter spans |
+| The `.fmsmap` format changes often at first | Versioned files and layers; modules stay in one workspace until it is stable |
 | Performance at fine resolution | Space-filling-curve cell ordering, SoA, rayon, profiling; GPU port planned |
 | Determinism vs. parallelism | Fixed-order reductions; avoid float atomics; test in CI |
 | No visible app until milestone 5 | The CLI's PNG dumps and animated GIFs give visual feedback from milestone 1 |

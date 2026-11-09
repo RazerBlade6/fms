@@ -9,17 +9,17 @@ The toolchain is pinned in `rust-toolchain.toml` (Rust 1.99.1 with rustfmt and
 clippy); `rustup` installs it automatically on first build.
 
 ```sh
-cargo test --workspace                                 # all tests (~95 s once built; the Held–Suarez, Williamson and two-layer runs are most of it)
+cargo test --workspace                                 # all tests (~4 minutes once built; the climate and Held–Suarez runs are most of it)
 cargo test -p fms-atmos --release -- --ignored         # the slow tests (multi-year climate runs, minutes)
 cargo clippy --workspace --all-targets -- -D warnings  # lints, as CI runs them
 cargo fmt --all                                        # format
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # API docs, as CI builds them
-cargo run --release -p fms-cli -- --help               # the headless runner
+cargo run --release -p fms-climate -- --help               # the headless runner
 ```
 
 Use `--release` for anything that builds full-size grids. Debug builds use
 `opt-level = 1` so tests stay reasonably fast, but grid construction is still
-~10× slower than release. The numerical crates `fms-geo` and `fms-atmos` build
+~10× slower than release. The numerical crates `fms-grid` and `fms-atmos` build
 at `opt-level = 3` even in debug, because their tests run multi-day simulations
 (debug info is kept; drop the override in `Cargo.toml` if you need to step
 through optimized-out code).
@@ -31,8 +31,9 @@ through optimized-out code).
 | `crates/` | The Cargo workspace. Each crate is described in [PLAN.md](PLAN.md) §3.3 |
 | `docs/PLAN.md` | Design: architecture, decisions, subsystems, equations |
 | `docs/ROADMAP.md` | Milestones and steps, ticked as they're done |
+| `docs/FMSMAP.md` | The `.fmsmap` file every `fms` module exchanges |
 | `docs/OBSERVATIONS.md` | Known limitations and ideas we've chosen not to act on yet |
-| `docs/CLI.md` | The `fms` command-line runner |
+| `docs/CLI.md` | The `fms-climate` command-line runner |
 | `docs/BENCHMARKS.md` | How to run benchmarks; baseline numbers |
 | `output/` | Generated images and other artifacts for review (gitignored) |
 
@@ -102,7 +103,7 @@ results:
 - **Names.** Fields and systems are `namespace.name` in snake_case, with the
   owning crate or system as the namespace (`terrain.elevation`,
   `atmos.dynamics`). The registry and scheduler reject anything else.
-- **Units.** SI throughout (m, s, kg, K, Pa, W m⁻²). Geometry in `fms-geo` is on
+- **Units.** SI throughout (m, s, kg, K, Pa, W m⁻²). Geometry in `fms-grid` is on
   the unit sphere; scale lengths by the planet radius and areas by its square.
   Angles are in radians in code; degrees only in user-facing parameters, with a
   `_deg` suffix.
@@ -125,7 +126,7 @@ results:
   converge for a known reason, assert what *does* hold (e.g. RMS converges, and
   the maximum error stays bounded at the pentagons), document why, and record it
   in `OBSERVATIONS.md`.
-- **Look at the output.** Anything spatial gets rendered with `fms` and
+- **Look at the output.** Anything spatial gets rendered with `fms-climate` and
   inspected; several real bugs (the coastline colour, an off-by-one date stamp)
   were caught this way, not by tests.
 - **Tolerances need headroom.** Set bounds with margin over the measured value,
@@ -137,11 +138,11 @@ Measure before and after with the criterion suites (see
 [BENCHMARKS.md](BENCHMARKS.md)):
 
 ```sh
-cargo bench -p fms-geo --bench geo -- --save-baseline before
+cargo bench -p fms-grid --bench geo -- --save-baseline before
 # … change …
-cargo bench -p fms-geo --bench geo -- --baseline before
+cargo bench -p fms-grid --bench geo -- --baseline before
 ```
 
-For whole-simulation costs, `fms dump` and `fms animate` print a per-system
+For whole-simulation costs, `fms-climate dump` and `fms-climate animate` print a per-system
 timing breakdown after each run. Update the baseline table in `BENCHMARKS.md`
 when a change moves the numbers on purpose.

@@ -61,11 +61,11 @@ next to the 12 pentagons:
 This matches the literature (Peixoto 2016, *Accuracy analysis of mimetic finite
 volume operators on geodesic grids*). The divergence and Laplacian maxima sit in the
 hexagons right next to the pentagons. Three or more cells away the error is
-about 5× smaller (`cargo run --release -p fms-geo --example divergence_error`).
+about 5× smaller (`cargo run --release -p fms-grid --example divergence_error`).
 
 The first flow to show it is Williamson case 2 (M2.3): the l2 height error
 converges at second order, but l∞ stalls at ~5e-4 because of sharp error
-dipoles at exactly the 12 pentagons (`fms williamson --case 2`, then look at
+dipoles at exactly the 12 pentagons (`fms-climate williamson --case 2`, then look at
 `output/williamson2/sw.height_error.png`). They are ±1.5 m against a 3 km
 fluid depth after 5 days.
 
@@ -222,7 +222,7 @@ same reason as above.
 
 ### O-14: The undamped core collapses to the grid scale
 
-**Seen (M2.5):** in `fms baroclinic` the storms mature around day 7. Then
+**Seen (M2.5):** in `fms-climate baroclinic` the storms mature around day 7. Then
 fronts and vortices sharpen to single cells (lower-layer vorticity reaches
 7×10⁻⁴ s⁻¹, about 7f), winds pass 130 m/s, and the run blows up on day 8.
 RK4 at the explicit step does the same through day 7 (132 vs 134 m/s), so this
@@ -245,7 +245,7 @@ default 30 m/s-shear jet at 10k cells, vorticity sharpens to
 to ~10⁻⁵. With ∇⁴ hyperdiffusion (`crates/atmos/src/diffusion.rs`), the same
 storms keep |ζ| below 3×10⁻⁴ s⁻¹ and peak at 105 m/s, and the energy budget
 closes to within 1% of what diffusion removes. Blow-ups now stop the run at
-the first unhealthy step and write a diagnostic dump (`fms baroclinic`;
+the first unhealthy step and write a diagnostic dump (`fms-climate baroclinic`;
 `crates/atmos/src/safety.rs`). The default storm run lasts 30 days.
 
 ### O-15: Baroclinic growth is ~75% of local theory

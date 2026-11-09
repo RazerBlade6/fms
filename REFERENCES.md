@@ -12,7 +12,7 @@ confirmed, the entry says so.
   Numerical representation of geostrophic modes on arbitrarily structured
   C-grids. *J. Comput. Phys.* 228, 8321–8335.
   [doi:10.1016/j.jcp.2009.08.006](https://doi.org/10.1016/j.jcp.2009.08.006)
-  — TRiSK weights for the Coriolis term (`crates/geo`).
+  — TRiSK weights for the Coriolis term (`crates/grid`).
 - **Ringler, T. D., Thuburn, J., Klemp, J. B. & Skamarock, W. C. (2010).**
   A unified approach to energy conservation and potential vorticity dynamics
   for arbitrarily-structured C-grids. *J. Comput. Phys.* 229, 3065–3090.
@@ -176,7 +176,7 @@ confirmed, the entry says so.
 - **Cortial, Y., Peytavie, A., Galin, É. & Guérin, É. (2019).** Procedural
   tectonic planets. *Comput. Graph. Forum* 38(2), 1–11.
   [doi:10.1111/cgf.13614](https://doi.org/10.1111/cgf.13614)
-  — planned time-stepped plate tectonics.
+  — reading for `fms-geo`'s plate tectonics.
 - **Barnes, R., Lehman, C. & Mulla, D. (2014).** Priority-flood: An optimal
   depression-filling and watershed-labeling algorithm for digital elevation
   models. *Comput. Geosci.* 62, 117–127.

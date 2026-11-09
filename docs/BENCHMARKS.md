@@ -4,7 +4,7 @@ Criterion suites for the performance-critical building blocks. Run them locally:
 CI machines are too noisy for timing.
 
 ```sh
-cargo bench -p fms-geo --bench geo            # grids, geometry, transfers, point location
+cargo bench -p fms-grid --bench geo            # grids, geometry, transfers, point location
 cargo bench -p fms-sched --bench sched        # scheduler overhead
 cargo bench -p fms-planet --bench planet      # insolation, orbit
 ```
@@ -13,9 +13,9 @@ cargo bench -p fms-planet --bench planet      # insolation, orbit
 baseline first:
 
 ```sh
-cargo bench -p fms-geo --bench geo -- --save-baseline before
+cargo bench -p fms-grid --bench geo -- --save-baseline before
 # … make the change …
-cargo bench -p fms-geo --bench geo -- --baseline before
+cargo bench -p fms-grid --bench geo -- --baseline before
 ```
 
 HTML reports go to `target/criterion/`.

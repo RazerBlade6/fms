@@ -1,6 +1,6 @@
 # Roadmap
 
-Milestones and steps for the Fantasy Map Simulator. Design details live in
+Milestones and steps for `fms-climate`. Design details live in
 [PLAN.md](PLAN.md); step references like "M5 step 10" point here.
 
 Every step ends with an automated test or a visual check (a PNG/GIF from the CLI).
@@ -45,7 +45,7 @@ Added after the M1 review: tooling the GCM work depends on.
    speed plus arrows or streamlines, and edge/vertex fields via cell averages.
    Needed to debug every dynamics step in M2.
 - [x] 3. **Per-system timing**: wall-clock time for each system in the
-   `StepReport`; `fms` prints a timing breakdown per run.
+   `StepReport`; `fms-climate` prints a timing breakdown per run.
 - [x] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
    transfers, point location and scheduler overhead. Run locally (CI timing is
    too noisy) to catch performance regressions.
@@ -57,7 +57,7 @@ Added after the M1 review: tooling the GCM work depends on.
    convention.
 
 ## M2 — Headless GCM
-- [x] 0. **Point probe**: `fms probe --lat --lon -f FIELD [-f …] --days D` writes a
+- [x] 0. **Point probe**: `fms-climate probe --lat --lon -f FIELD [-f …] --days D` writes a
    time series at one location to `output/` as CSV plus a simple line chart. Needed
    to check diurnal and seasonal cycles and energy drift in the steps below.
 - [x] 1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine
@@ -88,7 +88,7 @@ Added after the M1 review: tooling the GCM work depends on.
 - [x] 7. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
    friction. Mid-latitude jets and baroclinic eddies should appear. Use ∇⁴, not
    the paper's ∇⁸ ([OBSERVATIONS.md](OBSERVATIONS.md) O-17). Done with the
-   forcing averaged over each layer's mass (`fms held-suarez`). 1200 days at
+   forcing averaged over each layer's mass (`fms-climate held-suarez`). 1200 days at
    10k cells: upper jets of 26 m/s at 49°, north and south within 0.5 m/s, and an
    energy budget that closes (Newtonian heating 0.38 W/m² balanced by friction
    and diffusion). Tests (k = 16, 450 days): jets, hemispheric agreement,
@@ -98,7 +98,7 @@ Added after the M1 review: tooling the GCM work depends on.
    Test: global energy balance closes. Done as semi-grey two-stream radiation
    (CO₂ band-wing model, window, k-distribution water), with water vapour at
    fixed relative humidity and a temporary 10 m slab aquaplanet with bulk
-   sensible and latent heat fluxes and convective adjustment (`fms climate`,
+   sensible and latent heat fluxes and convective adjustment (`fms-climate climate`,
    PLAN §4.2). Single column: Earth-like climate (287 K, OLR 247 W/m²),
    3.6 W/m² and 2.4 K per CO₂ doubling, sane across 0–100,000 ppm, 0.1–10 bar,
    sunlight and gravity. 3-D (5 years, 2.5k cells): global mean ~287 K,
@@ -130,7 +130,7 @@ Added after the M1 review: tooling the GCM work depends on.
     step 9 to round-off (Held–Suarez, baroclinic wave, energy and water
     budgets); with three to five layers, mass, Θ, water and energy are
     conserved and Held–Suarez and the moist aquaplanet run stably.
-    Done (`levels.rs`, `LayeredModel`, `fms … --levels`): with step 9's
+    Done (`levels.rs`, `LayeredModel`, `fms-climate … --levels`): with step 9's
     semi-implicit reference, two layers reproduce step 9 bit for bit; with
     three and five, energy is conserved exactly in space, mass, Θ and water
     to round-off, and Held–Suarez (200 days) and the moist aquaplanet (60
@@ -277,81 +277,81 @@ Added after the M1 review: tooling the GCM work depends on.
       preconditioner (multigrid or Chebyshev), looser tolerance
     - scheduler overhead (O-8)
 
-## M3 — Hydrology and climate
+## M3 — Hydrology, climate and vegetation
+- [ ] 0. **`.fmsmap` v0**: the container, planet settings, elevation, land and
+   optional vegetation ([FMSMAP.md](FMSMAP.md)); a heightmap-to-`.fmsmap` importer;
+   `fms-climate` runs from a file.
 - [ ] 1. **Downscaling**: interpolate climate-grid fields onto the fine grid, with a
    lapse-rate correction for elevation.
 - [ ] 2. **Rolling statistics**: per-cell monthly temperature and precipitation means
    and variances (Welford), averaged over multiple years.
 - [ ] 3. **Köppen–Geiger classification**, plus an agreement metric against the
    Peel et al. 2007 Earth map.
-- [ ] 4. **Biomes**: Whittaker classification. Biome sets surface albedo, roughness
-   and soil water capacity, which feed back into the GCM.
+- [ ] 4. **Evolving vegetation**: a vegetation amount per land tile, starting from
+   the imported layer and following its layer state, moving towards what the
+   climate supports. It feeds back on albedo, roughness and soil water capacity.
 - [ ] 5. **Flow routing**: steepest-descent directions, priority-flood depression
    filling, flow accumulation, river extraction above a threshold.
 - [ ] 6. **Lakes and basins**: lake water balance; endorheic basins and salt lakes;
    lakes become water surfaces in the GCM.
 - [ ] 7. **Earth benchmark, part 2**: hit the Köppen agreement threshold; major rivers
    and basins appear in plausible places.
+- [ ] 8. **Export**: climate results into `.fmsmap` (monthly climate, vegetation, ice,
+   rivers), passing through layers the climate doesn't understand.
 
-## M4 — Speed tiers, determinism and persistence
+## M4 — Determinism, persistence and long runs
 - [ ] 1. **Determinism audit**:
    - fixed-order reductions and pairwise summation
    - a separate seeded RNG stream for each system
    - test: bit-identical replay across different thread counts
-- [ ] 2. **Save format**: versioned binary format with field tags and migration hooks.
-   Round-trip tests; mid-run save/load continues bit-identically.
+- [ ] 2. **Resume saves**: a climate-only versioned binary format with field tags and
+   migration hooks. Round-trip tests; mid-run save/load continues bit-identically.
 - [ ] 3. **Climatology learning**: per-cell, per-month mean, variance and
    autocorrelation, collected during full-GCM runs.
-- [ ] 4. **Climate mode**: stochastic weather generator (AR(1) process plus wet/dry
-   Markov chain) driven by the learned climatology.
-- [ ] 5. **Tier switching**: hand off cleanly between the GCM and climate mode in both
-   directions, starting the GCM from a state consistent with the climatology.
-- [ ] 6. **Spin-up**: accelerated spin-up (asynchronous ocean coupling) on a background
+- [ ] 4. **Long runs**: alternate a few GCM years with a century or more of
+   vegetation, for runs of about 10,000 years (PLAN §4.7).
+- [ ] 5. **Spin-up**: accelerated spin-up (asynchronous ocean coupling) on a background
    thread, with progress reporting and cancellation.
-- [ ] 7. **Validation**: climate-mode statistics match full-GCM statistics within
-   tolerance.
+- [ ] 6. **Validation**: an unstable drawn desert fades and a stable one persists;
+   long-run results match runs with the GCM stepped throughout, over shorter spans.
 
-## M5 — GUI
+## M5 — Viewer
+View only; the viewer code is shared with `fms-geo`.
 - [ ] 1. **App shell**: eframe + wgpu. The sim runs on its own thread and sends
    double-buffered field snapshots to the UI over a channel.
 - [ ] 2. **Renderers**: globe (hex mesh, orbit camera) and flat equirectangular view.
 - [ ] 3. **Map mode framework**: colormaps and legends; every field automatically gets
    a map mode; climate-grid fields are shown downscaled.
 - [ ] 4. **Contours**: marching triangles on the mesh, with configurable intervals.
-- [ ] 5. **Time controls**: play/pause, speeds 1–5, date and season HUD, sim-rate
-   readout.
+- [ ] 5. **Time controls**: play/pause, live speeds, starting a long run, date and
+   season HUD, sim-rate readout.
 - [ ] 6. **Inspector**: click to pick a cell; show current values and annual
    temperature and precipitation graphs.
 - [ ] 7. **Live overlays**: wind particles, ocean current vectors, clouds and
    precipitation, snow and sea-ice extent.
-- [ ] 8. **Planet panel**: edit planet parameters, which re-derives `dt` and triggers
-   spin-up; shows warnings when values are clamped.
-- [ ] 9. **Save/load UI.**
+- [ ] 8. **Planet panel**: shows the planet's settings, read-only.
+- [ ] 9. **Opening worlds**: open `.fmsmap` files and heightmaps, and resume runs.
 - [ ] 10. **CD pipeline**: a GitHub Actions workflow triggered by pushes to `main`.
     It builds release binaries for macOS, Windows and Linux and publishes them as
     a GitHub Release. Releases are cut on every push to `main` from M5 onwards.
+- [ ] 11. **Presets**: about a dozen shipped worlds, as `.fmsmap` files.
 
-## M6 — Editor
-- [ ] 1. **Generator trait**: blank-ocean world; heightmap import UI.
-- [ ] 2. **Plate generator**:
-   - Voronoi plates, each with an Euler pole and a crust type
-   - boundary classification from relative motion
-   - elevation synthesis from boundaries plus fractal noise
-   - sea level set from the ocean fraction
-- [ ] 3. **Brush framework**:
-   - picking in both views
-   - falloff curves
-   - stroke → command holding a sparse diff
-   - undo/redo stack
-- [ ] 4. **Sculpt brushes**: raise, lower, smooth, flatten, noise.
-- [ ] 5. **Erosion tools**: hydraulic (droplet) and thermal (talus).
-- [ ] 6. **Water tools**: set sea level, paint river (carves a channel), fill lake.
-- [ ] 7. **Live-edit pipeline**: track dirty regions, recompute only the affected parts
-   (grid aggregation, sub-grid stats, hydrology), then start spin-up.
-
-## M7 — Later
+## Later
 - [ ] Port the hot loops to wgpu compute shaders
-- [ ] Time-stepped plate tectonics (Cortial et al. 2019 style), behind the `Generator` trait
-- [ ] Civ layer: ECS agents, soil fertility, aridity indices, resources from plate
-  and crust data
 - [ ] Tidal locking, moons, extreme obliquity
+- [ ] Orbital drift and ice sheets, for runs towards 100,000 years
+
+## Moved to other modules
+The earlier M6 and part of M7, kept here until those projects start
+(PLAN §1.1):
+- **`fms-editor`**: brush framework (picking in both views, falloff curves, undo
+  and redo as sparse diffs); sculpt brushes (raise, lower, smooth, flatten, noise);
+  water tools (set sea level, paint river, fill lake); drawing vegetation; a
+  blank-ocean generator and heightmap import.
+- **`fms-geo`**: a plate generator (Voronoi plates with Euler poles and crust types,
+  boundary classification, elevation synthesis, sea level from the ocean fraction);
+  time-stepped plate tectonics (Cortial et al. 2019 style); hydraulic and thermal
+  erosion.
+- **`fms-civ`**: ECS agents, soil fertility, aridity indices, resources from plate
+  and crust data, and the biome → typical climate table for maps with no climate
+  run.

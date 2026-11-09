@@ -1,28 +1,28 @@
-# Headless CLI (`fms`)
+# Headless CLI (`fms-climate`)
 
-`fms` builds a world, runs it with no GUI, and renders fields as
+`fms-climate` builds a world, runs it with no GUI, and renders fields as
 equirectangular PNGs and GIFs. Output goes to `output/` by default (gitignored).
 Use a release build: grid construction is ~10× slower in debug.
 
 ```sh
-cargo build --release -p fms-cli
-./target/release/fms --help
+cargo build --release -p fms-climate
+./target/release/fms-climate --help
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `fms fields` | List every field: grid, element, units, size, description |
-| `fms dump -f NAME [-f NAME …]` | Run, then write `output/NAME.png` for each field |
-| `fms dump --all` | Same, for every field |
-| `fms animate [-f NAME]` | Run and write `output/NAME.gif`; defaults to a year of `planet.daily_insolation` |
-| `fms patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
-| `fms probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
-| `fms williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
-| `fms baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
-| `fms held-suarez` | Run the Held–Suarez dynamical-core benchmark; write zonal-mean profiles (CSV and chart), a summary, maps and a GIF to `output/held_suarez/` |
-| `fms climate` | Run the model driven by radiation and moisture over slab ocean and land tiles on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
+| `fms-climate fields` | List every field: grid, element, units, size, description |
+| `fms-climate dump -f NAME [-f NAME …]` | Run, then write `output/NAME.png` for each field |
+| `fms-climate dump --all` | Same, for every field |
+| `fms-climate animate [-f NAME]` | Run and write `output/NAME.gif`; defaults to a year of `planet.daily_insolation` |
+| `fms-climate patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
+| `fms-climate probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
+| `fms-climate williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
+| `fms-climate baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
+| `fms-climate held-suarez` | Run the Held–Suarez dynamical-core benchmark; write zonal-mean profiles (CSV and chart), a summary, maps and a GIF to `output/held_suarez/` |
+| `fms-climate climate` | Run the model driven by radiation and moisture over slab ocean and land tiles on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
 
 ### Cell, edge and vertex fields
 
@@ -91,7 +91,7 @@ Without a heightmap the world is a blank ocean, 4000 m deep everywhere.
 `--continent` (accepted by every command) makes the terrain one idealized
 rectangular continent with a mountain ridge near its west coast.
 `--heightmap FILE` (likewise) makes a global equirectangular heightmap the
-terrain:
+terrain. Reading worlds from `.fmsmap` files arrives with M3 step 0:
 
 | Option | Meaning |
 |---|---|
@@ -103,7 +103,7 @@ surface, about 470 MB) to `data/`, which is gitignored:
 
 ```sh
 ./scripts/fetch-etopo.sh
-fms dump -f terrain.elevation --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif
+fms-climate dump -f terrain.elevation --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif
 ```
 
 GeoTIFFs must be in latitude/longitude. Both pixel-is-area and pixel-is-point
@@ -126,7 +126,7 @@ The importer sets `terrain.elevation`. These fields are derived from it:
 
 ### Shallow-water test cases
 
-`fms williamson` runs the single-layer shallow-water model (the core the GCM is
+`fms-climate williamson` runs the single-layer shallow-water model (the core the GCM is
 built from) on the climate grid, using the standard test cases of Williamson
 et al. (1992). It ignores the planet: the cases fix Earth's radius, rotation
 and gravity.
@@ -156,7 +156,7 @@ Use `--climate-frequency` for resolution, and a small `--terrain-frequency`
 
 ### Baroclinic storms
 
-`fms baroclinic` runs the two-layer dry dynamical core (semi-implicit, with
+`fms-climate baroclinic` runs the two-layer dry dynamical core (semi-implicit, with
 ∇⁴ hyperdiffusion) on the climate grid. It starts from a zonal jet in
 gradient and thermal-wind balance (faster aloft, colder poles), seeds zonal
 waves 4–8 at 45° N and S, and lets baroclinic instability grow them into
@@ -201,7 +201,7 @@ The GIF up to that point is written as usual.
 
 ### Held–Suarez benchmark
 
-`fms held-suarez` runs the standard test of dry dynamical cores (Held &
+`fms-climate held-suarez` runs the standard test of dry dynamical cores (Held &
 Suarez 1994) on the layered model (two layers by default). Temperature relaxes toward a zonally
 symmetric equilibrium (warm equator, cold poles, a 200 K stratosphere), and
 Rayleigh friction damps winds near the surface. Starting from rest, jets and
@@ -217,13 +217,13 @@ with two layers the lower gets friction at 0.3/day and the upper none.
 | `--movie-days D` | 30 | The GIF covers the last `D` days |
 | `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
 | `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
-| `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion, as for `fms baroclinic` |
-| `--levels S,…` | 0.5 (`fms climate`: 0.25,0.5,0.85) | Interior layer interfaces in σ, top down: `0.25,0.5,0.85` is four layers with a thin bottom one (the climate's boundary layer), `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
+| `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion, as for `fms-climate baroclinic` |
+| `--levels S,…` | 0.5 (`fms-climate climate`: 0.25,0.5,0.85) | Interior layer interfaces in σ, top down: `0.25,0.5,0.85` is four layers with a thin bottom one (the climate's boundary layer), `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
 
 With more than two layers, "upper" in the maps, tables and charts means the
 layer holding 250 hPa (the jets) and "lower" the lowest layer.
 
-The benchmark run is `fms held-suarez --terrain-frequency 64 --climate-frequency 32`
+The benchmark run is `fms-climate held-suarez --terrain-frequency 64 --climate-frequency 32`
 (10k cells, ~30 minutes). Total energy settles by about day 300 (the free
 atmosphere relaxes over 40 days), so the default 200-day spin-up, HS94's,
 leaves a small upward drift in the energy budget. Outputs in
@@ -234,15 +234,15 @@ leaves a small upward drift in the energy budget. Outputs in
   differ, and the energy budget after spin-up in W/m² (Newtonian heating,
   friction, diffusion and the time-stepping residual);
 - `diagnostics.csv`, the GIF of surface pressure over the last days, and maps
-  of the final state, as for `fms baroclinic`, including the blow-up dump.
+  of the final state, as for `fms-climate baroclinic`, including the blow-up dump.
 
 The `--max-wind`, `--diffusion-order`, `--e-folding`, `--inviscid` and
-`--levels` options also apply to `fms baroclinic` (two layers only; its
-design wind defaults to 120 m/s) and `fms climate`.
+`--levels` options also apply to `fms-climate baroclinic` (two layers only; its
+design wind defaults to 120 m/s) and `fms-climate climate`.
 
 ### Climate
 
-`fms climate` runs the layered model (four layers, the bottom one a
+`fms-climate climate` runs the layered model (four layers, the bottom one a
 boundary layer with surface drag, bulk fluxes and entrainment; its physics
 assumes a thin bottom layer, see `--levels`) driven by sunlight, radiation and
 moisture (evaporation, convection, condensation, rain and snow, clouds)
@@ -284,7 +284,7 @@ Outputs in `output/climate/`:
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,
   `rad.shortwave_cloud_effect`, `rad.longwave_cloud_effect`;
 - `diagnostics.csv`, the surface-pressure GIF, maps of the final state, and
-  the blow-up dump, as for `fms baroclinic`.
+  the blow-up dump, as for `fms-climate baroclinic`.
 
 A year takes about two minutes at 2.5k cells (`--climate-frequency 16`);
 cost grows with cells times steps, so the default 20k cells is far slower
@@ -292,7 +292,7 @@ cost grows with cells times steps, so the default 20k cells is far slower
 
 ### Point probes
 
-`fms probe` reads each field at the cell nearest the requested point, on that
+`fms-climate probe` reads each field at the cell nearest the requested point, on that
 field's own grid. It reads the cell's value without interpolating, so you see
 exactly what the model holds there. Non-cell fields are resampled to that cell
 the same way maps are, so a probe and a map always agree. Vector fields give
@@ -313,7 +313,7 @@ one row per sample: `step`, `time_s`, `day` (solar days since `t = 0`), `year`,
 round-trip form). A sample taken after step `s` holds the fields computed for
 time `s · dt`. The chart has one panel per column on a shared time axis
 (hours for runs of up to 3 days, otherwise days). Each panel title gives the
-grid cell that was read and where its centre is. `fms probe` also prints each
+grid cell that was read and where its centre is. `fms-climate probe` also prints each
 column's min, max and mean.
 
 Sampling every N steps always lands on the same time of day when N divides
@@ -324,17 +324,17 @@ or a daily-mean field to see the whole cycle.
 ## Examples
 
 ```sh
-fms dump --all --hours 12                                   # every field at noon on day 1
-fms dump -f planet.daily_insolation --days 92 --smooth      # June solstice
-fms animate                                                 # a year of daily-mean sunlight
-fms animate -f planet.toa_insolation --days 1 --frames 48   # one day of the terminator moving
-fms patterns --smooth                                       # rendering self-test
-fms dump -f terrain.elevation -f terrain.surface_height_stddev \
+fms-climate dump --all --hours 12                                   # every field at noon on day 1
+fms-climate dump -f planet.daily_insolation --days 92 --smooth      # June solstice
+fms-climate animate                                                 # a year of daily-mean sunlight
+fms-climate animate -f planet.toa_insolation --days 1 --frames 48   # one day of the terminator moving
+fms-climate patterns --smooth                                       # rendering self-test
+fms-climate dump -f terrain.elevation -f terrain.surface_height_stddev \
     --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif   # Earth's terrain on both grids
-fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles at the equator
-fms probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
-fms williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
-fms baroclinic --terrain-frequency 90                      # a storm life cycle on a jet, 30 days
-fms held-suarez --terrain-frequency 64 --climate-frequency 32  # the dynamical-core benchmark, 1200 days
-fms climate --terrain-frequency 32 --climate-frequency 16 --co2 840  # a doubled-CO₂ climate, 4 years
+fms-climate probe --lat 0 --lon 0 -f planet.toa_insolation --days 2 # two diurnal cycles at the equator
+fms-climate probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422 --every 48  # a year, daily
+fms-climate williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
+fms-climate baroclinic --terrain-frequency 90                      # a storm life cycle on a jet, 30 days
+fms-climate held-suarez --terrain-frequency 64 --climate-frequency 32  # the dynamical-core benchmark, 1200 days
+fms-climate climate --terrain-frequency 32 --climate-frequency 16 --co2 840  # a doubled-CO₂ climate, 4 years
 ```
