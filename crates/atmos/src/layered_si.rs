@@ -200,8 +200,8 @@ pub struct LayeredSemiImplicit<'a> {
     rhs: Vec<Vec<f64>>,
     div: Vec<Vec<f64>>,
     div_prev: Vec<Vec<f64>>,
-    grad: Vec<f64>,
-    cells: Vec<f64>,
+    grad: Vec<Vec<f64>>,
+    cells: Vec<Vec<f64>>,
     mass_flux: Vec<Vec<f64>>,
     zeros: Vec<f64>,
 }
@@ -318,8 +318,8 @@ impl<'a> LayeredSemiImplicit<'a> {
             rhs: cells(),
             div: cells(),
             div_prev: cells(),
-            grad: vec![0.0; ne],
-            cells: vec![0.0; nc],
+            grad: edges(),
+            cells: cells(),
             mass_flux: edges(),
             zeros: vec![0.0; nc],
         };
@@ -456,11 +456,11 @@ impl<'a> LayeredSemiImplicit<'a> {
 
     /// `M = J y` per layer.
     fn potentials(&self, y: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        self.lin.j.iter().map(|row| combine(row, y)).collect()
+        self.lin.j.par_iter().map(|row| combine(row, y)).collect()
     }
 
     fn to_modes(&self, m: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        self.modes.v_inv.iter().map(|row| combine(row, m)).collect()
+        self.modes.v_inv.par_iter().map(|row| combine(row, m)).collect()
     }
 
     /// Advance one step. Returns the solve report of each vertical mode
@@ -514,9 +514,16 @@ impl<'a> LayeredSemiImplicit<'a> {
         let d = &self.physics;
 
         // Divergences of uⁿ and uⁿ⁻¹.
-        for k in 0..n {
-            ops.divergence(&current.u[k], &mut self.div[k]);
-            ops.divergence(&self.previous.u[k], &mut self.div_prev[k]);
+        {
+            let (now, old) = (&current.u, &self.previous.u);
+            self.div
+                .par_iter_mut()
+                .zip(self.div_prev.par_iter_mut())
+                .enumerate()
+                .for_each(|(k, (d, d_prev))| {
+                    ops.divergence(&now[k], d);
+                    ops.divergence(&old[k], d_prev);
+                });
         }
         let (div, div_prev) = (&self.div, &self.div_prev);
 
@@ -524,7 +531,7 @@ impl<'a> LayeredSemiImplicit<'a> {
         let y_prev = self.y_of(&self.previous);
         let nc = current.ps.len();
         let mut big_y = vec![vec![0.0; nc]; n + 1];
-        for (r, out) in big_y.iter_mut().enumerate() {
+        big_y.par_iter_mut().enumerate().for_each(|(r, out)| {
             let th_bar = &th_bar;
             out.par_iter_mut()
                 .with_min_len(MIN_CHUNK)
@@ -543,36 +550,43 @@ impl<'a> LayeredSemiImplicit<'a> {
                     }
                     *o = y_prev[r][i] + 2.0 * dt * (t_y - b_now) + dt * b_old;
                 });
-        }
+        });
 
         // Uₖ = uₖⁿ⁻¹ + 2Δt (T_u + ∇Mₖ(yⁿ)) − Δt ∇Mₖ(yⁿ⁻¹).
         let y_now = self.y_of(&current);
         let (m_now, m_prev) = (self.potentials(&y_now), self.potentials(&y_prev));
-        for k in 0..n {
-            // ∇(2 Mₖ(yⁿ) − Mₖ(yⁿ⁻¹)) combines both linear terms in one gradient.
-            self.cells
+        let mut div_u = vec![vec![0.0; nc]; n];
+        {
+            let (m_now, m_prev, previous) = (&m_now, &m_prev, &self.previous);
+            self.big_u
                 .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
+                .zip(self.cells.par_iter_mut())
+                .zip(self.grad.par_iter_mut())
+                .zip(div_u.par_iter_mut())
                 .enumerate()
-                .for_each(|(i, c)| *c = 2.0 * m_now[k][i] - m_prev[k][i]);
-            ops.gradient(&self.cells, &mut self.grad);
-            let (prev_u, t_u, d_u, grad) = (&self.previous.u[k], &t.u[k], &d.u[k], &self.grad);
-            self.big_u[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(e, u)| {
-                    let diffusion = if diffuse { d_u[e] } else { 0.0 };
-                    *u = prev_u[e] + 2.0 * dt * (t_u[e] + diffusion) + dt * grad[e];
+                .for_each(|(k, (((big_u, cells), grad), div_u))| {
+                    // ∇(2 Mₖ(yⁿ) − Mₖ(yⁿ⁻¹)) combines both linear terms in one gradient.
+                    cells
+                        .par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .enumerate()
+                        .for_each(|(i, c)| *c = 2.0 * m_now[k][i] - m_prev[k][i]);
+                    ops.gradient(cells, grad);
+                    let (prev_u, t_u, d_u, grad) = (&previous.u[k], &t.u[k], &d.u[k], &*grad);
+                    big_u
+                        .par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .enumerate()
+                        .for_each(|(e, u)| {
+                            let diffusion = if diffuse { d_u[e] } else { 0.0 };
+                            *u = prev_u[e] + 2.0 * dt * (t_u[e] + diffusion) + dt * grad[e];
+                        });
+                    ops.divergence(big_u, div_u);
                 });
         }
 
         // rhs = J Y + Δt A ∇·U.
-        let mut div_u = vec![vec![0.0; nc]; n];
-        for (u, d) in self.big_u.iter().zip(&mut div_u) {
-            ops.divergence(u, d);
-        }
-        for (k, out) in self.rhs.iter_mut().enumerate() {
+        self.rhs.par_iter_mut().enumerate().for_each(|(k, out)| {
             let (big_y, div_u) = (&big_y, &div_u);
             out.par_iter_mut()
                 .with_min_len(MIN_CHUNK)
@@ -588,32 +602,47 @@ impl<'a> LayeredSemiImplicit<'a> {
                     }
                     *r = jy + dt * ad;
                 });
-        }
+        });
 
         // N scalar Helmholtz problems in the vertical modes.
         let rhs_modal = self.to_modes(&self.rhs);
-        let mut reports = Vec::with_capacity(n);
-        for mode in 0..n {
-            reports.push(self.helmholtz[mode].solve(&rhs_modal[mode], &mut self.modal[mode]));
-        }
-        for (k, out) in self.m.iter_mut().enumerate() {
-            *out = combine(&self.modes.v[k], &self.modal);
+        let reports: Vec<SolveReport> = self
+            .helmholtz
+            .par_iter_mut()
+            .zip(self.modal.par_iter_mut())
+            .zip(rhs_modal.par_iter())
+            .map(|((solver, x), b)| solver.solve(b, x))
+            .collect();
+        {
+            let (v, modal) = (&self.modes.v, &self.modal);
+            self.m
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(k, out)| *out = combine(&v[k], modal));
         }
 
         // uⁿ⁺¹ = U − Δt ∇Mⁿ⁺¹; yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹.
         let next = &mut self.next;
-        for k in 0..n {
-            ops.gradient(&self.m[k], &mut self.grad);
-            let (big_u, grad) = (&self.big_u[k], &self.grad);
-            next.u[k]
+        {
+            let (m, big_u) = (&self.m, &self.big_u);
+            next.u
                 .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
+                .zip(self.grad.par_iter_mut())
+                .zip(self.div.par_iter_mut())
                 .enumerate()
-                .for_each(|(e, u)| *u = big_u[e] - dt * grad[e]);
-            ops.divergence(&next.u[k], &mut self.div[k]);
+                .for_each(|(k, ((u, grad), div))| {
+                    ops.gradient(&m[k], grad);
+                    let (big_u, grad) = (&big_u[k], &*grad);
+                    u.par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .enumerate()
+                        .for_each(|(e, u)| *u = big_u[e] - dt * grad[e]);
+                    ops.divergence(u, div);
+                });
         }
         let div = &self.div;
         let y_new: Vec<Vec<f64>> = (0..=n)
+            .into_par_iter()
             .map(|r| {
                 let big_y = &big_y;
                 (0..nc)
@@ -643,22 +672,26 @@ impl<'a> LayeredSemiImplicit<'a> {
         // F̄ₖ = Fₖⁿ + p̄ δσₖ (uₖⁿ⁻¹ + uₖⁿ⁺¹ − 2uₖⁿ)/2.
         if let Some(transport) = &mut self.transport {
             let ds = self.model.dsigma();
-            ops.cell_to_edge(&current.ps, &mut self.grad);
-            for k in 0..n {
-                let (ps_e, now, old, new) =
-                    (&self.grad, &current.u[k], &self.previous.u[k], &next.u[k]);
-                self.mass_flux[k]
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(e, f)| {
-                        *f = ds[k]
-                            * (ps_e[e] * now[e] + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
-                    });
-            }
+            ops.cell_to_edge(&current.ps, &mut self.grad[0]);
             let mut flux_div = vec![vec![0.0; nc]; n];
-            for (f, d) in self.mass_flux.iter().zip(&mut flux_div) {
-                ops.divergence(f, d);
+            {
+                let (ps_e, previous, next) = (&self.grad[0], &self.previous, &*next);
+                self.mass_flux
+                    .par_iter_mut()
+                    .zip(flux_div.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(k, (flux, div))| {
+                        let (now, old, new) = (&current.u[k], &previous.u[k], &next.u[k]);
+                        flux.par_iter_mut()
+                            .with_min_len(MIN_CHUNK)
+                            .enumerate()
+                            .for_each(|(e, f)| {
+                                *f = ds[k]
+                                    * (ps_e[e] * now[e]
+                                        + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
+                            });
+                        ops.divergence(flux, div);
+                    });
             }
             // The interface fluxes they imply (as in the dynamics).
             let interface: Vec<Vec<f64>> = self
