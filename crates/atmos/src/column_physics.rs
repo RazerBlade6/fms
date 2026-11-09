@@ -1,6 +1,6 @@
 //! Column physics for a radiatively driven planet: [`crate::radiation`],
-//! [`crate::moisture`], and a temporary slab surface with bulk sensible and
-//! latent heat fluxes. [`ColumnPhysics`] is the 3-D forcing; [`SingleColumn`]
+//! [`crate::moisture`], and a surface of ocean and land tiles with bulk
+//! sensible and latent heat fluxes. [`ColumnPhysics`] is the 3-D forcing; [`SingleColumn`]
 //! is a 1-D radiative–convective model with fixed relative humidity, kept
 //! to check the radiation against Earth's global-mean column.
 //!
@@ -9,12 +9,22 @@
 //! - **Surface**: each cell has an ocean and a land tile, weighted by its
 //!   land fraction, each with its own temperature, albedo, roughness and
 //!   fluxes. The ocean tile is a slab of water of fixed depth (a real ocean
-//!   comes in M2 step 11); the land tile so far is a thinner, always wet
-//!   slab (soil and snow come in M2 step 10.2). Each absorbs sunlight and
-//!   longwave, emits as a black body, and pays the latent heat of what
-//!   evaporates, and of fusion for the snow that falls on it and melts. The
-//!   radiation sees one surface per cell, with the tiles' mean albedo and
-//!   mean σT⁴, and splits its fluxes between them so nothing is lost.
+//!   comes in M2 step 11); the land tile is a skin with no heat capacity
+//!   over a soil heat store, always wet so far (soil water and snow come in
+//!   M2 step 10.2). Each absorbs sunlight and longwave, emits as a black
+//!   body, and pays the latent heat of what evaporates, and of fusion for
+//!   the snow that falls on it and melts. The radiation sees one surface per
+//!   cell, with the tiles' mean albedo and mean σT⁴, and splits its fluxes
+//!   between them so nothing is lost.
+//! - **Skin and soil**: each step the skin temperature is solved so that
+//!   what the skin absorbs balances emission, the turbulent fluxes and
+//!   conduction into the soil, implicitly with the soil's own update
+//!   (`solve_skin`). The soil then takes exactly the net flux the
+//!   atmosphere was given, so a skin solved inexactly loses no energy.
+//!   Radiation runs less often than the skin changes: the land tile emits at
+//!   its current skin temperature, and the difference from what the last
+//!   radiation call counted goes into the bottom layer, which is where most
+//!   of the surface's longwave is absorbed.
 //! - **Boundary layer**: the bottom layer is a well-mixed boundary layer
 //!   ([`crate::surface_layer`]): surface air has its potential temperature
 //!   and specific humidity. Bulk formulas with stability-dependent
@@ -32,10 +42,10 @@
 //!
 //! Radiation runs every [`PhysicsParams::radiation_interval`] with sunlight
 //! averaged over the coming interval and the clouds of the latest moist
-//! physics; surface fluxes and the slab update every step
-//! ([`Forcing::advance`]). The atmosphere and the slab use the same stored
+//! physics; surface fluxes and the surface tiles update every step
+//! ([`Forcing::advance`]). The atmosphere and the tiles use the same stored
 //! fluxes and the same precipitation, so the planet's energy and water
-//! budgets close exactly: what the atmosphere and slab gain is what was
+//! budgets close exactly: what the atmosphere and surface gain is what was
 //! absorbed from the Sun minus what was emitted to space (friction's lost
 //! kinetic energy comes back as heat), and the atmosphere's water changes
 //! by evaporation minus precipitation.
@@ -51,7 +61,8 @@ use crate::forcing::{CellField, Forcing, ForcingBudget};
 use crate::layered::{Gas, LayeredModel, LayeredState, REFERENCE_PRESSURE};
 use crate::levels::{Levels, MAX_LAYERS};
 use crate::moisture::{
-    FUSION_HEAT, MoistColumn, MoistTendency, MoistureParams, Setting, lift, moist_physics,
+    FUSION_HEAT, MoistColumn, MoistTendency, MoistureParams, Setting, VAPOUR_GAS_CONSTANT, lift,
+    moist_physics,
 };
 use crate::radiation::{
     Cloud, Column, Fluxes, Humidity, Profile, RadiationParams, STEFAN_BOLTZMANN, column_fluxes,
@@ -85,8 +96,13 @@ pub struct LandParams {
     pub albedo: f64,
     /// Momentum roughness length (m).
     pub roughness: f64,
-    /// Depth of the land slab (m of water), until the soil heat store.
-    pub slab_depth: f64,
+    /// Depth of the soil heat store (m).
+    pub soil_depth: f64,
+    /// Volumetric heat capacity of the soil (J m⁻³ K⁻¹).
+    pub soil_heat_capacity: f64,
+    /// Thermal conductance between the skin and the soil store (W m⁻² K⁻¹):
+    /// soil's ~1 W m⁻¹ K⁻¹ over the ~15 cm that the day's heating reaches.
+    pub skin_conductance: f64,
 }
 
 impl Default for LandParams {
@@ -94,8 +110,25 @@ impl Default for LandParams {
         Self {
             albedo: 0.2,
             roughness: 0.1,
-            slab_depth: 1.0,
+            soil_depth: 1.0,
+            soil_heat_capacity: 2.5e6,
+            skin_conductance: 7.0,
         }
+    }
+}
+
+impl LandParams {
+    /// Heat capacity of the soil store (J m⁻² K⁻¹).
+    pub fn heat_capacity(&self) -> f64 {
+        self.soil_depth * self.soil_heat_capacity
+    }
+
+    /// The conductance the skin feels over a step of `dt` seconds. The soil
+    /// warms during the step by what it conducts, which is solved together
+    /// with the skin: `Λ (T_skin − T_soil⁺)` with
+    /// `T_soil⁺ = T_soil + Δt G / C` is `Λ/(1 + Λ Δt/C) (T_skin − T_soil)`.
+    fn step_conductance(&self, dt: f64) -> f64 {
+        self.skin_conductance / (1.0 + self.skin_conductance * dt / self.heat_capacity())
     }
 }
 
@@ -155,9 +188,9 @@ impl PhysicsParams {
         WATER_HEAT_CAPACITY * self.slab_depth
     }
 
-    /// Heat capacity of the land tile's slab (J m⁻² K⁻¹).
+    /// Heat capacity of the land tile's soil store (J m⁻² K⁻¹).
     pub fn land_heat_capacity(&self) -> f64 {
-        WATER_HEAT_CAPACITY * self.land.slab_depth
+        self.land.heat_capacity()
     }
 }
 
@@ -300,6 +333,70 @@ impl TileFlux {
     }
 }
 
+/// Most Newton iterations of the skin balance, and the change (K) at which
+/// it has converged.
+const SKIN_ITERATIONS: usize = 8;
+const SKIN_TOLERANCE: f64 = 1e-3;
+/// Largest change of the skin temperature in one iteration (K): the exchange
+/// coefficients jump as the surface layer changes stability.
+const SKIN_MAX_CHANGE: f64 = 10.0;
+
+/// Black-body emission (W m⁻²) at temperature `t`.
+fn black_body(t: f64) -> f64 {
+    STEFAN_BOLTZMANN * t * t * t * t
+}
+
+/// The skin temperature (K) where `absorbed` radiation (W m⁻²) balances
+/// black-body emission, conduction `conductance (T − soil)` and
+/// `turbulent(T)`, which returns the upward turbulent flux (W m⁻²) and an
+/// estimate of its slope (W m⁻² K⁻¹). A secant iteration from `start`, safe
+/// against overshooting: the exchange coefficients change with stability, so
+/// a slope that holds them fixed is out by a factor of two or more in light
+/// winds and at night. Whatever imbalance is left goes to the soil.
+fn solve_skin(
+    start: f64,
+    absorbed: f64,
+    soil: f64,
+    conductance: f64,
+    turbulent: impl Fn(f64) -> (f64, f64),
+) -> f64 {
+    let mut t = start;
+    // The root lies above any skin that gains heat and below any that loses
+    // it. A step outside those bounds bisects them instead.
+    let (mut low, mut high) = (f64::NEG_INFINITY, f64::INFINITY);
+    let mut previous = (f64::NAN, f64::NAN);
+    for _ in 0..SKIN_ITERATIONS {
+        let (flux, slope) = turbulent(t);
+        let residual = absorbed - black_body(t) - flux - conductance * (t - soil);
+        if residual >= 0.0 {
+            low = t;
+        } else {
+            high = t;
+        }
+        // After the first pass, the slope actually seen since the last one.
+        let frozen = 4.0 * STEFAN_BOLTZMANN * t * t * t + slope + conductance;
+        let secant = (previous.0 - residual) / (t - previous.1);
+        let slope = if secant > 0.0 && secant.is_finite() {
+            secant
+        } else {
+            frozen
+        };
+        previous = (residual, t);
+        let newton = t + (residual / slope).clamp(-SKIN_MAX_CHANGE, SKIN_MAX_CHANGE);
+        let next = if (low..=high).contains(&newton) {
+            newton
+        } else {
+            0.5 * (low + high)
+        };
+        let change = next - t;
+        t = next;
+        if change.abs() < SKIN_TOLERANCE {
+            break;
+        }
+    }
+    t
+}
+
 /// The surface radiation of one cell's tiles (W m⁻²): sunlight absorbed and
 /// longwave emitted, per unit area of each tile.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -361,6 +458,8 @@ impl TiledSurface {
 struct SurfaceFlux {
     /// Each tile's flux; unset for a tile with no area.
     tiles: [TileFlux; 2],
+    /// The land tile's skin temperature these fluxes were computed at (K).
+    skin: f64,
     /// Sensible heat (W m⁻², upward).
     sensible: f64,
     /// Evaporation (kg m⁻² s⁻¹).
@@ -387,7 +486,7 @@ struct SurfaceFlux {
 }
 
 /// The radiative–convective forcing of the layered model: radiation, moist
-/// physics, a slab surface, surface fluxes and boundary-layer friction. Needs
+/// physics, the surface tiles, surface fluxes and boundary-layer friction. Needs
 /// a moist state.
 pub struct ColumnPhysics<'a> {
     params: PhysicsParams,
@@ -403,8 +502,10 @@ pub struct ColumnPhysics<'a> {
     land_fraction: Vec<f64>,
     /// Temperature of each cell's ocean tile (K).
     ocean_temperature: Vec<f64>,
-    /// Temperature of each cell's land tile (K).
+    /// Skin temperature of each cell's land tile (K).
     land_temperature: Vec<f64>,
+    /// Temperature of each cell's soil store (K).
+    soil_temperature: Vec<f64>,
     /// Last radiation call, all-sky and clear-sky, and its division between
     /// the tiles.
     radiation: Vec<Fluxes>,
@@ -416,7 +517,7 @@ pub struct ColumnPhysics<'a> {
     moist: Vec<MoistTendency>,
     heating: KineticHeating,
     /// Whether the surface temperature is held fixed (an infinite heat
-    /// reservoir) instead of evolving as a slab.
+    /// reservoir) instead of evolving.
     prescribed: bool,
     /// Heat the surface has taken up since the start (J).
     uptake: f64,
@@ -457,7 +558,7 @@ impl<'a> ColumnPhysics<'a> {
     }
 
     /// As [`new`](Self::new), with land covering `land_fraction` (0–1) of
-    /// each cell; both tiles start at `surface_temperature`.
+    /// each cell; both tiles, and the soil, start at `surface_temperature`.
     ///
     /// # Panics
     /// If `state` is dry, or a land fraction is outside 0–1.
@@ -489,6 +590,7 @@ impl<'a> ColumnPhysics<'a> {
             next_radiation: time,
             land_fraction,
             land_temperature: surface_temperature.clone(),
+            soil_temperature: surface_temperature.clone(),
             ocean_temperature: surface_temperature,
             radiation: vec![Fluxes::default(); n],
             clear: vec![Fluxes::default(); n],
@@ -510,7 +612,7 @@ impl<'a> ColumnPhysics<'a> {
         physics.radiate(state);
         physics.update_moisture(state);
         physics.radiate(state);
-        physics.update_surface_fluxes(state);
+        physics.update_surface_fluxes(state, None);
         physics
     }
 
@@ -518,7 +620,7 @@ impl<'a> ColumnPhysics<'a> {
     /// (fixed sea-surface temperature, as models are tuned; e.g. [`ApeSst`]):
     /// the surface becomes an infinite heat reservoir whose uptake the
     /// budget counts as stored heat. The atmosphere settles in about a month
-    /// instead of the slab's years.
+    /// instead of the surface's years.
     pub fn with_prescribed_surface(mut self) -> Self {
         self.prescribed = true;
         self
@@ -540,10 +642,16 @@ impl<'a> ColumnPhysics<'a> {
             .collect()
     }
 
-    /// Temperature of each cell's land tile (K); meaningless where the cell
-    /// has no land.
+    /// Skin temperature of each cell's land tile (K); meaningless where the
+    /// cell has no land.
     pub fn land_temperature(&self) -> &[f64] {
         &self.land_temperature
+    }
+
+    /// Temperature of each cell's soil store (K); meaningless where the cell
+    /// has no land.
+    pub fn soil_temperature(&self) -> &[f64] {
+        &self.soil_temperature
     }
 
     /// What the radiation sees of cell `i`'s tiles.
@@ -612,7 +720,9 @@ impl<'a> ColumnPhysics<'a> {
         self.moist = moist;
     }
 
-    fn update_surface_fluxes(&mut self, state: &LayeredState) {
+    /// The surface fluxes for the coming step of `dt` seconds, first solving
+    /// the land skin's balance; with no `dt` the skin stays where it is.
+    fn update_surface_fluxes(&mut self, state: &LayeredState, dt: Option<f64>) {
         let (mesh, geometry) = (self.ops.mesh(), self.ops.geometry());
         let n = self.levels.count();
         let bottom = n - 1;
@@ -644,22 +754,19 @@ impl<'a> ColumnPhysics<'a> {
                 let depth = -scale * fms_math::ln(top);
                 let density = ps / (rd * air);
                 let wind = (e * e + nn * nn).sqrt();
+                let air_over = |ts: f64| SurfaceAir {
+                    wind,
+                    height,
+                    theta,
+                    humidity: q,
+                    surface_temperature: ts,
+                    ps,
+                    surface_exner,
+                    convective_velocity: old[i].convective_velocity,
+                    gravity: g,
+                };
                 let tile = |ts: f64, surface: Surface| {
-                    let x = exchange(
-                        sl,
-                        surface,
-                        &SurfaceAir {
-                            wind,
-                            height,
-                            theta,
-                            humidity: q,
-                            surface_temperature: ts,
-                            ps,
-                            surface_exner,
-                            convective_velocity: old[i].convective_velocity,
-                            gravity: g,
-                        },
-                    );
+                    let x = exchange(sl, surface, &air_over(ts));
                     let momentum = x.momentum(density);
                     TileFlux {
                         sensible: density * cp * x.heat * x.speed * (ts - air),
@@ -679,11 +786,31 @@ impl<'a> ColumnPhysics<'a> {
                 if fraction < 1.0 {
                     tiles[OCEAN] = tile(self.ocean_temperature[i], Surface::Ocean);
                 }
+                let mut skin = self.land_temperature[i];
                 if fraction > 0.0 {
-                    tiles[LAND] = tile(
-                        self.land_temperature[i],
-                        Surface::Rough(self.params.land.roughness),
-                    );
+                    let rough = Surface::Rough(self.params.land.roughness);
+                    if let Some(dt) = dt {
+                        let absorbed = self.tile_radiation[i].shortwave[LAND]
+                            + self.radiation[i].surface_down
+                            - FUSION_HEAT * self.moist[i].snow;
+                        // Exchange coefficients are frozen in the slope only.
+                        let turbulent = |t: f64| {
+                            let x = exchange(sl, rough, &air_over(t));
+                            let heat = density * cp * x.heat * x.speed;
+                            let water = LATENT_HEAT * density * x.moisture * x.speed;
+                            let qs = saturation_humidity(t, ps);
+                            let dqs = qs * LATENT_HEAT / (VAPOUR_GAS_CONSTANT * t * t);
+                            (heat * (t - air) + water * (qs - q), heat + water * dqs)
+                        };
+                        skin = solve_skin(
+                            skin,
+                            absorbed,
+                            self.soil_temperature[i],
+                            self.params.land.step_conductance(dt),
+                            turbulent,
+                        );
+                    }
+                    tiles[LAND] = tile(skin, rough);
                 }
                 let mean = TileFlux::blend(tiles[OCEAN], tiles[LAND], fraction);
                 let (sensible, evaporation) = (mean.sensible, mean.evaporation);
@@ -723,6 +850,7 @@ impl<'a> ColumnPhysics<'a> {
                 let density_top = p_top / (rd * t_top);
                 SurfaceFlux {
                     tiles,
+                    skin,
                     sensible,
                     evaporation,
                     drag: mean.drag,
@@ -750,6 +878,11 @@ impl<'a> ColumnPhysics<'a> {
             })
             .collect();
         self.surface = surface;
+        for (i, flux) in self.surface.iter().enumerate() {
+            if self.land_fraction[i] > 0.0 {
+                self.land_temperature[i] = flux.skin;
+            }
+        }
     }
 
     /// Radiation for the interval starting now, with sunlight averaged over
@@ -847,6 +980,11 @@ impl Forcing for ColumnPhysics<'_> {
             .zip(state.ps.par_iter())
             .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
+        let (tiles, land, skin) = (
+            &self.tile_radiation,
+            &self.land_fraction,
+            &self.land_temperature,
+        );
         let above = lowest - 1;
         let cp = gas.heat_capacity;
         let top = levels.interfaces()[lowest];
@@ -874,6 +1012,12 @@ impl Forcing for ColumnPhysics<'_> {
                             gravity * (s.entrainment + s.cumulus) * (q(above) - q(lowest));
                         if k == lowest {
                             heating += s.sensible + heat;
+                            // What the land emits beyond what the last
+                            // radiation call counted.
+                            if land[i] > 0.0 {
+                                heating +=
+                                    land[i] * (black_body(skin[i]) - tiles[i].longwave_up[LAND]);
+                            }
                             water += gravity * s.evaporation / ds[k] + moisture / ds[k];
                         } else {
                             heating -= heat;
@@ -940,7 +1084,7 @@ impl Forcing for ColumnPhysics<'_> {
     }
 
     fn advance(&mut self, state: &LayeredState, dt: f64) {
-        // The slab and the budgets use the same stored fluxes and
+        // The surface and the budgets use the same stored fluxes and
         // precipitation the atmosphere was given.
         let areas = &self.ops.geometry().cell_areas;
         let r2 = self.ops.radius() * self.ops.radius();
@@ -948,10 +1092,16 @@ impl Forcing for ColumnPhysics<'_> {
         let land_capacity = self.params.land_heat_capacity();
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
         let (tiles, land) = (&self.tile_radiation, &self.land_fraction);
+        let skin = &self.land_temperature;
         let net = |i: usize, tile: usize| {
             let flux = surface[i].tiles[tile];
+            let emitted = if tile == LAND {
+                black_body(skin[i])
+            } else {
+                tiles[i].longwave_up[tile]
+            };
             tiles[i].shortwave[tile] + radiation[i].surface_down
-                - tiles[i].longwave_up[tile]
+                - emitted
                 - flux.sensible
                 - LATENT_HEAT * flux.evaporation
                 - FUSION_HEAT * moist[i].snow
@@ -971,7 +1121,7 @@ impl Forcing for ColumnPhysics<'_> {
                 .enumerate()
                 .filter(|(i, _)| land[*i] < 1.0)
                 .for_each(|(i, t)| *t += dt * net(i, OCEAN) / capacity);
-            self.land_temperature
+            self.soil_temperature
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
@@ -992,7 +1142,8 @@ impl Forcing for ColumnPhysics<'_> {
         self.precipitated += dt * r2 * precipitated;
         self.dissipated += dt * self.dissipation;
         self.time += dt;
-        self.update_surface_fluxes(state);
+        let solve = (!self.prescribed).then_some(dt);
+        self.update_surface_fluxes(state, solve);
         if self.time >= self.next_radiation - 1e-6 {
             self.radiate(state);
         }
@@ -1012,7 +1163,7 @@ impl Forcing for ColumnPhysics<'_> {
                 .map(|i| {
                     let (a, f) = (areas[i], self.land_fraction[i]);
                     (1.0 - f) * (a * r2 * ocean * self.ocean_temperature[i])
-                        + f * (a * r2 * land * self.land_temperature[i])
+                        + f * (a * r2 * land * self.soil_temperature[i])
                 })
                 .sum()
         };
@@ -1743,6 +1894,62 @@ mod tests {
             albedo: [0.08, 0.2],
             temperature: [290.0, 305.0],
         }
+    }
+
+    #[test]
+    fn the_skin_balance_finds_its_exact_root() {
+        let (target, air, soil, drag, conductance) = (300.0, 290.0, 285.0, 40.0, 7.0);
+        let absorbed = black_body(target) + drag * (target - air) + conductance * (target - soil);
+        let turbulent = |t: f64| (drag * (t - air), drag);
+        let t = solve_skin(280.0, absorbed, soil, conductance, turbulent);
+        assert!((t - target).abs() < 1e-3, "{t}");
+    }
+
+    #[test]
+    fn a_skin_with_only_radiation_sits_at_its_black_body_temperature() {
+        let t = solve_skin(260.0, 400.0, 0.0, 0.0, |_| (0.0, 0.0));
+        let exact = fms_math::pow(400.0 / STEFAN_BOLTZMANN, 0.25);
+        assert!((t - exact).abs() < 1e-3, "{t} vs {exact}");
+    }
+
+    #[test]
+    fn skin_and_soil_follow_the_analytic_solution_at_any_step() {
+        // With a linear air flux in place of the emission (cancelled in the
+        // closure), the soil relaxes to `T_eq` at a rate `κ/C`, with
+        // `κ = Λ B/(Λ + B)`; implicit steps shrink its distance by exactly
+        // `1/(1 + κ Δt/C)`, and are stable however long.
+        let land = LandParams::default();
+        let (lambda, capacity) = (land.skin_conductance, land.heat_capacity());
+        let (b, air, absorbed, start) = (40.0, 290.0, 200.0, 280.0);
+        let equilibrium = air + absorbed / b;
+        let kappa = lambda * b / (lambda + b);
+        let run = |dt: f64, steps: i32| {
+            let turbulent = |t: f64| {
+                let cubed = 4.0 * STEFAN_BOLTZMANN * t * t * t;
+                (b * (t - air) - black_body(t), b - cubed)
+            };
+            let (mut skin, mut soil) = (start, start);
+            let mut previous = (equilibrium - soil).abs();
+            for _ in 0..steps {
+                let g = land.step_conductance(dt);
+                skin = solve_skin(skin, absorbed, soil, g, turbulent);
+                soil += dt * (absorbed - b * (skin - air)) / capacity;
+                let distance = (equilibrium - soil).abs();
+                assert!(distance <= previous, "overshot at Δt {dt}");
+                previous = distance;
+            }
+            soil
+        };
+        let distance = start - equilibrium;
+        for (dt, steps) in [(900.0, 960), (86_400.0, 10), (864_000.0, 10)] {
+            let exact = equilibrium + distance / (1.0 + kappa * dt / capacity).powi(steps);
+            let soil = run(dt, steps);
+            assert!((soil - exact).abs() < 1e-6, "Δt {dt}: {soil} vs {exact}");
+        }
+        // Short steps converge on the continuous solution.
+        let time = 900.0 * 960.0;
+        let continuous = equilibrium + distance * fms_math::exp(-kappa * time / capacity);
+        assert!((run(900.0, 960) - continuous).abs() < 0.03);
     }
 
     #[test]

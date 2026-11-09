@@ -240,7 +240,11 @@ crates never depend on it. Everything except the viewer runs headless.
   tile, weighted by land fraction, with its own temperature, albedo,
   roughness and bulk fluxes. The radiation sees one surface per cell (mean
   albedo, mean σT⁴) and divides its fluxes between the tiles conservatively:
-  absorbed sunlight by `1 − α`, emitted longwave by `T⁴`.
+  absorbed sunlight by `1 − α`, emitted longwave by `T⁴`. The land tile is a
+  skin with no heat capacity over a 1 m soil heat store (decided at
+  M2.10.2.3): each step the skin is solved to balance radiation, the turbulent
+  fluxes and conduction, implicitly with the soil's update, and the soil takes
+  exactly the net flux the atmosphere was given.
 - **Vertical structure** (decided at M2.5, generalized at M2.9.5): sigma
   layers (`σ = p/p_s`, model top at p = 0) at any interfaces
   (`crates/atmos/src/levels.rs`). Two equal-mass layers (interface at σ = 0.5)

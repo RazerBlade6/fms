@@ -184,6 +184,86 @@ fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
 }
 
 #[test]
+fn land_swings_more_than_ocean_daily_and_seasonally() {
+    // A year after two months of spin-up, in the mid-latitudes of the
+    // continent and of the ocean around it.
+    let (mesh, _) = SphereMesh::centroidal(8, LloydOptions::default());
+    let band = |p: &glam::DVec3| (30.0..60.0).contains(&fms_math::asin(p.z).abs().to_degrees());
+    let cells = |tile: f64| -> Vec<usize> {
+        (0..mesh.n_cells())
+            .filter(|&i| {
+                let p = mesh.cell_centers()[i];
+                continent_fraction(p) == tile && band(&p)
+            })
+            .collect()
+    };
+    let (land, ocean) = (cells(1.0), cells(0.0));
+    assert!(land.len() >= 8 && ocean.len() >= 8);
+    let spin_up = 60.0;
+    let days = spin_up + 365.0;
+    let mut record: Vec<Vec<f64>> = vec![Vec::new(); mesh.n_cells()];
+    let mut per_day = 0;
+    let levels = Levels::new(&CLIMATE_LEVELS);
+    run_with(8, days, levels, continent_fraction, |si, _, dt| {
+        per_day = (DAY / dt).round() as usize;
+        if si.steps() as f64 * dt <= spin_up * DAY {
+            return;
+        }
+        let fields = si.model().forcing().unwrap().cell_fields();
+        let ts = fields
+            .iter()
+            .find(|f| f.name == "rad.surface_temperature")
+            .unwrap();
+        for &i in land.iter().chain(&ocean) {
+            record[i].push(ts.values[i]);
+        }
+    });
+    let range = |x: &[f64]| {
+        let max = x.iter().copied().fold(f64::MIN, f64::max);
+        let min = x.iter().copied().fold(f64::MAX, f64::min);
+        max - min
+    };
+    let mean = |x: &[f64]| x.iter().sum::<f64>() / x.len() as f64;
+    let daily = |i: usize| {
+        mean(
+            &record[i]
+                .chunks_exact(per_day)
+                .map(range)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let seasonal = |i: usize| {
+        range(
+            &record[i]
+                .chunks_exact(10 * per_day)
+                .map(mean)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let over = |cells: &[usize], f: &dyn Fn(usize) -> f64| {
+        cells.iter().map(|&i| f(i)).sum::<f64>() / cells.len() as f64
+    };
+    let (land_day, ocean_day) = (over(&land, &daily), over(&ocean, &daily));
+    let (land_year, ocean_year) = (over(&land, &seasonal), over(&ocean, &seasonal));
+    eprintln!(
+        "daily range: land {land_day:.2} K, ocean {ocean_day:.2} K; \
+         seasonal range: land {land_year:.1} K, ocean {ocean_year:.1} K"
+    );
+    assert!(
+        land_day > 3.0 * ocean_day,
+        "daily: land {land_day}, ocean {ocean_day}"
+    );
+    // The margin is small only because the ocean is still a 10 m slab that
+    // follows the seasons closely: measured land 41.9 K, ocean 28.1 K, and
+    // daily 6.2 K and 0.23 K. The same run with a 50 m slab (step 11's mixed
+    // layer) gave 32.9 K and 8.5 K.
+    assert!(
+        land_year > 1.2 * ocean_year,
+        "seasonal: land {land_year}, ocean {ocean_year}"
+    );
+}
+
+#[test]
 fn more_layers_run_the_moist_aquaplanet() {
     // Three layers (a thin bottom one) and five: 60 days from the single
     // column's equilibrium without blowing up, with the water budget exact,

@@ -199,10 +199,16 @@ Added after the M1 review: tooling the GCM work depends on.
         matches the pre-tile aquaplanet's state hash exactly; with a
         continent, energy closes to −0.02 W/m² over 90 days and water to
         6×10⁻¹⁴. Lifted coastal ocean stays lifted (O-30).
-      - [ ] 10.2.3. **Land energy balance**: a skin temperature over a thin
+      - [x] 10.2.3. **Land energy balance**: a skin temperature over a thin
         soil heat store, solved implicitly. Tests: the implicit solve
         against an analytic case; land swings more than ocean daily and
         seasonally.
+        Done: a skin with no heat capacity over a 1 m soil store, conductance
+        7 W/m²/K between them (O-31). The implicit step matches the analytic
+        relaxation at any step length. Over a year at 640 cells, mid-latitude
+        land swings 6.2 K daily and 41.9 K seasonally against the 10 m ocean
+        slab's 0.23 K and 28.1 K. 1.2-year runs are stable on the continent
+        and on Earth's terrain at 2.5k cells, energy closing to 0.011 W/m².
       - [ ] 10.2.4. **Soil water**: Manabe bucket limiting evaporation, with
         runoff. Test: the water budget closes with soil water and runoff.
       - [ ] 10.2.5. **Snow**: snow mass, melt and snow albedo. Test: energy

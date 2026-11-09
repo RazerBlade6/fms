@@ -208,8 +208,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m ocean slab and a {} m land slab, CO₂ {} ppm",
-            params.slab_depth, params.land.slab_depth, params.co2
+            "; radiation and moisture over a {} m ocean slab and a {} m soil store, CO₂ {} ppm",
+            params.slab_depth, params.land.soil_depth, params.co2
         ),
     );
     eprintln!("climate: {description}");

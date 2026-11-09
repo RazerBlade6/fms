@@ -713,3 +713,31 @@ difference. We keep the lift.
 
 **Revisit when:** the slab ocean (M2 step 11), which gives cells at height
 sea ice and heat transport: check the same cells again.
+
+### O-31: The land skin's solver and its longwave
+
+**Seen (M2.10.2.3):** with the exchange coefficients frozen in its slope,
+Newton's method left 25% of skin solves unconverged after eight iterations
+(on a year at 640 cells), oscillating in light winds and crawling in stable
+night air. Bracketing alone barely helped (24%). Taking the slope from
+successive iterations (a secant step, still bracketed) brings it to 0.3%, at
+3.6 flux evaluations per solve, and it matters: the land's seasonal range rose
+from 38.4 to 41.9 K, mostly from colder winters.
+
+**Decisions:**
+- The skin changes faster than radiation runs (every 3 hours), so the land
+  emits at its current skin temperature. The difference from what the last
+  radiation call counted heats the bottom layer, which keeps the budget exact.
+- On a step that refreshes radiation, the skin is solved just before the new
+  sunlight arrives, so it lags by one step. Reordering would change the
+  ocean-only climate (cloud-top cooling), breaking its pinned hash, for little
+  gain. The soil store takes the difference.
+
+**Limits for now:** one soil layer can't hold both the daily and the seasonal
+heat wave, so there's no deep-ground heat store carrying summer into winter.
+The land is always wet until the bucket (step 10.2.4), which holds the daily
+range down: evaporation takes most of the sunlight that dry ground would turn
+into heating.
+
+**Revisit when:** the Earth run's seasonal cycle is compared with observations
+(step 10.2.8), if continental interiors are too extreme or too early.
