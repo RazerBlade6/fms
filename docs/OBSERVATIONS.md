@@ -811,9 +811,9 @@ shrinks.
 | BOMEX with deep convection off: θ, q change over 6 h | −0.004 K, +0.29 g/kg | steady by design |
 | BOMEX `w*` | 0.92 m/s | about 0.7 m/s |
 | BOMEX shallow cumulus at the layer's top | never | always |
-| DYCOMS entrainment | 4.1 cm/s | about 0.4 cm/s |
+| DYCOMS entrainment | 41 mm/s | 3.8–5.9 mm/s (large-eddy) |
 | DYCOMS cloud cover | 0.31 | overcast |
-| DYCOMS entrainment given the real 8.5 K jump | 0.19 cm/s | about 0.4 cm/s |
+| DYCOMS entrainment given the real 8.5 K jump | 1.4 mm/s | 3.8–5.9 mm/s |
 
 **Why:** both trace to the trade or subtropical inversion, which layers this
 thick can't hold.
@@ -825,8 +825,10 @@ thick can't hold.
   lapse rate leaves 0.36 K of DYCOMS' 8.5 K. The same extrapolation keeps shallow
   cumulus off in BOMEX.
 
-**Caution:** the cases' setups are from memory of those papers, which aren't in
-`docs/sources`. They should be checked against the papers before any tuning.
+**Caution:** DYCOMS is set up from Stevens et al. BOMEX, and its `w*` target,
+are from memory: the Siebesma file in `docs/sources` is their 2004 EUROCS
+Pacific study, not the 2003 BOMEX intercomparison, and doesn't describe this
+case. Check BOMEX against that paper before any tuning.
 
 **Why it's acceptable for now:** the checks that isolate the boundary layer
 pass, and fixing either would shift the climate and its calibration: a decision,

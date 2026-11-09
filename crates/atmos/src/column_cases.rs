@@ -8,9 +8,9 @@
 //! - [`dycoms`]: nocturnal marine stratocumulus off California, DYCOMS-II
 //!   RF01 (Stevens et al. 2005).
 //!
-//! The cases' setups are written from memory of those papers, which aren't in
-//! `docs/sources`; check them against the papers before trusting a close
-//! comparison. See `docs/OBSERVATIONS.md` O-35.
+//! DYCOMS is set up from Stevens et al. BOMEX is written from memory of
+//! Siebesma et al., which isn't in `docs/sources`, so check it against the
+//! paper before trusting a close comparison. See `docs/OBSERVATIONS.md` O-35.
 //!
 //! These cases resolve boundary-layer structure the model's few layers can't:
 //! a case's bottom layer holds a whole cloud-topped boundary layer, so only
@@ -335,7 +335,8 @@ pub fn dycoms() -> ColumnCase {
         interior: [0.25, 0.5, fms_math::exp(-DYCOMS_INVERSION / scale)],
         sensible: 15.0,
         latent: 115.0,
-        cloud_top_cooling: 70.0,
+        // F0 − F1: the net forcing across the boundary layer.
+        cloud_top_cooling: 48.0,
         theta: |z| {
             if z < DYCOMS_INVERSION {
                 289.0
@@ -390,9 +391,10 @@ mod tests {
 
     #[test]
     fn entrainment_gets_stratocumulus_right_given_the_real_inversion() {
-        // DYCOMS-II's observed entrainment is about 0.4 cm/s. The closure,
-        // with the case's own `w*` and its 8.5 K jump at the inversion, gives
-        // 0.19 cm/s: the right order, so the closure isn't what's wrong.
+        // Stevens et al.'s large-eddy runs entrain at 3.8–5.9 mm/s. The
+        // closure, with the case's own `w*` and its 8.5 K jump at the
+        // inversion, gives 1.4 mm/s: the right order, so the closure isn't
+        // what's wrong.
         let r = run_case(&dycoms(), &PhysicsParams::default());
         let params = SurfaceLayerParams::default();
         let w_e = entrainment_velocity(&params, GRAVITY, 800.0, r.convective_velocity, 290.0, 8.5);
