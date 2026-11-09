@@ -55,7 +55,7 @@ impl KineticHeating {
         let (gas, levels) = (self.gas, &self.levels);
         self.exner
             .par_chunks_mut(levels.count())
-            .with_min_len(MIN_CHUNK / 16)
+            .with_min_len(MIN_CHUNK / 128)
             .zip(ps.par_iter())
             .for_each(|(e, &p)| levels.layer_exner_into(gas, p, e));
     }

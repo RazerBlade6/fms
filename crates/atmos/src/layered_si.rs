@@ -481,21 +481,23 @@ impl<'a> LayeredSemiImplicit<'a> {
         // Full tendency at the middle level.
         let empty = LayeredState::new(Vec::new(), Vec::new(), Vec::new());
         let mut current = std::mem::replace(&mut self.current, empty);
-        self.model.tendency(&current, &mut self.tendency);
-        // Hyperdiffusion and forcing, lagged to the old level.
+        // Hyperdiffusion and forcing are lagged to the old level.
         let diffuse = self.model.hyperdiffusion().is_some();
         let forced = self.model.has_forcing();
-        if diffuse {
-            self.model
-                .diffusion_tendency(&self.previous, &mut self.physics);
-            let rate = self.model.energy_tendency(&self.previous, &self.physics);
+        let (diffusion_rate, forcing_rate) = self.model.step_tendencies(
+            &current,
+            &self.previous,
+            &mut self.tendency,
+            &mut self.physics,
+            &mut self.forcing,
+        );
+        if let Some(rate) = diffusion_rate {
             self.budget.diffusion.add_scaled(dt, rate);
         }
         if forced {
-            self.model
-                .forcing_tendency(&self.previous, &mut self.forcing);
-            let rate = self.model.energy_tendency(&self.previous, &self.forcing);
-            self.budget.forcing.add_scaled(dt, rate);
+            if let Some(rate) = forcing_rate {
+                self.budget.forcing.add_scaled(dt, rate);
+            }
             self.water.sources += dt * self.model.water_tendency(&self.forcing);
             if diffuse {
                 for (p, f) in self

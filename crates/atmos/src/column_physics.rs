@@ -974,7 +974,7 @@ impl<'a> ColumnPhysics<'a> {
     fn update_moisture(&mut self, state: &LayeredState) {
         let moist: Vec<MoistTendency> = (0..state.ps.len())
             .into_par_iter()
-            .with_min_len(MIN_CHUNK / 16)
+            .with_min_len(MIN_CHUNK / 128)
             .map(|i| moist_physics(&self.setting(), &self.moist_column(state, i)))
             .collect();
         self.moist = moist;
@@ -996,7 +996,7 @@ impl<'a> ColumnPhysics<'a> {
         let old = &self.surface;
         let surface: Vec<SurfaceFlux> = (0..state.ps.len())
             .into_par_iter()
-            .with_min_len(MIN_CHUNK / 16)
+            .with_min_len(MIN_CHUNK / 128)
             .map(|i| {
                 let (e, nn) = east_north(centers[i], winds[i]);
                 let ps = state.ps[i];
@@ -1188,7 +1188,7 @@ impl<'a> ColumnPhysics<'a> {
         let this = &*self;
         let results: Vec<(Fluxes, Fluxes, TileRadiation)> = (0..n)
             .into_par_iter()
-            .with_min_len(MIN_CHUNK / 16)
+            .with_min_len(MIN_CHUNK / 128)
             .map(|i| {
                 let ps = state.ps[i];
                 let surface = this.tiled_surface(i);
@@ -1255,7 +1255,7 @@ impl Forcing for ColumnPhysics<'_> {
         let mut exner = vec![0.0; n * state.ps.len()];
         exner
             .par_chunks_mut(n)
-            .with_min_len(MIN_CHUNK / 16)
+            .with_min_len(MIN_CHUNK / 128)
             .zip(state.ps.par_iter())
             .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
@@ -1267,47 +1267,52 @@ impl Forcing for ColumnPhysics<'_> {
         let above = lowest - 1;
         let cp = gas.heat_capacity;
         let top = levels.interfaces()[lowest];
-        for (k, (dt, dq)) in out.theta_ps.iter_mut().zip(&mut out.q_ps).enumerate() {
-            let exner = &exner;
-            dt.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(dq.par_iter_mut())
-                .enumerate()
-                .for_each(|(i, (dt, dq))| {
-                    let ps = state.ps[i];
-                    let e = exner[i * n + k];
-                    let m = &moist[i];
-                    let s = &surface[i];
-                    let mut heating = radiation[i].layers[k];
-                    let mut water = ps * m.humidity[k];
-                    if k == lowest || k == above {
-                        // Entrainment: dry static energy `c_p Π θ + gz`
-                        // and water mixed across the boundary layer's top.
-                        let theta = |k: usize| state.theta_ps[k][i] / ps;
-                        let q = |k: usize| state.q_ps[k][i] / ps;
-                        let exner_top = gas.exner(top * ps);
-                        let heat = s.entrainment * cp * exner_top * (theta(above) - theta(lowest));
-                        let moisture =
-                            gravity * (s.entrainment + s.cumulus) * (q(above) - q(lowest));
-                        if k == lowest {
-                            heating += s.sensible + heat;
-                            // What the land emits beyond what the last
-                            // radiation call counted.
-                            if land[i] > 0.0 {
-                                heating +=
-                                    land[i] * (black_body(skin[i]) - tiles[i].longwave_up[LAND]);
+        out.theta_ps
+            .par_iter_mut()
+            .zip(out.q_ps.par_iter_mut())
+            .enumerate()
+            .for_each(|(k, (dt, dq))| {
+                let exner = &exner;
+                dt.par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(dq.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(i, (dt, dq))| {
+                        let ps = state.ps[i];
+                        let e = exner[i * n + k];
+                        let m = &moist[i];
+                        let s = &surface[i];
+                        let mut heating = radiation[i].layers[k];
+                        let mut water = ps * m.humidity[k];
+                        if k == lowest || k == above {
+                            // Entrainment: dry static energy `c_p Π θ + gz`
+                            // and water mixed across the boundary layer's top.
+                            let theta = |k: usize| state.theta_ps[k][i] / ps;
+                            let q = |k: usize| state.q_ps[k][i] / ps;
+                            let exner_top = gas.exner(top * ps);
+                            let heat =
+                                s.entrainment * cp * exner_top * (theta(above) - theta(lowest));
+                            let moisture =
+                                gravity * (s.entrainment + s.cumulus) * (q(above) - q(lowest));
+                            if k == lowest {
+                                heating += s.sensible + heat;
+                                // What the land emits beyond what the last
+                                // radiation call counted.
+                                if land[i] > 0.0 {
+                                    heating += land[i]
+                                        * (black_body(skin[i]) - tiles[i].longwave_up[LAND]);
+                                }
+                                water += gravity * s.evaporation / ds[k] + moisture / ds[k];
+                            } else {
+                                heating -= heat;
+                                water -= moisture / ds[k];
                             }
-                            water += gravity * s.evaporation / ds[k] + moisture / ds[k];
-                        } else {
-                            heating -= heat;
-                            water -= moisture / ds[k];
                         }
-                    }
-                    *dt +=
-                        theta_tendency(gas, gravity, ds[k], e, heating) + ps * m.temperature[k] / e;
-                    *dq += water;
-                });
-        }
+                        *dt += theta_tendency(gas, gravity, ds[k], e, heating)
+                            + ps * m.temperature[k] / e;
+                        *dq += water;
+                    });
+            });
         // Surface drag on the boundary layer's wind and entrainment of the
         // layer above's momentum; the kinetic energy they remove heats the
         // boundary layer.
@@ -1877,7 +1882,7 @@ pub fn initial_state(
     let columns: Vec<(f64, Vec<f64>, Vec<f64>)> = model
         .surface_geopotential()
         .par_iter()
-        .with_min_len(MIN_CHUNK / 16)
+        .with_min_len(MIN_CHUNK / 128)
         .map(|&phi| {
             if phi == 0.0 {
                 return (ps, theta0.clone(), q.clone());

@@ -718,56 +718,56 @@ impl<'a> LayeredModel<'a> {
     /// into the part through the winds and the part through `Θ`.
     /// `tendency.ps` is ignored.
     pub fn energy_tendency(&self, state: &LayeredState, tendency: &LayeredState) -> EnergyTerms {
-        let ops = &self.ops;
-        let r2 = ops.radius() * ops.radius();
-        let g = ops.geometry();
-        let ds = self.dsigma();
-        let n = self.layers();
-        let edges = ops.mesh().edges();
-        let edge_areas = ops.edge_areas();
-        let mut rate = EnergyTerms::default();
-        let gravity = self.gravity;
-        let cp = self.gas.heat_capacity;
-        // Layer Exner functions, once per cell.
-        let mut exner = vec![0.0; n * state.ps.len()];
-        exner
-            .par_chunks_mut(n)
-            .with_min_len(MIN_CHUNK / 16)
-            .zip(state.ps.par_iter())
-            .for_each(|(e, &ps)| self.levels.layer_exner_into(self.gas, ps, e));
-        let exner = &exner;
-        let edge_areas = &edge_areas;
-        let terms: Vec<(f64, f64)> = (0..n)
-            .into_par_iter()
-            .map(|k| {
-                let dsk = ds[k];
-                // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
-                let kinetic: Vec<f64> = (0..edges.len())
-                    .into_par_iter()
-                    .with_min_len(MIN_CHUNK)
-                    .map(|e| {
-                        let [a, b] = edges[e].cells;
-                        let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
-                        edge_areas[e] * dp * state.u[k][e] / gravity
-                    })
-                    .collect();
-                // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
-                let enthalpy: Vec<f64> = (0..state.ps.len())
-                    .into_par_iter()
-                    .with_min_len(MIN_CHUNK)
-                    .map(|i| g.cell_areas[i] * r2 * dsk * cp * exner[i * n + k] / gravity)
-                    .collect();
-                (
-                    dot(&kinetic, &tendency.u[k]),
-                    dot(&enthalpy, &tendency.theta_ps[k]),
-                )
-            })
-            .collect();
-        for (kinetic, thermal) in terms {
-            rate.kinetic += kinetic;
-            rate.thermal += thermal;
-        }
-        rate
+        energy_rate(&self.parameters(), state, tendency)
+    }
+
+    /// The step's three tendencies at once, computed side by side:
+    /// [`tendency`](Self::tendency) of `now` into `out`, and, where the
+    /// model has them, the diffusion and forcing tendencies of `old` into
+    /// `diffusion` and `forcing` (as
+    /// [`diffusion_tendency`](Self::diffusion_tendency) and
+    /// [`forcing_tendency`](Self::forcing_tendency); otherwise untouched),
+    /// each with its [`energy_tendency`](Self::energy_tendency).
+    pub fn step_tendencies(
+        &mut self,
+        now: &LayeredState,
+        old: &LayeredState,
+        out: &mut LayeredState,
+        diffusion: &mut LayeredState,
+        forcing: &mut LayeredState,
+    ) -> (Option<EnergyTerms>, Option<EnergyTerms>) {
+        let params = Parameters {
+            ops: &self.ops,
+            gas: self.gas,
+            levels: &self.levels,
+            gravity: self.gravity,
+            coriolis: &self.coriolis,
+            surface_geopotential: &self.surface_geopotential,
+            humidity_profile: &self.humidity_profile,
+        };
+        let (work, diffuser, forcer) = (&mut self.work, &mut self.diffusion, &mut self.forcing);
+        let (forcing_rate, diffusion_rate) = rayon::join(
+            || {
+                forcer.as_mut().map(|f| {
+                    for x in forcing.parts_mut() {
+                        x.fill(0.0);
+                    }
+                    f.add_tendency(old, forcing);
+                    energy_rate(&params, old, forcing)
+                })
+            },
+            || {
+                compute_tendency(params, work, now, out);
+                diffuser.as_mut().map(|d| {
+                    for x in diffusion.parts_mut() {
+                        x.fill(0.0);
+                    }
+                    d.add_tendency(params.ops, old, diffusion);
+                    energy_rate(&params, old, diffusion)
+                })
+            },
+        );
+        (diffusion_rate, forcing_rate)
     }
 
     /// Advance `state` by `dt` seconds with classic fourth-order Runge–Kutta,
@@ -936,11 +936,70 @@ struct Parameters<'p, 'a> {
     humidity_profile: &'p RadiationParams,
 }
 
+/// [`LayeredModel::energy_tendency`].
+fn energy_rate(params: &Parameters, state: &LayeredState, tendency: &LayeredState) -> EnergyTerms {
+    let Parameters {
+        ops,
+        gas,
+        levels,
+        gravity,
+        ..
+    } = *params;
+    let r2 = ops.radius() * ops.radius();
+    let g = ops.geometry();
+    let ds = levels.dsigma();
+    let n = levels.count();
+    let edges = ops.mesh().edges();
+    let edge_areas = ops.edge_areas();
+    let mut rate = EnergyTerms::default();
+    let cp = gas.heat_capacity;
+    // Layer Exner functions, once per cell.
+    let mut exner = vec![0.0; n * state.ps.len()];
+    exner
+        .par_chunks_mut(n)
+        .with_min_len(MIN_CHUNK / 128)
+        .zip(state.ps.par_iter())
+        .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
+    let exner = &exner;
+    let edge_areas = &edge_areas;
+    let terms: Vec<(f64, f64)> = (0..n)
+        .into_par_iter()
+        .map(|k| {
+            let dsk = ds[k];
+            // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
+            let kinetic: Vec<f64> = (0..edges.len())
+                .into_par_iter()
+                .with_min_len(MIN_CHUNK)
+                .map(|e| {
+                    let [a, b] = edges[e].cells;
+                    let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
+                    edge_areas[e] * dp * state.u[k][e] / gravity
+                })
+                .collect();
+            // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
+            let enthalpy: Vec<f64> = (0..state.ps.len())
+                .into_par_iter()
+                .with_min_len(MIN_CHUNK)
+                .map(|i| g.cell_areas[i] * r2 * dsk * cp * exner[i * n + k] / gravity)
+                .collect();
+            (
+                dot(&kinetic, &tendency.u[k]),
+                dot(&enthalpy, &tendency.theta_ps[k]),
+            )
+        })
+        .collect();
+    for (kinetic, thermal) in terms {
+        rate.kinetic += kinetic;
+        rate.thermal += thermal;
+    }
+    rate
+}
+
 fn interface_ratios(params: &Parameters, state: &LayeredState) -> Vec<[Vec<f64>; 2]> {
     let n = params.levels.count();
     let ratios: Vec<Vec<[f64; 2]>> = (0..state.ps.len())
         .into_par_iter()
-        .with_min_len(MIN_CHUNK / 16)
+        .with_min_len(MIN_CHUNK / 128)
         .map(|i| {
             let ps = state.ps[i];
             let mut exner = [0.0; MAX_LAYERS];
@@ -1064,7 +1123,7 @@ fn compute_tendency(
         let layers = &*layers;
         column
             .par_chunks_mut(2 * n)
-            .with_min_len(MIN_CHUNK / 16)
+            .with_min_len(MIN_CHUNK / 128)
             .enumerate()
             .for_each(|(i, c)| {
                 let (exner, phi) = c.split_at_mut(n);
