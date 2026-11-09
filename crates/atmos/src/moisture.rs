@@ -139,6 +139,9 @@ pub struct MoistureParams {
     pub condensation_humidity: [f64; 3],
     /// Large-scale condensation time (s).
     pub condensation_time: f64,
+    /// Bottom-layer relative humidity below which air climbing a slope
+    /// doesn't rain.
+    pub orographic_humidity: f64,
     /// Surface relative humidity of convection's reference profile (the
     /// Manabe–Wetherald shape above it).
     pub convection_humidity: f64,
@@ -174,6 +177,7 @@ impl Default for MoistureParams {
         Self {
             condensation_humidity: [0.45, 0.7, 0.9],
             condensation_time: 4.0 * 3600.0,
+            orographic_humidity: 0.5,
             convection_humidity: 0.7,
             convection_time: 2.0 * 3600.0,
             reevaporation: 0.5,
@@ -199,6 +203,9 @@ pub struct MoistColumn {
     /// Stratosphere temperature (K): the floor of the top layer's
     /// convective reference.
     pub stratosphere: f64,
+    /// Upslope ascent forcing rain out of the bottom layer's air (m s⁻¹; zero
+    /// on a lee slope, or over smooth terrain).
+    pub orographic_ascent: f64,
 }
 
 /// The moist physics' tendencies and diagnostics for one column.
@@ -214,6 +221,9 @@ pub struct MoistTendency {
     pub snow: f64,
     /// The part of the precipitation from convection (kg m⁻² s⁻¹).
     pub convective: f64,
+    /// The part of the precipitation from air forced over sub-grid hills
+    /// (kg m⁻² s⁻¹).
+    pub orographic: f64,
     /// Water the convection adds to the lowest layer (negative if it
     /// dries it; kg m⁻² s⁻¹).
     pub convective_boundary: f64,
@@ -459,6 +469,20 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             out.temperature[k] += l * rate / cp;
         }
     }
+    // Air forced up a slope rains out in proportion to the moisture it
+    // carries up, `ε ρ q w` (Smith 1979), once it's humid enough, and no
+    // faster than the large-scale condensation.
+    if column.orographic_ascent > 0.0 {
+        let density = ps / (gas.gas_constant * column.surface_air);
+        let humid =
+            ((rh[bottom] - p.orographic_humidity) / (1.0 - p.orographic_humidity)).clamp(0.0, 1.0);
+        let rate = q[bottom]
+            * humid
+            * (column.orographic_ascent * density / m[bottom]).min(1.0 / p.condensation_time);
+        out.orographic = rate * m[bottom];
+        out.humidity[bottom] -= rate;
+        out.temperature[bottom] += l * rate / cp;
+    }
     // Rain from above re-evaporates partly in each layer it falls through,
     // up to that layer's condensation threshold.
     let mut evaporated = vec![0.0; n];
@@ -472,7 +496,7 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     }
 
     // Rain or snow.
-    let mut total = out.convective;
+    let mut total = out.convective + out.orographic;
     for c in &condensed {
         total += c;
     }
@@ -560,6 +584,7 @@ mod tests {
             temperature,
             surface_air,
             stratosphere: 210.0,
+            orographic_ascent: 0.0,
         }
     }
 
@@ -643,6 +668,43 @@ mod tests {
                     levels.count()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn orographic_rain_takes_its_water_and_heat_from_the_bottom_layer() {
+        let (p, r) = (MoistureParams::default(), RadiationParams::default());
+        for levels in layer_sets() {
+            let s = setting(&p, &r, &levels);
+            let [_, base, _] = columns(&s);
+            let bottom = levels.count() - 1;
+            let mass = levels.dsigma()[bottom] * base.ps / s.gravity;
+            let lifted = MoistColumn {
+                orographic_ascent: 0.02,
+                ..base.clone()
+            };
+            let (with, without) = (moist_physics(&s, &lifted), moist_physics(&s, &base));
+            assert_eq!(without.orographic, 0.0);
+            assert!(with.orographic > 0.0);
+            let total = |t: &MoistTendency| t.rain + t.snow;
+            assert!((total(&with) - total(&without) - with.orographic).abs() < 1e-15);
+            let dried = (without.humidity[bottom] - with.humidity[bottom]) * mass;
+            assert!((dried - with.orographic).abs() < 1e-15 * mass);
+            let warmed = (with.temperature[bottom] - without.temperature[bottom])
+                * s.gas.heat_capacity
+                * mass;
+            let expected = (LATENT_HEAT
+                + FUSION_HEAT * (with.snow - without.snow) / with.orographic)
+                * with.orographic;
+            assert!((warmed - expected).abs() < 1e-9 * expected.abs());
+            // Too dry to rain, however hard it climbs.
+            let t = base.temperature.clone();
+            let air = base.surface_air;
+            let dry = MoistColumn {
+                orographic_ascent: 0.02,
+                ..column(t, [0.1, 0.3], air, &s)
+            };
+            assert_eq!(moist_physics(&s, &dry).orographic, 0.0);
         }
     }
 

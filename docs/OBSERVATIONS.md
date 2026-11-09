@@ -774,3 +774,28 @@ and goes at the mid-latitudes.
 
 **Revisit when:** long runs (M4) and the land's seasonal cycle in the Earth run
 (M2 step 10.2.8), or sooner if soil temperatures look wrong.
+
+### O-34: More rain on the lee of a ridge than the windward side
+
+**Seen (M2.10.2.6):** the orographic rain scheme works when wind blows onto a
+slope (1.8 mm/day on the windward flank, none on the lee). But in 120-day 3-D
+runs at 2.5k cells, total rain is higher on the lee:
+
+| Setup | Windward (no ridge) | Lee (no ridge) |
+|---|---|---|
+| Ridge on a pole-to-pole continent | 2.89 (3.88) mm/day | 3.53 (3.32) mm/day |
+| Mountain chain in open ocean | 2.55 (3.56) mm/day | 3.51 (3.39) mm/day |
+
+The scheme's own rain is also small there, 0.12–0.22 mm/day, and slightly
+higher on the lee. Mean bottom-layer eastward winds on these flanks are only
+about 1–3 m/s (sometimes reversed), against ~15 m/s aloft, so "windward" barely
+exists at low levels, and rain follows passing storms and the ridge's stationary
+waves. A lee-side trough at this resolution probably adds to it.
+
+**Why it's acceptable for now:** the scheme responds correctly to the wind it's
+given, and on Earth its rain falls where mountains force it to. A real test
+needs a better low-level circulation.
+
+**Revisit when:** the Earth run's close-out (M2 step 10.2.8), and at a higher
+resolution: check whether low-level westerlies strengthen and the lee excess
+shrinks.

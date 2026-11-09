@@ -33,7 +33,9 @@ pub mod williamson;
 
 pub use baroclinic::ShearedFlow;
 pub use climatology::{ZonalClimatology, ZonalMeans};
-pub use column_physics::{ColumnPhysics, Equilibrium, PhysicsParams, SingleColumn};
+pub use column_physics::{
+    ColumnPhysics, Equilibrium, OrographyParams, PhysicsParams, SingleColumn,
+};
 pub use diffusion::{Hyperdiffusion, HyperdiffusionOptions};
 pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};

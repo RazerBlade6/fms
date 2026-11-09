@@ -45,6 +45,11 @@
 //!   up where its air saturates below its top.
 //! - **Moisture**: convection, large-scale condensation, re-evaporation,
 //!   rain or snow, and diagnosed clouds ([`crate::moisture`]).
+//! - **Sub-grid hills**: wind blowing up the terrain's slope rains out a
+//!   share of the moisture it carries (Smith 1979), rising with the spread
+//!   of the cell's sub-grid terrain, so rain falls on windward slopes and not
+//!   on lee ones. The spread also slows the wind by a drag whose lost kinetic
+//!   energy heats the boundary layer like the rest of the drag.
 //! - **Dissipation**: the kinetic energy drag and entrainment remove heats
 //!   the boundary layer ([`crate::dissipation`]).
 //!
@@ -64,6 +69,7 @@ use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
 use fms_grid::zonal::east_north;
 use fms_planet::Planet;
+use glam::DVec3;
 use rayon::prelude::*;
 
 use crate::dissipation::KineticHeating;
@@ -185,6 +191,35 @@ impl LandParams {
     }
 }
 
+/// Sub-grid hills. [`Default`] is Earth-like.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrographyParams {
+    /// Share of the moisture carried up a slope that rains out, over hills
+    /// at least [`full_relief`](Self::full_relief) high (Smith 1979's `ε`).
+    pub rain_efficiency: f64,
+    /// Height spread (m) at which the hills lift the air fully.
+    pub full_relief: f64,
+    /// Horizontal spacing of the hills, for their steepness (m).
+    pub hill_spacing: f64,
+    /// Drag coefficient of the hills per unit of their steepness, height
+    /// over spacing; a simplified Lott & Miller (1997).
+    pub drag: f64,
+    /// Strongest rate of the hills' drag (s⁻¹), for the explicit step.
+    pub max_drag_rate: f64,
+}
+
+impl Default for OrographyParams {
+    fn default() -> Self {
+        Self {
+            rain_efficiency: 0.5,
+            full_relief: 500.0,
+            hill_spacing: 100e3,
+            drag: 1.0,
+            max_drag_rate: 1.0 / (3.0 * 3600.0),
+        }
+    }
+}
+
 /// Column-physics parameters. [`Default`] is Earth-like.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicsParams {
@@ -198,6 +233,8 @@ pub struct PhysicsParams {
     pub slab_depth: f64,
     /// The land tile.
     pub land: LandParams,
+    /// Sub-grid hills.
+    pub orography: OrographyParams,
     /// The surface layer and boundary-layer top (3-D).
     pub surface_layer: SurfaceLayerParams,
     /// The single column's bulk transfer coefficient for heat and moisture.
@@ -225,6 +262,7 @@ impl Default for PhysicsParams {
             co2: 420.0,
             slab_depth: 10.0,
             land: LandParams::default(),
+            orography: OrographyParams::default(),
             surface_layer: SurfaceLayerParams::default(),
             transfer: 1.3e-3,
             gust: 3.0,
@@ -525,6 +563,9 @@ struct SurfaceFlux {
     evaporation: f64,
     /// Drag on the bottom layer's wind (s⁻¹).
     drag: f64,
+    /// Ascent of the bottom layer's wind up the terrain's slope, in the
+    /// share the sub-grid hills lift (m s⁻¹; zero on a lee slope).
+    upslope: f64,
     /// Air entrained across the boundary layer's top (kg m⁻² s⁻¹).
     entrainment: f64,
     /// Shallow cumulus mass flux out of the boundary layer (kg m⁻² s⁻¹).
@@ -559,6 +600,10 @@ pub struct ColumnPhysics<'a> {
     next_radiation: f64,
     /// Land fraction of each cell.
     land_fraction: Vec<f64>,
+    /// Sub-grid spread of each cell's surface height (m).
+    relief: Vec<f64>,
+    /// Gradient of each cell's surface height (m per m).
+    relief_slope: Vec<DVec3>,
     /// Temperature of each cell's ocean tile (K).
     ocean_temperature: Vec<f64>,
     /// Skin temperature of each cell's land tile (K).
@@ -654,6 +699,8 @@ impl<'a> ColumnPhysics<'a> {
             time,
             next_radiation: time,
             land_fraction,
+            relief: vec![0.0; n],
+            relief_slope: vec![DVec3::ZERO; n],
             land_temperature: surface_temperature.clone(),
             soil_temperature: surface_temperature.clone(),
             soil_water: vec![params.land.critical_water(); n],
@@ -683,6 +730,23 @@ impl<'a> ColumnPhysics<'a> {
         physics.radiate(state);
         physics.update_surface_fluxes(state, None);
         physics
+    }
+
+    /// The physics with each cell's mean surface `height` (m), whose slope
+    /// the wind climbs, and sub-grid spread of it `relief` (m), which rains
+    /// and drags on the air crossing it.
+    ///
+    /// # Panics
+    /// If either doesn't have one value per cell.
+    pub fn with_relief(mut self, relief: Vec<f64>, height: &[f64]) -> Self {
+        assert_eq!(relief.len(), self.relief.len());
+        assert_eq!(height.len(), self.relief.len());
+        let (mesh, geometry) = (self.ops.mesh(), self.ops.geometry());
+        let mut gradient = vec![0.0; mesh.edges().len()];
+        self.ops.gradient(height, &mut gradient);
+        self.relief_slope = geometry.reconstruct_vectors(mesh, &gradient);
+        self.relief = relief;
+        self
     }
 
     /// The physics with the surface temperature held at its starting values
@@ -799,6 +863,7 @@ impl<'a> ColumnPhysics<'a> {
             humidity,
             surface_air,
             stratosphere: fms_math::pow(olr / (2.0 * STEFAN_BOLTZMANN), 0.25),
+            orographic_ascent: self.surface[i].upslope,
         }
     }
 
@@ -916,6 +981,11 @@ impl<'a> ColumnPhysics<'a> {
                     tiles[LAND] = tile(skin, rough, wetness);
                 }
                 let mean = TileFlux::blend(tiles[OCEAN], tiles[LAND], fraction);
+                let hills = &self.params.orography;
+                let hill_drag = (g * density * hills.drag * self.relief[i] / hills.hill_spacing
+                    * wind
+                    / (ps * ds[bottom]))
+                    .min(hills.max_drag_rate);
                 let (sensible, evaporation) = (mean.sensible, mean.evaporation);
                 // Clouds' longwave cooling of the layer drives turbulence
                 // from its top.
@@ -956,7 +1026,10 @@ impl<'a> ColumnPhysics<'a> {
                     skin,
                     sensible,
                     evaporation,
-                    drag: mean.drag,
+                    drag: mean.drag + hill_drag,
+                    upslope: hills.rain_efficiency
+                        * (self.relief[i] / hills.full_relief).min(1.0)
+                        * winds[i].dot(self.relief_slope[i]).max(0.0),
                     entrainment: density_top * w_e,
                     cumulus: if cumulus {
                         sl.cumulus * density_top * w_star
@@ -1416,6 +1489,12 @@ impl Forcing for ColumnPhysics<'_> {
                 "Precipitation",
                 "mm day-1",
                 moist(|m| (m.rain + m.snow) * DAY),
+            ),
+            field(
+                "atm.orographic_precipitation",
+                "Rain and snow from air forced over sub-grid hills",
+                "mm day-1",
+                moist(|m| m.orographic * DAY),
             ),
             field(
                 "atm.snowfall",

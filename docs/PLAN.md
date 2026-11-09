@@ -502,7 +502,9 @@ Names only, as a reading list. Grouped by subsystem.
 - Large-scale (stratiform) condensation
 - Moist convective adjustment (Manabe 1965), or Betts–Miller relaxation
 - Latent heat release
-- Orographic lift (vertical velocity from wind blowing across terrain slope)
+- Orographic lift (vertical velocity from wind blowing across terrain slope):
+  upslope rain `P = ε ρ q w`, Smith (1979), with `ε` rising with the sub-grid
+  height spread
 
 ### 6.6 Surface and boundary layer
 - Bulk aerodynamic formulas (momentum drag, sensible heat, latent heat/evaporation)

@@ -6,18 +6,22 @@
 use fms_atmos::column_physics::{ApeSst, CLIMATE_LEVELS, LATENT_HEAT, initial_state};
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
-    ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
+    ColumnPhysics, Forcing, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
     LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
 use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
 
 const DAY: f64 = 86_400.0;
+/// A callback run after each step.
+type EachStep<'a> = &'a mut dyn FnMut(&LayeredSemiImplicit, &MeshGeometry, f64);
+/// No terrain: a cell's sub-grid height spread and mean height (m).
+const FLAT: fn(glam::DVec3) -> (f64, f64) = |_| (0.0, 0.0);
 
 /// Run `days` on frequency `k` from the single-column equilibrium, calling
 /// `each` after every step.
 fn run(k: u32, days: f64, each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64)) {
-    run_with(k, days, Levels::new(&CLIMATE_LEVELS), |_| 0.0, each);
+    run_with(k, days, Levels::new(&CLIMATE_LEVELS), |_| 0.0, FLAT, each);
 }
 
 /// Land fraction of a continent within 45° of the prime meridian, with
@@ -33,6 +37,7 @@ fn run_with(
     days: f64,
     levels: Levels,
     land: impl Fn(glam::DVec3) -> f64,
+    relief: impl Fn(glam::DVec3) -> (f64, f64),
     mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
 ) {
     let planet = Planet::earth();
@@ -48,7 +53,10 @@ fn run_with(
             .iter()
             .map(|p| 2.0 * planet.rotation_rate() * p.z)
             .collect(),
-        vec![0.0; mesh.n_cells()],
+        mesh.cell_centers()
+            .iter()
+            .map(|&p| GRAVITY * relief(p).1)
+            .collect(),
     );
     let (state, ts) = initial_state(&model, &planet, &params);
     // Radiatively driven jets and storms reach ~100 m/s.
@@ -63,6 +71,14 @@ fn run_with(
         &state,
         vec![ts; mesh.n_cells()],
         mesh.cell_centers().iter().map(|&p| land(p)).collect(),
+    )
+    .with_relief(
+        mesh.cell_centers().iter().map(|&p| relief(p).0).collect(),
+        &mesh
+            .cell_centers()
+            .iter()
+            .map(|&p| relief(p).1)
+            .collect::<Vec<_>>(),
     );
     let model = model
         .with_hyperdiffusion(diffusion)
@@ -103,12 +119,12 @@ fn a_world_without_land_is_the_aquaplanet_bit_for_bit() {
 
 #[test]
 fn the_planets_energy_and_water_budgets_close() {
-    budgets_close(16, 90.0, |_| 0.0, |_, _, _| ());
+    budgets_close(16, 90.0, |_| 0.0, FLAT, |_, _, _| ());
 }
 
 #[test]
 fn the_planets_energy_and_water_budgets_close_with_land_tiles() {
-    budgets_close(16, 90.0, continent_fraction, |_, _, _| ());
+    budgets_close(16, 90.0, continent_fraction, FLAT, |_, _, _| ());
 }
 
 /// Run `days` at frequency `k`, calling `each` after every step, and check
@@ -117,6 +133,7 @@ fn budgets_close(
     k: u32,
     days: f64,
     land: impl Fn(glam::DVec3) -> f64,
+    relief: impl Fn(glam::DVec3) -> (f64, f64),
     mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
 ) {
     // What the atmosphere (enthalpy and latent energy) and the slab gain
@@ -129,7 +146,7 @@ fn budgets_close(
     let mut first = None;
     let mut last = None;
     let levels = Levels::new(&CLIMATE_LEVELS);
-    run_with(k, days, levels, land, |si, geometry, dt| {
+    run_with(k, days, levels, land, relief, |si, geometry, dt| {
         each(si, geometry, dt);
         let budget = si.model().forcing().unwrap().budget().unwrap();
         let row = (
@@ -234,7 +251,7 @@ fn a_year_on_land_swings_more_than_ocean_and_snow_comes_and_goes() {
     let mut per_day = 0;
     let (mut driest, mut wettest) = (f64::MAX, f64::MIN);
     let (mut most_snow, mut least_snow) = (vec![f64::MIN; land.len()], vec![f64::MAX; land.len()]);
-    budgets_close(8, days, continent_fraction, |si, _, dt| {
+    budgets_close(8, days, continent_fraction, FLAT, |si, _, dt| {
         per_day = (DAY / dt).round() as usize;
         let fields = si.model().forcing().unwrap().cell_fields();
         let water = fields.iter().find(|f| f.name == "land.soil_water").unwrap();
@@ -315,6 +332,123 @@ fn a_year_on_land_swings_more_than_ocean_and_snow_comes_and_goes() {
     );
 }
 
+/// The sub-grid height spread and mean height (m) of a north–south ridge
+/// along the prime meridian.
+fn ridge(p: glam::DVec3) -> (f64, f64) {
+    let lon = fms_math::atan2(p.y, p.x).to_degrees() / 8.0;
+    let shape = fms_math::exp(-0.5 * lon * lon);
+    (800.0 * shape, 2500.0 * shape)
+}
+
+#[test]
+fn wind_up_a_slope_rains_on_the_windward_side_and_not_the_lee() {
+    // A steady 10 m/s westerly in the boundary layer, on an all-land world
+    // with the ridge's slope, and one evaluation of the physics.
+    const WIND: f64 = 10.0;
+    let planet = Planet::earth();
+    let (mesh, _) = SphereMesh::centroidal(16, LloydOptions::default());
+    let geometry = MeshGeometry::new(&mesh);
+    let params = PhysicsParams::default();
+    let centers = mesh.cell_centers();
+    let model = LayeredModel::new(
+        Operators::new(&mesh, &geometry, RADIUS),
+        GRAVITY,
+        Gas::EARTH_AIR,
+        Levels::new(&CLIMATE_LEVELS),
+        mesh.vertices()
+            .iter()
+            .map(|p| 2.0 * planet.rotation_rate() * p.z)
+            .collect(),
+        vec![0.0; mesh.n_cells()],
+    );
+    let (mut state, ts) = initial_state(&model, &planet, &params);
+    for (u, edge) in state.u[CLIMATE_LEVELS.len()].iter_mut().zip(mesh.edges()) {
+        let [a, b] = edge.cells.map(|c| centers[c as usize]);
+        let east = glam::DVec3::Z.cross(a + b).normalize();
+        *u = WIND * east.dot((b - a).normalize());
+    }
+    let mut physics = ColumnPhysics::with_land(
+        &model,
+        &planet,
+        params,
+        0.0,
+        &state,
+        vec![ts; mesh.n_cells()],
+        vec![1.0; mesh.n_cells()],
+    )
+    .with_relief(
+        centers.iter().map(|&p| ridge(p).0).collect(),
+        &centers.iter().map(|&p| ridge(p).1).collect::<Vec<_>>(),
+    );
+    // The fluxes hold the ascent, so they need the relief first.
+    physics.advance(&state, 1.0);
+    let mut tendency = state.clone();
+    physics.add_tendency(&state, &mut tendency);
+    let fields = physics.cell_fields();
+    let rain = &fields
+        .iter()
+        .find(|f| f.name == "atm.orographic_precipitation")
+        .unwrap()
+        .values;
+    let flank = |west: f64, east: f64| {
+        let cells: Vec<usize> = (0..mesh.n_cells())
+            .filter(|&i| {
+                let lon = fms_math::atan2(centers[i].y, centers[i].x).to_degrees();
+                let lat = fms_math::asin(centers[i].z).abs().to_degrees();
+                (west..east).contains(&lon) && lat < 60.0
+            })
+            .collect();
+        cells.iter().map(|&i| rain[i]).sum::<f64>() / cells.len() as f64
+    };
+    let (windward, lee) = (flank(-16.0, -4.0), flank(4.0, 16.0));
+    eprintln!("windward {windward:.2} mm/day, lee {lee:.4}");
+    assert!(windward > 0.5, "windward rain {windward} mm/day");
+    assert!(lee < 0.01 * windward, "lee rain {lee} mm/day");
+    assert!(rain.iter().all(|r| *r >= 0.0));
+}
+
+#[test]
+fn hidden_hills_slow_the_wind_and_return_its_energy_as_heat() {
+    // Hills the atmosphere can't see, over land: nothing but their drag acts
+    // on the wind. The budgets are checked across it, which closes only if
+    // the wind's lost energy comes back as heat.
+    let (mesh, _) = SphereMesh::centroidal(16, LloydOptions::default());
+    let crest: Vec<usize> = (0..mesh.n_cells())
+        .filter(|&i| ridge(mesh.cell_centers()[i]).0 > 400.0)
+        .collect();
+    let days = 60.0;
+    let mesh = &mesh;
+    let bottom = CLIMATE_LEVELS.len();
+    let hills = |p: glam::DVec3| (ridge(p).0, 0.0);
+    let measure = |run: &mut dyn FnMut(EachStep)| {
+        let (mut speed, mut samples, mut heated) = (0.0, 0.0, 0.0);
+        run(&mut |si, geometry, dt| {
+            heated = si.model().forcing().unwrap().budget().unwrap().dissipated;
+            if si.steps() as f64 * dt > 15.0 * DAY {
+                let wind = geometry.reconstruct_vectors(mesh, &si.state().u[bottom]);
+                speed += crest.iter().map(|&i| wind[i].length()).sum::<f64>() / crest.len() as f64;
+                samples += 1.0;
+            }
+        });
+        (speed / samples, heated)
+    };
+    let (speed, heated) =
+        measure(&mut |each| budgets_close(16, days, continent_fraction, hills, each));
+    let (flat_speed, flat_heated) = measure(&mut |each| {
+        let levels = Levels::new(&CLIMATE_LEVELS);
+        run_with(16, days, levels, continent_fraction, FLAT, each);
+    });
+    eprintln!(
+        "wind on the crest {speed:.2} m/s, without the hills {flat_speed:.2}; \
+         heat from friction {heated:.3e} J, without {flat_heated:.3e}"
+    );
+    assert!(
+        speed < 0.9 * flat_speed,
+        "wind {speed}, without {flat_speed}"
+    );
+    assert!(heated > flat_heated, "heat {heated}, without {flat_heated}");
+}
+
 #[test]
 fn more_layers_run_the_moist_aquaplanet() {
     // Three layers (a thin bottom one) and five: 60 days from the single
@@ -333,6 +467,7 @@ fn more_layers_run_the_moist_aquaplanet() {
             60.0,
             levels,
             |_| 0.0,
+            FLAT,
             |si, geometry, dt| {
                 let forcing = si.model().forcing().unwrap();
                 let row = (

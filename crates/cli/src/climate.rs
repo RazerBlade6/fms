@@ -98,6 +98,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Moisture,
         ),
         (
+            "atm.orographic_precipitation",
+            "Orographic precipitation",
+            "mm day-1",
+            ColorScale::Moisture,
+        ),
+        (
             "atm.evaporation",
             "Evaporation",
             "mm day-1",
@@ -196,6 +202,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &state,
         initial_surface_temperature(&model, &params, surface_temperature),
         world.fields.read(world.core.terrain.land_fraction).to_vec(),
+    )
+    .with_relief(
+        world
+            .fields
+            .read(world.core.terrain.surface_height_stddev)
+            .to_vec(),
+        &world.fields.read(world.core.terrain.surface_height),
     );
     // Where each wanted field sits in the physics' list.
     let fields_now = physics.cell_fields();

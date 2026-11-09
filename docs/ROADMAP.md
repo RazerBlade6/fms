@@ -226,10 +226,18 @@ Added after the M1 review: tooling the GCM work depends on.
         closes to −0.024 W/m² and water to 3×10⁻¹⁴ of the atmosphere's;
         mid-latitude land snow peaks at 54 kg/m² and melts away entirely. On
         Earth at 2.5k cells: 288.4 K, albedo 0.328.
-      - [ ] 10.2.6. **Sub-grid orography**: orographic rain and drag from
+      - [x] 10.2.6. **Sub-grid orography**: orographic rain and drag from
         the height spread. Test: more rain on the windward side of the
         ridge than the lee; the drag slows the flow over rough terrain and
         its energy returns as heat.
+        Done: upslope wind rains out a share of the moisture it carries
+        (Smith 1979), and the height spread adds a drag through the existing
+        friction path. A steady 10 m/s westerly rains 1.8 mm/day on a ridge's
+        windward flank and nothing on its lee; the hills slow the wind on the
+        crest from 4.2 to 3.0 m/s, and the budgets close. On Earth the rain
+        falls on the Rockies, Andes, Himalayas and East African highlands.
+        Unmet: in the full 3-D model at 2.5k cells, the lee of a ridge still
+        gets more total rain than the windward side (O-34).
       - [ ] 10.2.7. **Single-column cases** for the boundary layer and
         convection (BOMEX trade cumulus, DYCOMS stratocumulus): the column
         physics as a per-column function forced by the cases' prescribed
