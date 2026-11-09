@@ -740,7 +740,8 @@ range down: evaporation takes most of the sunlight that dry ground would turn
 into heating.
 
 **Revisit when:** the Earth run's seasonal cycle is compared with observations
-(step 10.2.8), if continental interiors are too extreme or too early.
+(step 15), if continental interiors are too extreme or too early. The 10.2.8
+close-out didn't make that comparison: the run writes annual-mean maps only.
 
 ### O-32: Too little rain over the Amazon
 
@@ -755,7 +756,11 @@ to the rain it's given. Tropical land rainfall depends on the land surface
 as a whole, and 2.5k cells is coarse. Dry-soil surface air is also still
 buoyant as if saturated, in `exchange`.
 
-**Revisit when:** the Earth run's close-out (M2 step 10.2.8).
+**Checked at the close-out (M2.10.2.8):** still too dry at 10k cells, so
+going from 2.5k to 10k cells doesn't fix it. The Amazon gets about 3.4 mm/day, read from the
+final-year map, with Borneo at 4.4 mm/day where Earth gets 8 or more.
+
+**Revisit when:** the tropical rain comparison and tuning pass (M2 step 15).
 
 ### O-33: The snow pack is simple
 
@@ -772,8 +777,13 @@ and goes at the mid-latitudes.
 - Frost forms as liquid in the bucket, and rain passes through the pack
   without freezing.
 
-**Revisit when:** long runs (M4) and the land's seasonal cycle in the Earth run
-(M2 step 10.2.8), or sooner if soil temperatures look wrong.
+**Checked at the close-out (M2.10.2.8):** after 4 years the Antarctic pack
+reaches 129 kg/m² at most, and soil water there is high, which fits frost landing
+in the bucket. Antarctica's coldest annual mean is 246 K, about 20 K warmer
+than its interior should be; the cause isn't diagnosed.
+
+**Revisit when:** long runs (M4) and the land's seasonal cycle (M2 step 15), or
+sooner if soil temperatures look wrong.
 
 ### O-34: More rain on the lee of a ridge than the windward side
 
@@ -796,9 +806,20 @@ waves. A lee-side trough at this resolution probably adds to it.
 given, and on Earth its rain falls where mountains force it to. A real test
 needs a better low-level circulation.
 
-**Revisit when:** the Earth run's close-out (M2 step 10.2.8), and at a higher
-resolution: check whether low-level westerlies strengthen and the lee excess
-shrinks.
+**Checked at the close-out (M2.10.2.8):** rain read from the final-year map of
+the 10k-cell Earth run. The contrast has the right sign in two places and is
+absent in a third:
+
+| Region | Windward | Lee |
+|---|---|---|
+| Pacific Northwest and interior plateau | 4.2 mm/day | 3.7 mm/day |
+| South Himalaya and Tibet | 5.3 mm/day | 3.9 mm/day |
+| Southern Chile and Patagonia | 4.1 mm/day | 4.2 mm/day |
+
+The idealized ridge runs in the table above weren't repeated at 10k cells, so
+whether low-level westerlies strengthen there is still unmeasured.
+
+**Revisit when:** the Earth benchmark (M2 step 15).
 
 ### O-35: The column cases find two gaps at the inversion
 

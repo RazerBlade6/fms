@@ -144,7 +144,7 @@ Added after the M1 review: tooling the GCM work depends on.
     energy closes to 0.03 W/m²). Found: shortwave water absorption depends
     on the layering (O-27); with more than one interface the vertical modes
     are non-normal (O-28).
-- [ ] 10. **Boundary layer and land surface**, in two reviewed parts:
+- [x] 10. **Boundary layer and land surface**, in two reviewed parts:
     - [x] 10.1. **Boundary layer** (on the aquaplanet):
       - make the shortwave independent of the layering (O-27): the
         near-infrared band carried separately, each layer's absorption from
@@ -175,7 +175,7 @@ Added after the M1 review: tooling the GCM work depends on.
       imbalance +14 W/m² (APE ~13), albedo 0.31, rain 3.4 mm/day. Unmet:
       the subtropics rain 2.5–2.9 mm/day, set by the circulation rather
       than the boundary layer (O-22, for step 15).
-    - [ ] 10.2. **Land surface**, developed on an idealized continent, then
+    - [x] 10.2. **Land surface**, developed on an idealized continent, then
       run on the Earth heightmap:
       - [x] 10.2.1. **Terrain in the climate run**: surface geopotential
         from the world's terrain; a resting start in hydrostatic balance
@@ -249,9 +249,15 @@ Added after the M1 review: tooling the GCM work depends on.
         stratocumulus right given the real inversion. Two gaps, kept as
         ignored tests (O-35): deep convection rains 12 mm/day in BOMEX, and
         DYCOMS entrains about ten times too fast.
-      - [ ] 10.2.8. **Earth run and close-out**: the full model on the
+      - [x] 10.2.8. **Earth run and close-out**: the full model on the
         Earth heightmap, with terrain land, ocean, soil water and snow
         together; energy and water budgets close over a year.
+        Done: 4 years at 2.5k cells and 1.2 years at 10k. Over the final year
+        the energy residual is +0.0022 and -0.0060 W/m², and the water
+        residuals are under 10⁵ kg of about 10¹⁶. Global means at 2.5k: 287.98 K,
+        albedo 0.331, precipitation 3.46 mm/day. The regional rain is still
+        wrong in places (O-32, O-34); comparing it with observations is step
+        15.
 - [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
     Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
     over a 150 m deep layer per ocean cell, horizontal diffusion in both,
