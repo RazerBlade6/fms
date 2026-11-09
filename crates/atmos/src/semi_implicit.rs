@@ -35,7 +35,7 @@
 //! Leapfrog needs two starting levels: the first step is taken with RK4
 //! substeps short enough to be explicitly stable.
 
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::helmholtz::{Helmholtz, SolveReport, dot};

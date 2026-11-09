@@ -1,7 +1,7 @@
 //! Systems that compute top-of-atmosphere sunlight on the climate grid.
 
 use fms_fields::FieldId;
-use fms_geo::coords::to_lat_lon;
+use fms_grid::coords::to_lat_lon;
 use fms_planet::Planet;
 use fms_sched::{Access, Rate, StepContext, System, SystemDesc, Tiers};
 use glam::DVec3;

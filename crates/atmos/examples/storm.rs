@@ -15,8 +15,8 @@ use fms_atmos::{
     Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions,
     Levels, ShearedFlow,
 };
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 const DAY: f64 = 86_400.0;
 

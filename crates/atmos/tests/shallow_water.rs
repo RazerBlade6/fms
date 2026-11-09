@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 
 use fms_atmos::williamson::{Case, DAY, GRAVITY, RADIUS, error_norms};
 use fms_atmos::{ShallowWater, State};
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 fn mesh(k: u32) -> &'static (SphereMesh, MeshGeometry) {
     static M: [OnceLock<(SphereMesh, MeshGeometry)>; 2] = [OnceLock::new(), OnceLock::new()];

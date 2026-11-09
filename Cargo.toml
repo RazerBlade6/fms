@@ -19,7 +19,7 @@ tiff = "0.11"
 rayon = "1.12"
 
 fms-math = { path = "crates/math" }
-fms-geo = { path = "crates/geo" }
+fms-grid = { path = "crates/grid" }
 fms-fields = { path = "crates/fields" }
 fms-sched = { path = "crates/sched" }
 fms-planet = { path = "crates/planet" }
@@ -27,7 +27,7 @@ fms-worldgen = { path = "crates/worldgen" }
 fms-atmos = { path = "crates/atmos" }
 fms-ocean = { path = "crates/ocean" }
 fms-hydro = { path = "crates/hydro" }
-fms-climate = { path = "crates/climate" }
+fms-climatology = { path = "crates/climatology" }
 fms-sim = { path = "crates/sim" }
 
 [workspace.lints.rust]
@@ -48,7 +48,7 @@ opt-level = 3
 
 # The numerical kernels: tests run multi-day simulations, which are several
 # times slower at opt-level 1. Debug info is kept.
-[profile.dev.package.fms-geo]
+[profile.dev.package.fms-grid]
 opt-level = 3
 
 [profile.dev.package.fms-atmos]

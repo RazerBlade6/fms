@@ -3,7 +3,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::fmt;
 
-use fms_geo::coords::to_lat_lon;
+use fms_grid::coords::to_lat_lon;
 use glam::DVec3;
 
 /// Relative tolerance (in pixels) when checking that a raster spans the globe.
@@ -402,7 +402,7 @@ mod tests {
     fn bilinear_sampling_wraps_in_longitude() {
         let r = Raster::from_fn(36, 18, |_, lon| fms_math::cos(lon));
         for lon in [-PI, -3.1, 3.1, PI - 1e-9] {
-            let p = fms_geo::coords::from_lat_lon(0.1, lon);
+            let p = fms_grid::coords::from_lat_lon(0.1, lon);
             assert!((r.sample(p) - fms_math::cos(lon)).abs() < 0.01, "{lon}");
         }
     }

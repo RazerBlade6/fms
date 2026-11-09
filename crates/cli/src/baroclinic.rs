@@ -1,4 +1,4 @@
-//! `fms baroclinic`: run the two-layer dry core on a balanced, vertically
+//! `fms-climate baroclinic`: run the two-layer dry core on a balanced, vertically
 //! sheared zonal flow seeded with small waves, and render the baroclinic
 //! storms that grow from it.
 //!
@@ -8,7 +8,7 @@
 
 use clap::Args;
 use fms_atmos::ShearedFlow;
-use fms_geo::coords::to_lat_lon;
+use fms_grid::coords::to_lat_lon;
 
 use crate::layered_run::{
     DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, stepper,
@@ -59,7 +59,7 @@ pub fn run(args: BaroclinicArgs) -> Result<(), String> {
         vec![0.0; world.climate.mesh.n_cells()],
     )?;
     if setup.model.layers() != 2 {
-        return Err("fms baroclinic is a two-layer experiment (Phillips's model): leave --levels at one interface".into());
+        return Err("fms-climate baroclinic is a two-layer experiment (Phillips's model): leave --levels at one interface".into());
     }
     let model = setup.model;
     let flow = ShearedFlow {
@@ -121,7 +121,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fms-blowup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cli = Cli::parse_from([
-            "fms",
+            "fms-climate",
             "--terrain-frequency",
             "16",
             "--climate-frequency",

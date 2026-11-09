@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 fms-math.workspace = true
-fms-geo.workspace = true
+fms-grid.workspace = true
 glam.workspace = true
 rayon.workspace = true
 

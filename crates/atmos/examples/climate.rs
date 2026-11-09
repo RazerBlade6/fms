@@ -36,7 +36,7 @@ use fms_atmos::{
     ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
     LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
-use fms_geo::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
 
 const DAY: f64 = 86_400.0;
@@ -130,7 +130,7 @@ fn main() {
     let start_surface = if let Some(sst) = fixed_sst {
         mesh.cell_centers()
             .iter()
-            .map(|&p| sst.at(fms_geo::coords::to_lat_lon(p).0))
+            .map(|&p| sst.at(fms_grid::coords::to_lat_lon(p).0))
             .collect()
     } else {
         vec![surface_temperature; nc]
@@ -217,7 +217,7 @@ fn main() {
                     .cell_centers()
                     .iter()
                     .zip(&v)
-                    .map(|(&p, &v)| fms_geo::zonal::east_north(p, v))
+                    .map(|(&p, &v)| fms_grid::zonal::east_north(p, v))
                     .unzip();
                 for (b, (e, n)) in bands
                     .mean(&geometry, &east)

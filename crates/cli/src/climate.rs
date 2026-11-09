@@ -1,4 +1,4 @@
-//! `fms climate`: the layered model (four layers by default, the bottom one
+//! `fms-climate climate`: the layered model (four layers by default, the bottom one
 //! the boundary layer) driven by radiation and moist physics over slab
 //! ocean and land tiles and the world's terrain, on the world's planet
 //! (orbit, CO₂, surface pressure). Spins up, then averages the final year: zonal means, a global
@@ -13,7 +13,7 @@ use fms_atmos::column_physics::{
 };
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
-use fms_geo::LatitudeBands;
+use fms_grid::LatitudeBands;
 
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
@@ -361,7 +361,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             .sum::<f64>()
             / area
     };
-    let mut summary = format!("fms climate: {description}\n\n");
+    let mut summary = format!("fms-climate climate: {description}\n\n");
     let g =
         |name: &str| global(&means[names.iter().position(|n| *n == name).expect("known field")]);
     let (asr, olr) = (g("rad.absorbed_shortwave"), g("rad.outgoing_longwave"));

@@ -2,7 +2,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use fms_geo::coords::from_lat_lon;
+use fms_grid::coords::from_lat_lon;
 use fms_sim::Grid;
 use glam::DVec3;
 

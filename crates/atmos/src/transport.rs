@@ -38,8 +38,8 @@
 // Loops over the layers index several per-layer arrays together.
 #![allow(clippy::needless_range_loop)]
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 /// Largest share of a cell's water an upwind substep may move out.
@@ -425,7 +425,7 @@ impl Transport {
 mod tests {
     use super::*;
     use crate::levels::Levels;
-    use fms_geo::{LloydOptions, MeshGeometry, SphereMesh};
+    use fms_grid::{LloydOptions, MeshGeometry, SphereMesh};
 
     /// A random step on a small mesh: edge mass fluxes per layer, the
     /// interface fluxes and end surface pressure they imply.

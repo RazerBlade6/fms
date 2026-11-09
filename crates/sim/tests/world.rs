@@ -185,7 +185,7 @@ fn loads_a_png_heightmap() {
         .iter()
         .zip(elevation.iter())
     {
-        let lon = fms_geo::coords::to_lat_lon(*p).1.to_degrees();
+        let lon = fms_grid::coords::to_lat_lon(*p).1.to_degrees();
         // Cells near 0° and ±180° straddle the boundary and mix both halves.
         if lon < -10.0 && lon > -170.0 {
             assert!((z - 1000.0).abs() < 1e-3, "west {lon}: {z}");

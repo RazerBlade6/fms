@@ -315,18 +315,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fms-app"
-version = "0.1.0"
-dependencies = [
- "fms-sim",
-]
-
-[[package]]
 name = "fms-atmos"
 version = "0.1.0"
 dependencies = [
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-math",
  "fms-planet",
  "fms-sched",
@@ -335,13 +328,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "fms-cli"
+name = "fms-climate"
 version = "0.1.0"
 dependencies = [
  "clap",
  "fms-atmos",
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-math",
  "fms-planet",
  "fms-sim",
@@ -352,11 +345,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fms-climate"
+name = "fms-climatology"
 version = "0.1.0"
 dependencies = [
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-planet",
  "fms-sched",
 ]
@@ -365,12 +358,12 @@ dependencies = [
 name = "fms-fields"
 version = "0.1.0"
 dependencies = [
- "fms-geo",
+ "fms-grid",
  "rayon",
 ]
 
 [[package]]
-name = "fms-geo"
+name = "fms-grid"
 version = "0.1.0"
 dependencies = [
  "criterion",
@@ -384,7 +377,7 @@ name = "fms-hydro"
 version = "0.1.0"
 dependencies = [
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-sched",
 ]
 
@@ -400,7 +393,7 @@ name = "fms-ocean"
 version = "0.1.0"
 dependencies = [
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-planet",
  "fms-sched",
 ]
@@ -410,7 +403,7 @@ name = "fms-planet"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "fms-geo",
+ "fms-grid",
  "fms-math",
  "glam",
  "rayon",
@@ -431,9 +424,9 @@ name = "fms-sim"
 version = "0.1.0"
 dependencies = [
  "fms-atmos",
- "fms-climate",
+ "fms-climatology",
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-hydro",
  "fms-math",
  "fms-ocean",
@@ -446,11 +439,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fms-viewer"
+version = "0.1.0"
+dependencies = [
+ "fms-sim",
+]
+
+[[package]]
 name = "fms-worldgen"
 version = "0.1.0"
 dependencies = [
  "fms-fields",
- "fms-geo",
+ "fms-grid",
  "fms-math",
  "fms-planet",
  "glam",

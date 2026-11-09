@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-use fms_geo::coords::from_lat_lon;
+use fms_grid::coords::from_lat_lon;
 use fms_sim::Grid;
 use rayon::prelude::*;
 

@@ -1,5 +1,5 @@
 [package]
-name = "fms-climate"
+name = "fms-climatology"
 description = "Rolling climate statistics, Köppen, biomes and high-speed climate mode"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fms-geo.workspace = true
+fms-grid.workspace = true
 fms-fields.workspace = true
 fms-sched.workspace = true
 fms-planet.workspace = true

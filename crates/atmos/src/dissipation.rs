@@ -10,8 +10,8 @@
 //! heating of a chosen layer there; so the heating's enthalpy rate cancels
 //! the winds' kinetic-energy rate exactly.
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::layered::Gas;

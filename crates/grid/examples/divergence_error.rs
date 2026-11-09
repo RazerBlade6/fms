@@ -3,9 +3,9 @@
 //! (OBSERVATIONS.md O-1).
 //!
 //! ```sh
-//! cargo run --release -p fms-geo --example divergence_error
+//! cargo run --release -p fms-grid --example divergence_error
 //! ```
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 use glam::DVec3;
 fn t(p: DVec3, g: DVec3) -> DVec3 {
     g - p * p.dot(g)

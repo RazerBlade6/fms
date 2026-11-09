@@ -21,7 +21,7 @@ use fms_atmos::{
     ColumnPhysics, Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions, LayeredModel,
     LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::Planet;
 
 const DAY: f64 = 86_400.0;

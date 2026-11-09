@@ -1,4 +1,4 @@
-//! Desktop GUI for the Fantasy Map Simulator.
+//! Desktop viewer for the fms-climate simulator.
 //!
 //! See `docs/PLAN.md` for the design.
 
@@ -7,7 +7,7 @@ use fms_sim as _;
 
 fn main() {
     println!(
-        "fantasy-map {}: GUI (not implemented yet)",
+        "fms-viewer {}: GUI (not implemented yet)",
         env!("CARGO_PKG_VERSION")
     );
 }

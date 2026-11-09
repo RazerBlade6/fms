@@ -6,9 +6,9 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use fms_geo::coords::{from_lat_lon, to_lat_lon};
-use fms_geo::spherical::polygon_moment;
-use fms_geo::{LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
+use fms_grid::coords::{from_lat_lon, to_lat_lon};
+use fms_grid::spherical::polygon_moment;
+use fms_grid::{LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
 use fms_worldgen::subgrid::{slope, surface_height};
 use fms_worldgen::{HeightmapError, LoadOptions, Raster, TerrainStats, load, resample};
 use glam::DVec3;

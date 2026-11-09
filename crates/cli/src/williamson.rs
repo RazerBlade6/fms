@@ -1,4 +1,4 @@
-//! `fms williamson`: run a Williamson shallow-water test case on the climate
+//! `fms-climate williamson`: run a Williamson shallow-water test case on the climate
 //! grid and render it, to check the dynamical core by eye.
 
 use std::time::Instant;
@@ -7,7 +7,7 @@ use clap::Args;
 use fms_atmos::williamson::{Case, DAY, GRAVITY, RADIUS};
 use fms_atmos::{Diagnostics, SemiImplicit, SemiImplicitOptions, ShallowWater, State};
 use fms_fields::{ColorScale, FieldId, FieldKey, FieldSpec, Location, Quantity};
-use fms_geo::Operators;
+use fms_grid::Operators;
 use fms_sim::World;
 
 use crate::render::{format_value, write_gif, write_png};
@@ -318,8 +318,8 @@ impl Stepper<'_> {
 }
 
 fn model_vorticity(
-    mesh: &fms_geo::SphereMesh,
-    geometry: &fms_geo::MeshGeometry,
+    mesh: &fms_grid::SphereMesh,
+    geometry: &fms_grid::MeshGeometry,
     state: &State,
 ) -> Vec<f64> {
     let mut zeta = vec![0.0; mesh.n_vertices()];

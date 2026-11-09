@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fms-geo.workspace = true
+fms-grid.workspace = true
 fms-fields.workspace = true
 fms-sched.workspace = true
 

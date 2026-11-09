@@ -2,7 +2,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use fms_geo::coords::from_lat_lon;
+use fms_grid::coords::from_lat_lon;
 use fms_planet::{
     Adjustment, Planet, PlanetParams, eccentric_anomaly, eccentric_from_true, true_anomaly,
 };

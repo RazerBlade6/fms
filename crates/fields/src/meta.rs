@@ -1,6 +1,6 @@
 //! Where a field lives and how to describe it.
 
-use fms_geo::SphereMesh;
+use fms_grid::SphereMesh;
 
 use crate::column::DType;
 

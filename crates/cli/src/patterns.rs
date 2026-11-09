@@ -2,7 +2,7 @@
 //! fields before any real dynamics exist.
 
 use fms_fields::{ColorScale, FieldKey, FieldSpec, Location, Quantity};
-use fms_geo::coords::to_lat_lon;
+use fms_grid::coords::to_lat_lon;
 use fms_sim::World;
 use glam::DVec3;
 
@@ -148,7 +148,7 @@ pub fn register(world: &mut World) -> Result<Vec<(FieldKey, Option<FieldKey>)>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fms_geo::coords::to_lat_lon;
+    use fms_grid::coords::to_lat_lon;
     use fms_sim::WorldConfig;
 
     fn world_at(climate_frequency: u32) -> World {
@@ -195,7 +195,7 @@ mod tests {
         }
         let near = (0..mesh.n_cells() as u32)
             .filter(|&c| mesh.cell_neighbors(c).len() == 5)
-            .map(|c| fms_geo::spherical::arc_length(worst, mesh.cell_centers()[c as usize]))
+            .map(|c| fms_grid::spherical::arc_length(worst, mesh.cell_centers()[c as usize]))
             .fold(f64::INFINITY, f64::min);
         (
             max_err,

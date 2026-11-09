@@ -2,7 +2,7 @@
 
 use std::f64::consts::PI;
 
-use fms_geo::{LloydOptions, SphereMesh};
+use fms_grid::{LloydOptions, SphereMesh};
 
 const FREQUENCIES: [u32; 5] = [1, 2, 5, 8, 16];
 

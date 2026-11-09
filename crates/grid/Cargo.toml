@@ -1,5 +1,5 @@
 [package]
-name = "fms-geo"
+name = "fms-grid"
 description = "Icosahedral geodesic grids, two-level mapping, projections and picking"
 version.workspace = true
 edition.workspace = true

@@ -17,7 +17,7 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use fms_geo::coords::to_lat_lon;
+use fms_grid::coords::to_lat_lon;
 
 use crate::layered::{LayeredModel, LayeredState};
 

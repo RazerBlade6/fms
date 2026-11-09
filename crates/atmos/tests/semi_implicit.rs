@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use fms_atmos::helmholtz::dot;
 use fms_atmos::williamson::{Case, DAY, GRAVITY, RADIUS, error_norms};
 use fms_atmos::{Helmholtz, SemiImplicit, SemiImplicitOptions, ShallowWater, State};
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 /// Courant number for the semi-implicit step: measured stable to ~0.75 on
 /// case 6 (the fastest winds), so this leaves a margin.

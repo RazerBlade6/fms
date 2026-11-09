@@ -1,7 +1,7 @@
 //! Time-mean zonal means: the climate of a run, summarized by latitude.
 
-use fms_geo::LatitudeBands;
-use fms_geo::zonal::east_north;
+use fms_grid::LatitudeBands;
+use fms_grid::zonal::east_north;
 
 use crate::layered::{LayeredModel, LayeredState};
 

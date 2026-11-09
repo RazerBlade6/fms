@@ -12,9 +12,9 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use fms_geo::coords::to_lat_lon;
-use fms_geo::spherical::arc_length;
-use fms_geo::{CellId, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::spherical::arc_length;
+use fms_grid::{CellId, SphereMesh};
 use glam::DVec3;
 use rayon::prelude::*;
 
@@ -134,7 +134,7 @@ fn for_each_pixel_in_cap(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fms_geo::LloydOptions;
+    use fms_grid::LloydOptions;
 
     #[test]
     fn every_pixel_is_counted_exactly_once() {

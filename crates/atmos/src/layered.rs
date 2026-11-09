@@ -63,8 +63,8 @@
 //! ([`crate::radiation::interface_humidity_ratios`]): the mean of the two
 //! here, the upwind one in the semi-implicit stepper's positive scheme.
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};

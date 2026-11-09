@@ -1,5 +1,5 @@
 [package]
-name = "fms-cli"
+name = "fms-climate"
 description = "Headless runner, field dumps and benchmarks"
 version.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ publish = false
 clap.workspace = true
 fms-atmos.workspace = true
 fms-fields.workspace = true
-fms-geo.workspace = true
+fms-grid.workspace = true
 fms-math.workspace = true
 fms-planet.workspace = true
 gif.workspace = true
@@ -24,5 +24,5 @@ fms-sim.workspace = true
 workspace = true
 
 [[bin]]
-name = "fms"
+name = "fms-climate"
 path = "src/main.rs"

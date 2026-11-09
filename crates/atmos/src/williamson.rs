@@ -7,8 +7,8 @@
 
 use std::f64::consts::PI;
 
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{MeshGeometry, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{MeshGeometry, SphereMesh};
 use glam::DVec3;
 
 use crate::shallow_water::State;

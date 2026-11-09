@@ -3,7 +3,7 @@
 //! a north–south mountain ridge near its west coast (where the mid-latitude
 //! westerlies meet it first).
 
-use fms_geo::coords::to_lat_lon;
+use fms_grid::coords::to_lat_lon;
 use glam::DVec3;
 use rayon::prelude::*;
 

@@ -17,7 +17,7 @@ mod seasons;
 
 use std::f64::consts::{PI, TAU};
 
-use fms_geo::coords::from_lat_lon;
+use fms_grid::coords::from_lat_lon;
 use glam::DVec3;
 use rayon::prelude::*;
 

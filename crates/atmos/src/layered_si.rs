@@ -75,8 +75,8 @@
 //! because leapfrog advances two interleaved levels, the water it closes on
 //! is the mean of the two current levels ([`LayeredSemiImplicit::water`]).
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::forcing::EnergyTerms;

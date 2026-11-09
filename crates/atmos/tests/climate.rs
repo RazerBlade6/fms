@@ -9,7 +9,7 @@ use fms_atmos::{
     ColumnPhysics, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
     LayeredSemiImplicitOptions, Levels, PhysicsParams,
 };
-use fms_geo::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
 
 const DAY: f64 = 86_400.0;
@@ -411,7 +411,7 @@ fn the_fixed_sst_aquaplanet_has_trades_and_a_rain_belt() {
     let sst = mesh
         .cell_centers()
         .iter()
-        .map(|&p| ApeSst::Control.at(fms_geo::coords::to_lat_lon(p).0))
+        .map(|&p| ApeSst::Control.at(fms_grid::coords::to_lat_lon(p).0))
         .collect();
     let physics =
         ColumnPhysics::new(&model, &planet, params, 0.0, &state, sst).with_prescribed_surface();
@@ -443,7 +443,7 @@ fn the_fixed_sst_aquaplanet_has_trades_and_a_rain_belt() {
                 .cell_centers()
                 .iter()
                 .zip(&v)
-                .map(|(&p, &v)| fms_geo::zonal::east_north(p, v).0)
+                .map(|(&p, &v)| fms_grid::zonal::east_north(p, v).0)
                 .collect();
             for (s, x) in wind.iter_mut().zip(bands.mean(&geometry, &east)) {
                 *s += x;

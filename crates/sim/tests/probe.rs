@@ -2,7 +2,7 @@
 //! renderer, and report vector fields as east/north components.
 
 use fms_fields::{FieldSpec, GridLevel, Location, Quantity};
-use fms_geo::coords::from_lat_lon;
+use fms_grid::coords::from_lat_lon;
 use fms_sim::probe::{Component, local_frame};
 use fms_sim::{Probe, ProbeError, World, WorldConfig};
 use glam::DVec3;

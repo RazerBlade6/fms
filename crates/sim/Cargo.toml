@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-fms-geo.workspace = true
+fms-grid.workspace = true
 fms-fields.workspace = true
 fms-sched.workspace = true
 fms-planet.workspace = true
@@ -16,7 +16,7 @@ fms-worldgen.workspace = true
 fms-atmos.workspace = true
 fms-ocean.workspace = true
 fms-hydro.workspace = true
-fms-climate.workspace = true
+fms-climatology.workspace = true
 glam.workspace = true
 rayon.workspace = true
 

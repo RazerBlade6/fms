@@ -1,4 +1,4 @@
-//! `fms held-suarez`: the Held & Suarez (1994) dynamical-core benchmark on
+//! `fms-climate held-suarez`: the Held & Suarez (1994) dynamical-core benchmark on
 //! the two-layer model. Spins up from rest, then averages the zonal-mean
 //! climate; writes profiles, a summary, and the usual maps and GIF (of the
 //! last days) to `output/held_suarez/`.
@@ -167,7 +167,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     println!("zonal-mean chart -> {}", path.display());
 
     // Summary.
-    let mut summary = format!("fms held-suarez: {description}\n\n");
+    let mut summary = format!("fms-climate held-suarez: {description}\n\n");
     summary.push_str(&jets(&means));
     if let (Some((d0, b0)), Some(end)) = (spun_up, log.last()) {
         let seconds = (end.step - spinup) as f64 * si.dt();

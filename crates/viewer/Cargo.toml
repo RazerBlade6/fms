@@ -1,5 +1,5 @@
 [package]
-name = "fms-app"
+name = "fms-viewer"
 description = "Desktop GUI: egui panels and wgpu renderer"
 version.workspace = true
 edition.workspace = true
@@ -14,5 +14,5 @@ fms-sim.workspace = true
 workspace = true
 
 [[bin]]
-name = "fantasy-map"
+name = "fms-viewer"
 path = "src/main.rs"

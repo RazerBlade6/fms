@@ -33,7 +33,7 @@
 //! Per node the dependence on `p_s` separates (`ln p = ln σ + ln p_s`), so
 //! evaluating the forcing costs no transcendental functions per node.
 
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::forcing::Forcing;

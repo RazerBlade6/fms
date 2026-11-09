@@ -9,7 +9,7 @@ use fms_atmos::{
     Forcing, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
     LayeredSemiImplicitOptions, LayeredState, Levels, PhysicsParams,
 };
-use fms_geo::Operators;
+use fms_grid::Operators;
 use fms_sim::{World, WorldConfig};
 
 const DAY: f64 = 86_400.0;

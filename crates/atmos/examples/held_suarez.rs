@@ -17,7 +17,7 @@ use fms_atmos::{
     Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
     LayeredSemiImplicitOptions, Levels, ZonalClimatology,
 };
-use fms_geo::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 const DAY: f64 = 86_400.0;
 
@@ -96,7 +96,7 @@ fn main() {
                     .cell_centers()
                     .iter()
                     .zip(&v)
-                    .map(|(&p, &v)| fms_geo::zonal::east_north(p, v))
+                    .map(|(&p, &v)| fms_grid::zonal::east_north(p, v))
                     .unzip();
                 let uv: Vec<f64> = east.iter().zip(&north).map(|(e, n)| e * n).collect();
                 for (j, f) in [&east, &north, &uv].into_iter().enumerate() {

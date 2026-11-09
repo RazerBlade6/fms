@@ -1,13 +1,13 @@
 //! Grid construction, geometry, fine/coarse transfers and point location.
 //!
-//! `cargo bench -p fms-geo` (compare against a saved baseline with
+//! `cargo bench -p fms-grid` (compare against a saved baseline with
 //! `-- --save-baseline before` / `-- --baseline before`).
 
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use fms_geo::coords::from_lat_lon;
-use fms_geo::{CellLocator, LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
+use fms_grid::coords::from_lat_lon;
+use fms_grid::{CellLocator, LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
 
 const COARSE: u32 = 45; // 20k cells, the default climate grid
 const FINE: u32 = 160; // 256k cells, the CLI's default terrain grid

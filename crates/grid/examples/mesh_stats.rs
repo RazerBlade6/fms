@@ -1,10 +1,10 @@
 //! Print mesh size, build time and quality for geodesic vs. centroidal meshes.
 //!
-//! `cargo run --release -p fms-geo --example mesh_stats -- <frequency> [tolerance]`
+//! `cargo run --release -p fms-grid --example mesh_stats -- <frequency> [tolerance]`
 
 use std::time::Instant;
 
-use fms_geo::{LloydOptions, MeshGeometry, SphereMesh};
+use fms_grid::{LloydOptions, MeshGeometry, SphereMesh};
 
 fn main() {
     let mut args = std::env::args().skip(1);

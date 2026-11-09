@@ -10,8 +10,8 @@ use fms_atmos::{
     Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions,
     LayeredState, Levels, ShearedFlow,
 };
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 const DAY: f64 = 86_400.0;
 const MAX_WIND: f64 = 120.0;
@@ -42,7 +42,7 @@ fn model() -> (LayeredModel<'static>, f64) {
     (model.with_hyperdiffusion(options), dt)
 }
 
-/// The `fms baroclinic` storm: a 30 m/s-shear jet seeded with waves 4–8.
+/// The `fms-climate baroclinic` storm: a 30 m/s-shear jet seeded with waves 4–8.
 fn storm(model: &LayeredModel) -> LayeredState {
     let flow = ShearedFlow {
         speed: [40.0, 10.0],

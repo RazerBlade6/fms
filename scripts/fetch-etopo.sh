@@ -1,6 +1,6 @@
 #!/bin/sh
 # Download the ETOPO 2022 global relief model (60 arc-second, ice surface) into
-# data/, for `fms --heightmap` and the Earth benchmark. About 470 MB.
+# data/, for `fms-climate --heightmap` and the Earth benchmark. About 470 MB.
 #
 # Source: NOAA NCEI, https://www.ncei.noaa.gov/products/etopo-global-relief-model
 # (public domain). Re-running is safe: an existing complete file is kept.

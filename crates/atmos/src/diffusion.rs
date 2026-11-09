@@ -44,8 +44,8 @@
 //! The kinetic energy removed is not returned as heat; see
 //! [`crate::LayeredModel::energy_tendency`] for the budget.
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 use crate::dissipation::KineticHeating;

@@ -5,7 +5,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use fms_geo::coords::from_lat_lon;
+use fms_grid::coords::from_lat_lon;
 use fms_planet::Planet;
 
 fn insolation(c: &mut Criterion) {

@@ -3,7 +3,7 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-use fms_geo::{LloydOptions, MeshGeometry, SphereMesh};
+use fms_grid::{LloydOptions, MeshGeometry, SphereMesh};
 use glam::DVec3;
 
 /// A centroidal, Hilbert-ordered mesh shared by the tests (built once).

@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use fms_atmos::williamson::{Case, DAY, GRAVITY, RADIUS, error_norms};
 use fms_atmos::{SemiImplicit, SemiImplicitOptions, ShallowWater, State};
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 fn main() {
     let k: u32 = std::env::args().nth(1).map_or(32, |s| s.parse().unwrap());

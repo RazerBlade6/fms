@@ -5,7 +5,7 @@
 //! mean of that over its terrain children, its spread (sub-grid orography, for
 //! drag and orographic rain), the mean slope, and the land fraction.
 
-use fms_geo::{MeshGeometry, SphereMesh, TwoLevelMap};
+use fms_grid::{MeshGeometry, SphereMesh, TwoLevelMap};
 use rayon::prelude::*;
 
 /// Surface height (m): the land surface, or sea level (0) over ocean.
@@ -116,7 +116,7 @@ impl TerrainStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fms_geo::LloydOptions;
+    use fms_grid::LloydOptions;
 
     fn grid() -> (SphereMesh, MeshGeometry) {
         let (mesh, _) = SphereMesh::centroidal(8, LloydOptions::default());

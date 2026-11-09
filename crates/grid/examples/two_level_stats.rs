@@ -1,11 +1,11 @@
 //! Time the fine ↔ coarse mapping and point location at realistic sizes.
 //!
-//! `cargo run --release -p fms-geo --example two_level_stats -- [coarse] [fine]`
+//! `cargo run --release -p fms-grid --example two_level_stats -- [coarse] [fine]`
 
 use std::time::Instant;
 
-use fms_geo::coords::from_lat_lon;
-use fms_geo::{CellLocator, LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
+use fms_grid::coords::from_lat_lon;
+use fms_grid::{CellLocator, LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
 use rayon::prelude::*;
 
 fn main() {

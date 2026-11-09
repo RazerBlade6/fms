@@ -14,8 +14,8 @@
 use std::fmt;
 
 use fms_fields::{Element, FieldKey, GridLevel, Quantity};
-use fms_geo::CellId;
-use fms_geo::coords::{from_lat_lon, to_lat_lon};
+use fms_grid::CellId;
+use fms_grid::coords::{from_lat_lon, to_lat_lon};
 use glam::DVec3;
 
 use crate::World;

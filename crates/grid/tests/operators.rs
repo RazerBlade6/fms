@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 use glam::DVec3;
 
 /// Centroidal meshes shared by the tests (each built once).

@@ -40,9 +40,9 @@
 //! kinetic energy comes back as heat), and the atmosphere's water changes
 //! by evaporation minus precipitation.
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
-use fms_geo::zonal::east_north;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
+use fms_grid::zonal::east_north;
 use fms_planet::Planet;
 use rayon::prelude::*;
 

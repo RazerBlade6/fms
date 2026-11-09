@@ -1,20 +1,20 @@
-//! `fms`: headless runner for the Fantasy Map Simulator.
+//! `fms-climate`: headless runner for the climate simulator.
 //!
 //! Builds a world, runs it, and renders fields to equirectangular PNGs and GIFs
 //! (default output directory: `output/`).
 //!
 //! ```sh
-//! fms fields                                   # list fields
-//! fms dump --all                               # PNG of every cell field at t = 0
-//! fms dump -f planet.toa_insolation --hours 12 # one field after half a day
-//! fms animate                                  # a year of daily-mean insolation
-//! fms animate -f planet.toa_insolation --days 1 --frames 48
-//! fms patterns                                 # analytic test fields (edges, vertices, vectors)
-//! fms probe --lat 0 --lon 0 -f planet.toa_insolation --days 2  # time series at a point
-//! fms williamson --case 5                     # shallow-water flow over a mountain
-//! fms baroclinic                              # two-layer core: storms on a sheared jet
-//! fms held-suarez --climate-frequency 32      # dynamical-core benchmark, 1200 days
-//! fms climate --climate-frequency 16 --co2 840  # radiative climate, final-year means
+//! fms-climate fields                                   # list fields
+//! fms-climate dump --all                               # PNG of every cell field at t = 0
+//! fms-climate dump -f planet.toa_insolation --hours 12 # one field after half a day
+//! fms-climate animate                                  # a year of daily-mean insolation
+//! fms-climate animate -f planet.toa_insolation --days 1 --frames 48
+//! fms-climate patterns                                 # analytic test fields (edges, vertices, vectors)
+//! fms-climate probe --lat 0 --lon 0 -f planet.toa_insolation --days 2  # time series at a point
+//! fms-climate williamson --case 5                     # shallow-water flow over a mountain
+//! fms-climate baroclinic                              # two-layer core: storms on a sheared jet
+//! fms-climate held-suarez --climate-frequency 32      # dynamical-core benchmark, 1200 days
+//! fms-climate climate --climate-frequency 16 --co2 840  # radiative climate, final-year means
 //! ```
 
 mod arrows;
@@ -50,9 +50,9 @@ use crate::view::{View, is_vector, title, view};
 
 #[derive(Parser)]
 #[command(
-    name = "fms",
+    name = "fms-climate",
     version,
-    about = "Fantasy Map Simulator: headless runner"
+    about = "fms-climate: headless climate simulator"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -552,7 +552,7 @@ fn dump(args: DumpArgs) -> Result<(), String> {
     let keys: Vec<FieldKey> = if args.all {
         world.fields.keys().collect()
     } else if args.fields.is_empty() {
-        return Err("give at least one --field NAME, or --all (see `fms fields`)".into());
+        return Err("give at least one --field NAME, or --all (see `fms-climate fields`)".into());
     } else {
         args.fields
             .iter()

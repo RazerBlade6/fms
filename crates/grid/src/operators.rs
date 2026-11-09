@@ -39,7 +39,7 @@
 //!
 //! The fixed local errors at the pentagons are tracked in [OBSERVATIONS.md] O-1.
 //!
-//! [OBSERVATIONS.md]: https://github.com/RazerBlade6/fantasy-map-simulator/blob/main/docs/OBSERVATIONS.md
+//! [OBSERVATIONS.md]: https://github.com/RazerBlade6/fms/blob/main/docs/OBSERVATIONS.md
 
 use rayon::prelude::*;
 

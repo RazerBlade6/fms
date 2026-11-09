@@ -1,8 +1,8 @@
 //! TRiSK tangential-velocity reconstruction error for solid-body rotation.
 //!
-//! `cargo run --release -p fms-geo --example trisk_error -- 16 32 64`
+//! `cargo run --release -p fms-grid --example trisk_error -- 16 32 64`
 
-use fms_geo::{LloydOptions, MeshGeometry, SphereMesh};
+use fms_grid::{LloydOptions, MeshGeometry, SphereMesh};
 use glam::DVec3;
 
 fn main() {

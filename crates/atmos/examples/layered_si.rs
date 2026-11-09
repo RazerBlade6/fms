@@ -12,8 +12,8 @@ use fms_atmos::{
     Gas, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, LayeredState, Levels,
     ShearedFlow,
 };
-use fms_geo::coords::to_lat_lon;
-use fms_geo::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_grid::coords::to_lat_lon;
+use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
 const DAY: f64 = 86_400.0;
 /// Design maximum wind for choosing the semi-implicit step (m/s).

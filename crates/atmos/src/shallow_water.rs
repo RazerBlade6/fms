@@ -17,8 +17,8 @@
 //! these choices the semi-discrete equations conserve mass exactly and total
 //! energy exactly (time stepping adds a small dissipation).
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 /// The prognostic state.

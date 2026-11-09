@@ -3,7 +3,7 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-use fms_geo::{CellLocator, LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
+use fms_grid::{CellLocator, LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
 use glam::DVec3;
 
 struct Grids {

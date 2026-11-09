@@ -9,8 +9,8 @@
 //! Every dot product sums fixed-size chunks in a fixed order, so the solution
 //! and the iteration count are identical on any thread count.
 
-use fms_geo::Operators;
-use fms_geo::operators::MIN_CHUNK;
+use fms_grid::Operators;
+use fms_grid::operators::MIN_CHUNK;
 use rayon::prelude::*;
 
 /// Convergence report of one solve.
