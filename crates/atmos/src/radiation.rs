@@ -840,6 +840,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
     let n = elements.len();
     let mut edges = vec![(0.0, 0.0); n_layers];
     let mut tau = vec![0.0; slabs.len()];
+    let mut clear = vec![0.0; slabs.len()];
     let mut emit = vec![(0.0, 0.0); n];
     let mut rise = vec![0.0; n + 1];
     let mut fall = vec![0.0; n + 1];
@@ -875,6 +876,9 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
                 };
                 layer_tau[slab.layer] += *t;
             }
+            for (c, t) in clear.iter_mut().zip(&tau) {
+                *c = fms_math::exp(-t);
+            }
             // Emission of each element up (from its top) and down (from its
             // bottom). A slab's source is linear in optical depth across its
             // layer, so its edges' values are interpolated in τ.
@@ -898,7 +902,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
                             b_top + (b_bottom - b_top) * x0,
                             b_top + (b_bottom - b_top) * x1,
                         );
-                        let t = fms_math::exp(-tau[i]);
+                        let t = clear[i];
                         let slope = linear_source_term(tau[i], t) * (bottom - top);
                         (
                             share * ((1.0 - t) * top + slope),
@@ -912,7 +916,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
                 };
             }
             let transmit = |j: usize| match elements[j] {
-                Element::Slab(i) => fms_math::exp(-tau[i]),
+                Element::Slab(i) => clear[i],
                 Element::Sheet(c) => 1.0 - sheets[c].emissivity,
             };
             // Upward: surface → … → space; downward: space → … → surface.
