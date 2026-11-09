@@ -106,6 +106,8 @@ pub struct Hyperdiffusion {
     nu: f64,
     radius: f64,
     work: Work,
+    /// Scratch per layer.
+    layers: Vec<Work>,
     /// Returns the winds' lost kinetic energy as heat, if set.
     heating: Option<KineticHeating>,
 }
@@ -151,6 +153,7 @@ impl Hyperdiffusion {
             nu,
             radius: ops.radius(),
             work,
+            layers: Vec::new(),
             heating: None,
         }
     }
@@ -201,73 +204,75 @@ impl Hyperdiffusion {
         let n = self.options.order / 2;
         let sign = if n % 2 == 1 { 1.0 } else { -1.0 };
         let nu = self.nu;
-        let Work {
-            cells,
-            vertices,
-            edges,
-            edges2,
-            ps_edge,
-        } = &mut self.work;
-        ops.cell_to_edge(&state.ps, ps_edge);
+        let layers = state.layers();
+        if self.layers.len() < layers {
+            self.layers.resize(layers, self.work.clone());
+        }
+        ops.cell_to_edge(&state.ps, &mut self.work.ps_edge);
         if let Some(h) = &mut self.heating {
             h.prepare(&state.ps);
         }
-        for k in 0..state.layers() {
-            // Wind: divergent part into `edges`, rotational part into `edges2`.
-            ops.divergence(&state.u[k], cells);
-            for _ in 1..n {
-                cell_laplacian(ops, cells, edges);
-            }
-            ops.gradient(cells, edges);
-            ops.curl(&state.u[k], vertices);
-            for _ in 1..n {
-                vertex_laplacian(ops, vertices, edges2);
-            }
-            ops.tangential_gradient(vertices, edges2);
-            edges
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(edges2.par_iter())
-                .for_each(|(d, &r)| *d = sign * nu * (*d - r));
-            out.u[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(edges.par_iter())
-                .for_each(|(o, &du)| *o += du);
-            if let Some(h) = &self.heating {
-                h.add(
-                    ops,
-                    &state.ps,
-                    k,
-                    k,
-                    &state.u[k],
+        let (ps_edge, heating) = (&self.work.ps_edge, self.heating.as_ref());
+        self.layers[..layers]
+            .par_iter_mut()
+            .zip(out.u.par_iter_mut())
+            .zip(out.theta_ps.par_iter_mut())
+            .enumerate()
+            .for_each(|(k, ((work, out_u), out_theta))| {
+                let Work {
+                    cells,
+                    vertices,
                     edges,
-                    &mut out.theta_ps[k],
-                );
-            }
+                    edges2,
+                    ..
+                } = work;
+                // Wind: divergent part into `edges`, rotational part into `edges2`.
+                ops.divergence(&state.u[k], cells);
+                for _ in 1..n {
+                    cell_laplacian(ops, cells, edges);
+                }
+                ops.gradient(cells, edges);
+                ops.curl(&state.u[k], vertices);
+                for _ in 1..n {
+                    vertex_laplacian(ops, vertices, edges2);
+                }
+                ops.tangential_gradient(vertices, edges2);
+                edges
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(edges2.par_iter())
+                    .for_each(|(d, &r)| *d = sign * nu * (*d - r));
+                out_u
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(edges.par_iter())
+                    .for_each(|(o, &du)| *o += du);
+                if let Some(h) = heating {
+                    h.add(ops, &state.ps, k, k, &state.u[k], edges, out_theta);
+                }
 
-            // θ, in flux form.
-            cells
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, c)| *c = state.theta_ps[k][i] / state.ps[i]);
-            for _ in 1..n {
-                cell_laplacian(ops, cells, edges);
-            }
-            ops.gradient(cells, edges);
-            edges
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(ps_edge.par_iter())
-                .for_each(|(f, &p)| *f *= p);
-            ops.divergence(edges, cells);
-            out.theta_ps[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(cells.par_iter())
-                .for_each(|(o, &c)| *o += sign * nu * c);
-        }
+                // θ, in flux form.
+                cells
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .enumerate()
+                    .for_each(|(i, c)| *c = state.theta_ps[k][i] / state.ps[i]);
+                for _ in 1..n {
+                    cell_laplacian(ops, cells, edges);
+                }
+                ops.gradient(cells, edges);
+                edges
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(ps_edge.par_iter())
+                    .for_each(|(f, &p)| *f *= p);
+                ops.divergence(edges, cells);
+                out_theta
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(cells.par_iter())
+                    .for_each(|(o, &c)| *o += sign * nu * c);
+            });
     }
 }
 

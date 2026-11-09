@@ -301,6 +301,8 @@ struct LayerWork {
     gradient: Vec<f64>,
     exner_gradient: Vec<f64>,
     theta_flux_divergence: Vec<f64>,
+    cell_scratch: Vec<f64>,
+    edge_scratch: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -375,6 +377,8 @@ impl<'a> LayeredModel<'a> {
             gradient: vec![0.0; ne],
             exner_gradient: vec![0.0; ne],
             theta_flux_divergence: vec![0.0; nc],
+            cell_scratch: vec![0.0; nc],
+            edge_scratch: vec![0.0; ne],
         };
         Self {
             ops,
@@ -731,25 +735,37 @@ impl<'a> LayeredModel<'a> {
             .with_min_len(MIN_CHUNK / 16)
             .zip(state.ps.par_iter())
             .for_each(|(e, &ps)| self.levels.layer_exner_into(self.gas, ps, e));
-        for (k, &dsk) in ds.iter().enumerate() {
-            // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
-            let kinetic: Vec<f64> = (0..edges.len())
-                .into_par_iter()
-                .with_min_len(MIN_CHUNK)
-                .map(|e| {
-                    let [a, b] = edges[e].cells;
-                    let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
-                    edge_areas[e] * dp * state.u[k][e] / gravity
-                })
-                .collect();
-            rate.kinetic += dot(&kinetic, &tendency.u[k]);
-            // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
-            let enthalpy: Vec<f64> = (0..state.ps.len())
-                .into_par_iter()
-                .with_min_len(MIN_CHUNK)
-                .map(|i| g.cell_areas[i] * r2 * dsk * cp * exner[i * n + k] / gravity)
-                .collect();
-            rate.thermal += dot(&enthalpy, &tendency.theta_ps[k]);
+        let exner = &exner;
+        let edge_areas = &edge_areas;
+        let terms: Vec<(f64, f64)> = (0..n)
+            .into_par_iter()
+            .map(|k| {
+                let dsk = ds[k];
+                // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
+                let kinetic: Vec<f64> = (0..edges.len())
+                    .into_par_iter()
+                    .with_min_len(MIN_CHUNK)
+                    .map(|e| {
+                        let [a, b] = edges[e].cells;
+                        let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
+                        edge_areas[e] * dp * state.u[k][e] / gravity
+                    })
+                    .collect();
+                // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
+                let enthalpy: Vec<f64> = (0..state.ps.len())
+                    .into_par_iter()
+                    .with_min_len(MIN_CHUNK)
+                    .map(|i| g.cell_areas[i] * r2 * dsk * cp * exner[i * n + k] / gravity)
+                    .collect();
+                (
+                    dot(&kinetic, &tendency.u[k]),
+                    dot(&enthalpy, &tendency.theta_ps[k]),
+                )
+            })
+            .collect();
+        for (kinetic, thermal) in terms {
+            rate.kinetic += kinetic;
+            rate.thermal += thermal;
         }
         rate
     }
@@ -1022,23 +1038,26 @@ fn compute_tendency(
 
     // Thickness fluxes, divergence and θ per layer.
     ops.cell_to_edge(&state.ps, edge_scratch);
-    for (k, l) in layers.iter_mut().enumerate() {
-        l.dp_edge
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(edge_scratch.par_iter())
-            .for_each(|(d, &p)| *d = ds[k] * p);
-        l.flux
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, f)| *f = l.dp_edge[e] * state.u[k][e]);
-        ops.divergence(&l.flux, &mut l.divergence);
-        l.theta
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, t)| *t = state.theta_ps[k][i] / state.ps[i]);
+    {
+        let ps_edge = &*edge_scratch;
+        layers.par_iter_mut().enumerate().for_each(|(k, l)| {
+            l.dp_edge
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .zip(ps_edge.par_iter())
+                .for_each(|(d, &p)| *d = ds[k] * p);
+            l.flux
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(e, f)| *f = l.dp_edge[e] * state.u[k][e]);
+            ops.divergence(&l.flux, &mut l.divergence);
+            l.theta
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(i, t)| *t = state.theta_ps[k][i] / state.ps[i]);
+        });
     }
     // Exner functions and geopotentials need every layer's θ.
     {
@@ -1064,38 +1083,33 @@ fn compute_tendency(
                 );
             });
     }
-    for (k, l) in layers.iter_mut().enumerate() {
-        let column = &*column;
-        l.exner
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(l.geopotential.par_iter_mut())
-            .enumerate()
-            .for_each(|(i, (e, g))| {
-                *e = column[2 * n * i + k];
-                *g = column[2 * n * i + n + k];
-            });
-    }
     // Interface mass fluxes Wⱼ = σⱼ Σ_{k>j} Dₖ − (1 − σⱼ) Σ_{k≤j} Dₖ, and θ̂ⱼ.
-    for (j, &s) in sigma.iter().enumerate() {
+    {
         let layers = &*layers;
-        w[j].par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(theta_interface[j].par_iter_mut())
+        w.par_iter_mut()
+            .zip(theta_interface.par_iter_mut())
+            .zip(w_edge.par_iter_mut())
             .enumerate()
-            .for_each(|(i, (w, t))| {
-                let mut above = layers[0].divergence[i];
-                for l in &layers[1..=j] {
-                    above += l.divergence[i];
-                }
-                let mut below = layers[j + 1].divergence[i];
-                for l in &layers[j + 2..] {
-                    below += l.divergence[i];
-                }
-                *w = s * below - (1.0 - s) * above;
-                *t = 0.5 * (layers[j].theta[i] + layers[j + 1].theta[i]);
+            .for_each(|(j, ((w, theta_interface), w_edge))| {
+                let s = sigma[j];
+                w.par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(theta_interface.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(i, (w, t))| {
+                        let mut above = layers[0].divergence[i];
+                        for l in &layers[1..=j] {
+                            above += l.divergence[i];
+                        }
+                        let mut below = layers[j + 1].divergence[i];
+                        for l in &layers[j + 2..] {
+                            below += l.divergence[i];
+                        }
+                        *w = s * below - (1.0 - s) * above;
+                        *t = 0.5 * (layers[j].theta[i] + layers[j + 1].theta[i]);
+                    });
+                ops.cell_to_edge(w, w_edge);
             });
-        ops.cell_to_edge(&w[j], &mut w_edge[j]);
     }
 
     // Surface pressure.
@@ -1114,56 +1128,79 @@ fn compute_tendency(
             });
     }
 
-    for k in 0..n {
-        let l = &mut layers[k];
-        // Thermodynamics: δσₖ ∂Θₖ/∂t = −∇·(Fₖ θₖ,ₑ) + W_{k−1} θ̂_{k−1} − Wₖ θ̂ₖ.
-        ops.cell_to_edge(&l.theta, &mut l.theta_edge);
-        edge_scratch
+    {
+        let (w, theta_interface, column) = (&*w, &*theta_interface, &*column);
+        layers
             .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
+            .zip(out.theta_ps.par_iter_mut())
             .enumerate()
-            .for_each(|(e, f)| *f = l.flux[e] * l.theta_edge[e]);
-        ops.divergence(edge_scratch, &mut l.theta_flux_divergence);
-        let (w, theta_interface) = (&*w, &*theta_interface);
-        out.theta_ps[k]
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, d)| {
-                let mut vertical = 0.0;
-                if k > 0 {
-                    vertical += w[k - 1][i] * theta_interface[k - 1][i];
+            .for_each(|(k, (l, out_theta))| {
+                l.exner
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(l.geopotential.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(i, (e, g))| {
+                        *e = column[2 * n * i + k];
+                        *g = column[2 * n * i + n + k];
+                    });
+                // Thermodynamics: δσₖ ∂Θₖ/∂t = −∇·(Fₖ θₖ,ₑ) + W_{k−1} θ̂_{k−1} − Wₖ θ̂ₖ.
+                ops.cell_to_edge(&l.theta, &mut l.theta_edge);
+                {
+                    let (flux, theta_edge) = (&l.flux, &l.theta_edge);
+                    l.edge_scratch
+                        .par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .enumerate()
+                        .for_each(|(e, f)| *f = flux[e] * theta_edge[e]);
                 }
-                if k + 1 < n {
-                    vertical -= w[k][i] * theta_interface[k][i];
+                ops.divergence(&l.edge_scratch, &mut l.theta_flux_divergence);
+                out_theta
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .enumerate()
+                    .for_each(|(i, d)| {
+                        let mut vertical = 0.0;
+                        if k > 0 {
+                            vertical += w[k - 1][i] * theta_interface[k - 1][i];
+                        }
+                        if k + 1 < n {
+                            vertical -= w[k][i] * theta_interface[k][i];
+                        }
+                        *d = (-l.theta_flux_divergence[i] + vertical) / ds[k];
+                    });
+
+                // Momentum: PV flux, Bernoulli gradient, Exner-gradient term.
+                ops.kinetic_energy(&state.u[k], &mut l.kinetic);
+                {
+                    let (kinetic, geopotential) = (&l.kinetic, &l.geopotential);
+                    l.bernoulli
+                        .par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .enumerate()
+                        .for_each(|(i, b)| *b = kinetic[i] + geopotential[i]);
                 }
-                *d = (-l.theta_flux_divergence[i] + vertical) / ds[k];
+                ops.gradient(&l.bernoulli, &mut l.gradient);
+                ops.gradient(&l.exner, &mut l.exner_gradient);
+
+                ops.curl(&state.u[k], &mut l.vorticity);
+                l.cell_scratch
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(state.ps.par_iter())
+                    .for_each(|(d, &p)| *d = ds[k] * p);
+                ops.cell_to_vertex(&l.cell_scratch, &mut l.dp_vertex);
+                {
+                    let (vorticity, dp_vertex) = (&l.vorticity, &l.dp_vertex);
+                    l.q_vertex
+                        .par_iter_mut()
+                        .with_min_len(MIN_CHUNK)
+                        .enumerate()
+                        .for_each(|(v, q)| *q = (vorticity[v] + coriolis[v]) / dp_vertex[v]);
+                }
+                ops.vertex_to_edge(&l.q_vertex, &mut l.q_edge);
+                ops.pv_flux(&l.q_edge, &l.flux, &mut l.pv_flux);
             });
-
-        // Momentum: PV flux, Bernoulli gradient, Exner-gradient term.
-        ops.kinetic_energy(&state.u[k], &mut l.kinetic);
-        l.bernoulli
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, b)| *b = l.kinetic[i] + l.geopotential[i]);
-        ops.gradient(&l.bernoulli, &mut l.gradient);
-        ops.gradient(&l.exner, &mut l.exner_gradient);
-
-        ops.curl(&state.u[k], &mut l.vorticity);
-        cell_scratch
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(state.ps.par_iter())
-            .for_each(|(d, &p)| *d = ds[k] * p);
-        ops.cell_to_vertex(cell_scratch, &mut l.dp_vertex);
-        l.q_vertex
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(v, q)| *q = (l.vorticity[v] + coriolis[v]) / l.dp_vertex[v]);
-        ops.vertex_to_edge(&l.q_vertex, &mut l.q_edge);
-        ops.pv_flux(&l.q_edge, &l.flux, &mut l.pv_flux);
     }
 
     // Humidity, centred like θ (only where both the state and the output
@@ -1223,7 +1260,7 @@ fn compute_tendency(
     // Assemble the wind tendencies, including vertical advection.
     let layers = &*layers;
     let w_edge = &*w_edge;
-    for (k, out_u) in out.u.iter_mut().enumerate() {
+    out.u.par_iter_mut().enumerate().for_each(|(k, out_u)| {
         let l = &layers[k];
         let u = &state.u;
         out_u
@@ -1243,5 +1280,5 @@ fn compute_tendency(
                     - cp * l.theta_edge[e] * l.exner_gradient[e]
                     - vertical / (2.0 * l.dp_edge[e]);
             });
-    }
+    });
 }
