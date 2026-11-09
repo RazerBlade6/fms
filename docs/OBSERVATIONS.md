@@ -809,7 +809,8 @@ shrinks.
 |---|---|---|
 | BOMEX rain | 11.8 mm/day, all convective | none |
 | BOMEX with deep convection off: θ, q change over 6 h | −0.004 K, +0.29 g/kg | steady by design |
-| BOMEX `w*` | 0.92 m/s | about 0.7 m/s |
+| BOMEX cloud cover, deep convection off | 0.80 | 0.13 total, 0.06 at most in any level (large-eddy) |
+| BOMEX `w*`, as if over the 500 m sub-cloud layer | 0.66 m/s (0.92 over the 1.4 km layer) | about 0.6 m/s |
 | BOMEX shallow cumulus at the layer's top | never | always |
 | DYCOMS entrainment | 41 mm/s | 3.8–5.9 mm/s (large-eddy) |
 | DYCOMS cloud cover | 0.31 | overcast |
@@ -825,10 +826,12 @@ thick can't hold.
   lapse rate leaves 0.36 K of DYCOMS' 8.5 K. The same extrapolation keeps shallow
   cumulus off in BOMEX.
 
-**Caution:** DYCOMS is set up from Stevens et al. BOMEX, and its `w*` target,
-are from memory: the Siebesma file in `docs/sources` is their 2004 EUROCS
-Pacific study, not the 2003 BOMEX intercomparison, and doesn't describe this
-case. Check BOMEX against that paper before any tuning.
+**Sources:** both cases are set up from the papers in `docs/sources`
+(`siebesma-large-eddy-intercomp-2003.pdf`, Appendix B, and
+`stevens-eddy-simulations-2005.pdf`). DYCOMS' observed entrainment isn't stated
+in the paper's text, so its target is the large-eddy range. The third gap above
+is new: cloud cover diagnosed from relative humidity alone reads far too high in
+a trade-cumulus layer, whose humidity is high but whose clouds are sparse.
 
 **Why it's acceptable for now:** the checks that isolate the boundary layer
 pass, and fixing either would shift the climate and its calibration: a decision,

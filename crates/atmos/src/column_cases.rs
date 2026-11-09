@@ -8,9 +8,7 @@
 //! - [`dycoms`]: nocturnal marine stratocumulus off California, DYCOMS-II
 //!   RF01 (Stevens et al. 2005).
 //!
-//! DYCOMS is set up from Stevens et al. BOMEX is written from memory of
-//! Siebesma et al., which isn't in `docs/sources`, so check it against the
-//! paper before trusting a close comparison. See `docs/OBSERVATIONS.md` O-35.
+//! Both are set up from those papers. See `docs/OBSERVATIONS.md` O-35.
 //!
 //! These cases resolve boundary-layer structure the model's few layers can't:
 //! a case's bottom layer holds a whole cloud-topped boundary layer, so only
@@ -306,7 +304,7 @@ pub fn bomex() -> ColumnCase {
                 |dz, top| top * fms_math::exp(-dz / 2000.0),
             )
         },
-        cooling: |z| ramp(z, 1500.0, 2500.0, -2.0 / DAY, 0.0),
+        cooling: |z| ramp(z, 1500.0, 3000.0, -2.0 / DAY, 0.0),
         drying: |z| ramp(z, 300.0, 500.0, -1.2e-8, 0.0),
         subsidence: |z| {
             if z < 1500.0 {
@@ -381,7 +379,9 @@ mod tests {
     fn the_boundary_layer_holds_bomex_steady_without_deep_convection() {
         // BOMEX's forcing was designed to hold the trade-wind state steady
         // over the run, with no rain: measured −0.004 K, +0.29 g/kg and
-        // 0.0006 mm/day. Its turbulence, `w*` 0.92 m/s, is near the LES's.
+        // 0.0005 mm/day. Its turbulence, `w*` 0.92 m/s over the 1.4 km layer,
+        // would be 0.66 m/s over the 500 m sub-cloud layer: Siebesma et al.
+        // give about 0.6.
         let r = run_case(&bomex(), &without_convection());
         assert!(r.theta_change.abs() < 0.5, "{r:?}");
         assert!(r.humidity_change.abs() < 1e-3, "{r:?}");
