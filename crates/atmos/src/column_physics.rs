@@ -381,7 +381,7 @@ pub fn convective_target(
 
 /// Heating rate of `Θₖ = p_s θₖ` (Pa K s⁻¹) from `q` W m⁻² absorbed by a
 /// layer.
-fn theta_tendency(gas: Gas, gravity: f64, dsigma: f64, exner: f64, q: f64) -> f64 {
+pub(crate) fn theta_tendency(gas: Gas, gravity: f64, dsigma: f64, exner: f64, q: f64) -> f64 {
     gravity * q / (gas.heat_capacity * dsigma * exner)
 }
 
@@ -546,6 +546,105 @@ impl TiledSurface {
             shortwave: self.albedo.map(|a| shortwave * ((1.0 - a) / co_albedo)),
             longwave_up: fourth.map(|t| longwave_up * (t / mean)),
         }
+    }
+}
+
+/// What the top of one column's boundary layer depends on.
+pub(crate) struct BoundaryColumn {
+    /// Gas, gravity (m s⁻²), and the lapse rate (K m⁻¹) along which the layer
+    /// above reaches the top.
+    pub gas: Gas,
+    /// See `gas`.
+    pub gravity: f64,
+    /// See `gas`.
+    pub lapse_rate: f64,
+    /// σ of the layer's top, and its depth (m).
+    pub top: f64,
+    /// See `top`.
+    pub depth: f64,
+    /// Surface pressure (Pa).
+    pub ps: f64,
+    /// The layer's potential temperature (K), its specific humidity floored
+    /// at zero, and that humidity as the state holds it.
+    pub theta: f64,
+    /// See `theta`.
+    pub humidity: f64,
+    /// See `theta`.
+    pub layer_humidity: f64,
+    /// Surface air temperature (K) and density (kg m⁻³).
+    pub air: f64,
+    /// See `air`.
+    pub density: f64,
+    /// The layer above's potential temperature (K), specific humidity and
+    /// layer Exner function.
+    pub theta_above: f64,
+    /// See `theta_above`.
+    pub humidity_above: f64,
+    /// See `theta_above`.
+    pub exner_above: f64,
+    /// Surface sensible heat (W m⁻²), evaporation (kg m⁻² s⁻¹), and clouds'
+    /// longwave cooling of the layer (W m⁻²).
+    pub sensible: f64,
+    /// See `sensible`.
+    pub evaporation: f64,
+    /// See `sensible`.
+    pub cloud_top_cooling: f64,
+}
+
+/// The exchange at the top of one column's boundary layer.
+pub(crate) struct BoundaryTop {
+    /// The convective velocity `w*` and entrainment velocity (m s⁻¹).
+    pub convective_velocity: f64,
+    /// See `convective_velocity`.
+    pub entrainment_velocity: f64,
+    /// Whether shallow cumulus rise through the top.
+    pub cumulus: bool,
+    /// Density of the air at the top (kg m⁻³).
+    pub density: f64,
+}
+
+/// Entrainment and shallow cumulus at the top of the boundary layer, as a
+/// function of one column.
+pub(crate) fn boundary_layer_top(c: &BoundaryColumn, sl: &SurfaceLayerParams) -> BoundaryTop {
+    let (gas, g) = (c.gas, c.gravity);
+    let (rd, cp) = (gas.gas_constant, gas.heat_capacity);
+    let (ps, top) = (c.ps, c.top);
+    // Clouds' longwave cooling of the layer drives turbulence from its top.
+    let w_star = convective_velocity(
+        g,
+        c.depth,
+        c.theta,
+        c.density,
+        cp,
+        c.sensible,
+        c.evaporation,
+        c.cloud_top_cooling,
+    );
+    // Entrainment of the layer above, by the jump in virtual θ at the
+    // boundary layer's top: the layer above extrapolated down to it along
+    // the profile's lapse rate.
+    let p_above = REFERENCE_PRESSURE * fms_math::pow(c.exner_above, 1.0 / gas.kappa());
+    let beta = rd * sl.top_lapse_factor * c.lapse_rate / g;
+    let t_top = c.theta_above * c.exner_above * fms_math::pow(top * ps / p_above, beta);
+    let virtual_factor = |q: f64| 1.0 + 0.608 * q.max(0.0);
+    let (below_factor, above_factor) = (
+        virtual_factor(c.layer_humidity),
+        virtual_factor(c.humidity_above),
+    );
+    let below = c.theta * below_factor;
+    let jump = t_top / gas.exner(top * ps) * above_factor - below;
+    let w_e = entrainment_velocity(sl, g, c.depth, w_star, below, jump);
+    // Shallow cumulus: surface air saturated by the top and still buoyant
+    // there.
+    let p_top = top * ps;
+    let (t_parcel, q_parcel) = lift(gas, c.air, c.humidity, ps, p_top);
+    let cumulus =
+        q_parcel < c.humidity && t_parcel * (1.0 + 0.608 * q_parcel) > t_top * above_factor;
+    BoundaryTop {
+        convective_velocity: w_star,
+        entrainment_velocity: w_e,
+        cumulus,
+        density: p_top / (rd * t_top),
     }
 }
 
@@ -991,36 +1090,35 @@ impl<'a> ColumnPhysics<'a> {
                 // from its top.
                 let cloud_top_cooling =
                     self.clear[i].layers[bottom] - self.radiation[i].layers[bottom];
-                let w_star = convective_velocity(
-                    g,
-                    depth,
-                    theta,
-                    density,
-                    cp,
-                    sensible,
-                    evaporation,
-                    cloud_top_cooling,
-                );
-                // Entrainment of the layer above, by the jump in virtual θ
-                // at the boundary layer's top: the layer above extrapolated
-                // down to it along the profile's lapse rate.
                 let above = bottom - 1;
-                let p_above = REFERENCE_PRESSURE * fms_math::pow(exner[above], 1.0 / gas.kappa());
-                let beta = rd * sl.top_lapse_factor * self.params.radiation.lapse_rate / g;
-                let t_top = state.theta_ps[above][i] / ps
-                    * exner[above]
-                    * fms_math::pow(top * ps / p_above, beta);
-                let virtual_factor = |k: usize| 1.0 + 0.608 * (state.q_ps[k][i] / ps).max(0.0);
-                let below = theta * virtual_factor(bottom);
-                let jump = t_top / gas.exner(top * ps) * virtual_factor(above) - below;
-                let w_e = entrainment_velocity(sl, g, depth, w_star, below, jump);
-                // Shallow cumulus: surface air saturated by the top and still
-                // buoyant there.
-                let p_top = top * ps;
-                let (t_parcel, q_parcel) = lift(gas, air, q, ps, p_top);
-                let cumulus = q_parcel < q
-                    && t_parcel * (1.0 + 0.608 * q_parcel) > t_top * virtual_factor(above);
-                let density_top = p_top / (rd * t_top);
+                let layer_top = boundary_layer_top(
+                    &BoundaryColumn {
+                        gas,
+                        gravity: g,
+                        lapse_rate: self.params.radiation.lapse_rate,
+                        top,
+                        depth,
+                        ps,
+                        theta,
+                        humidity: q,
+                        layer_humidity: state.q_ps[bottom][i] / ps,
+                        air,
+                        density,
+                        theta_above: state.theta_ps[above][i] / ps,
+                        humidity_above: state.q_ps[above][i] / ps,
+                        exner_above: exner[above],
+                        sensible,
+                        evaporation,
+                        cloud_top_cooling,
+                    },
+                    sl,
+                );
+                let (w_star, w_e, cumulus, density_top) = (
+                    layer_top.convective_velocity,
+                    layer_top.entrainment_velocity,
+                    layer_top.cumulus,
+                    layer_top.density,
+                );
                 SurfaceFlux {
                     tiles,
                     skin,

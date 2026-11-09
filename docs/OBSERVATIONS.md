@@ -799,3 +799,40 @@ needs a better low-level circulation.
 **Revisit when:** the Earth run's close-out (M2 step 10.2.8), and at a higher
 resolution: check whether low-level westerlies strengthen and the lee excess
 shrinks.
+
+### O-35: The column cases find two gaps at the inversion
+
+**Seen (M2.10.2.7):** run as single columns against BOMEX (Siebesma et al.
+2003) and DYCOMS-II RF01 (Stevens et al. 2005):
+
+| | Model | Observed or LES |
+|---|---|---|
+| BOMEX rain | 11.8 mm/day, all convective | none |
+| BOMEX with deep convection off: θ, q change over 6 h | −0.004 K, +0.29 g/kg | steady by design |
+| BOMEX `w*` | 0.92 m/s | about 0.7 m/s |
+| BOMEX shallow cumulus at the layer's top | never | always |
+| DYCOMS entrainment | 4.1 cm/s | about 0.4 cm/s |
+| DYCOMS cloud cover | 0.31 | overcast |
+| DYCOMS entrainment given the real 8.5 K jump | 0.19 cm/s | about 0.4 cm/s |
+
+**Why:** both trace to the trade or subtropical inversion, which layers this
+thick can't hold.
+- Deep convection (Betts–Miller) has no inhibition, so a surface parcel warmer
+  than the mean of the layer above convects through an inversion that in
+  reality caps it. This may be part of O-22's too-wet subtropics.
+- The entrainment closure is fine, but the jump it's given isn't: extrapolating
+  the layer above down to the boundary layer's top along the free tropospheric
+  lapse rate leaves 0.36 K of DYCOMS' 8.5 K. The same extrapolation keeps shallow
+  cumulus off in BOMEX.
+
+**Caution:** the cases' setups are from memory of those papers, which aren't in
+`docs/sources`. They should be checked against the papers before any tuning.
+
+**Why it's acceptable for now:** the checks that isolate the boundary layer
+pass, and fixing either would shift the climate and its calibration: a decision,
+not part of a check. The gaps are kept as ignored tests.
+
+**Revisit when:** the circulation work on the subtropics (M2 step 15), or sooner
+if low cloud limits the Earth run's close-out (step 10.2.8). Candidates are an
+inhibition trigger for deep convection, and an inversion diagnosed from the
+column instead of extrapolated.

@@ -238,11 +238,17 @@ Added after the M1 review: tooling the GCM work depends on.
         falls on the Rockies, Andes, Himalayas and East African highlands.
         Unmet: in the full 3-D model at 2.5k cells, the lee of a ridge still
         gets more total rain than the windward side (O-34).
-      - [ ] 10.2.7. **Single-column cases** for the boundary layer and
+      - [x] 10.2.7. **Single-column cases** for the boundary layer and
         convection (BOMEX trade cumulus, DYCOMS stratocumulus): the column
         physics as a per-column function forced by the cases' prescribed
         large-scale tendencies, checked against their observations and
         large-eddy simulations in seconds per run.
+        Done: `crates/atmos/src/column_cases.rs`, each case in milliseconds,
+        column water exact. The boundary layer holds BOMEX steady with no rain
+        once deep convection is off, and the entrainment closure gets
+        stratocumulus right given the real inversion. Two gaps, kept as
+        ignored tests (O-35): deep convection rains 12 mm/day in BOMEX, and
+        DYCOMS entrains about ten times too fast.
       - [ ] 10.2.8. **Earth run and close-out**: the full model on the
         Earth heightmap, with terrain land, ocean, soil water and snow
         together; energy and water budgets close over a year.

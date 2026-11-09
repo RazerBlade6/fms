@@ -13,6 +13,7 @@
 
 pub mod baroclinic;
 pub mod climatology;
+pub mod column_cases;
 pub mod column_physics;
 pub mod diffusion;
 pub mod dissipation;
