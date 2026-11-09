@@ -90,3 +90,19 @@ runs agreed to within 1.5%.
   Helmholtz solves of the slow internal modes (9–12 iterations) and
   per-cell overheads don't triple. A year on three layers at this resolution:
   about 2.5 minutes of stepping, against 1.7 for step 9.
+
+## Early performance pass (M2.11.1.5)
+
+`RAYON_NUM_THREADS=T cargo run --release -p fms-atmos --example bench_layers -- --mode moist --levels 0.25,0.5,0.85 --k K --days D --repeats 3`:
+the moist aquaplanet on the climate's four layers, median of 3 runs
+(2,562 cells: dt 2057 s, 15 days; 642 cells: dt 4114 s, 60 days).
+
+**Conditions** (2026-11-10, from 02:15 IST, unattended overnight run): the
+machine, macOS and rustc as above; on AC power (battery 95%, not charging),
+High Power mode (`pmset` powermode 2), `caffeinate` active; nothing else
+running but the terminal and the agent driving the run; CPU idle 98.6%
+before and 98.4% after the baseline (`top -l 2`).
+
+| Commit | 2,562 cells, 8 threads | 15 threads | 1 thread | 642 cells, 4 threads | 1 thread |
+|---|---|---|---|---|---|
+| `775c84a` (baseline) | 11.19 ms/step | 11.63 | 35.53 | 6.37 | 10.85 |

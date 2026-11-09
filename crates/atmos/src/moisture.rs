@@ -75,7 +75,7 @@
 //! the square root of its rain.
 
 use crate::layered::Gas;
-use crate::levels::Levels;
+use crate::levels::{Levels, MAX_LAYERS};
 use crate::radiation::{LayerSaturation, RadiationParams, layer_saturation, saturation_humidity};
 
 /// Latent heat of vaporization (J kg⁻¹).
@@ -294,8 +294,7 @@ pub fn lift(gas: Gas, t: f64, q: f64, p: f64, p_to: f64) -> (f64, f64) {
     let steps = (span / 0.05).ceil().max(1.0);
     let h = span / steps;
     let (mut t, mut q, mut lnp) = (t, q, fms_math::ln(p));
-    let slope = |t: f64, lnp: f64, q: f64| -> (f64, bool) {
-        let qs = saturation_humidity(t, fms_math::exp(lnp));
+    let slope = |t: f64, qs: f64, q: f64| -> (f64, bool) {
         if q < qs {
             // Dry: θ conserved, dT/d ln p = κ T.
             (r * t / cp, false)
@@ -307,13 +306,22 @@ pub fn lift(gas: Gas, t: f64, q: f64, p: f64, p_to: f64) -> (f64, f64) {
             )
         }
     };
+    // Saturation humidity at the current point, when the last step left it.
+    let mut known = None;
     for _ in 0..steps as u64 {
-        let (s1, _) = slope(t, lnp, q);
-        let (s2, saturated) = slope(t - 0.5 * h * s1, lnp - 0.5 * h, q);
+        let qs = known
+            .take()
+            .unwrap_or_else(|| saturation_humidity(t, fms_math::exp(lnp)));
+        let (s1, _) = slope(t, qs, q);
+        let t_mid = t - 0.5 * h * s1;
+        let qs_mid = saturation_humidity(t_mid, fms_math::exp(lnp - 0.5 * h));
+        let (s2, saturated) = slope(t_mid, qs_mid, q);
         t -= h * s2;
         lnp -= h;
         if saturated {
-            q = q.min(saturation_humidity(t, fms_math::exp(lnp)));
+            let qs = saturation_humidity(t, fms_math::exp(lnp));
+            q = q.min(qs);
+            known = Some(qs);
         }
     }
     (t, q)
@@ -326,21 +334,30 @@ pub fn convective_reference(setting: &Setting, column: &MoistColumn, surface_q: 
     let ps = column.ps;
     let n = setting.levels.count();
     // Every layer's nodes, lifted through bottom up.
-    let mut nodes: Vec<(usize, f64, f64)> = Vec::with_capacity(4 * n);
+    let mut nodes = [(0usize, 0.0f64, 0.0f64); 4 * MAX_LAYERS];
+    let nodes = &mut nodes[..4 * n];
     for k in 0..n {
         let (a, b) = setting.levels.bounds(k);
-        for (x, w) in GAUSS {
-            nodes.push((k, 0.5 * (a + b) + 0.5 * (b - a) * x, 0.5 * w));
+        for (i, (x, w)) in GAUSS.into_iter().enumerate() {
+            nodes[4 * k + i] = (k, 0.5 * (a + b) + 0.5 * (b - a) * x, 0.5 * w);
         }
     }
     nodes.sort_by(|a, b| b.1.total_cmp(&a.1));
     let (mut t, mut q, mut p) = (column.surface_air, surface_q, ps);
     let mut reference = vec![0.0; n];
-    for (k, s, w) in nodes {
+    // The parcel only cools as it rises: once it is colder than the
+    // stratosphere, the rest of the top layer is at the floor.
+    let mut floored = false;
+    for &(k, s, w) in nodes.iter() {
+        if floored {
+            reference[k] += w * column.stratosphere;
+            continue;
+        }
         let p_to = s * ps;
         (t, q) = lift(setting.gas, t, q, p, p_to);
         p = p_to;
         let value = if k == 0 {
+            floored = t <= column.stratosphere;
             t.max(column.stratosphere)
         } else {
             t
