@@ -268,6 +268,13 @@ Added after the M1 review: tooling the GCM work depends on.
     with thickness from the ocean's, separately in visible and near-infrared
     light. Ice-albedo feedback (O-20). Tests: energy conserved through
     freezing and melting; the ice edge and seasonal cycle are plausible.
+
+    Also an **ice-sheet surface** on land that stays snow-covered, with its
+    own albedo (about 0.82, against 0.65 for seasonal snow) and roughness
+    (about 1 mm). Seasonal snow keeps its current values. Then test the rest
+    of Antarctica's warm bias: cloud cover, the missing surface inversion and
+    snow insulation (O-33). Test: Antarctica's interior cools by about 10 K
+    with no change to snow-free land.
 - [ ] 12. **Ocean heat transport by currents**:
     - Ekman transport from the surface wind stress, `M = (ετ + f k×τ)/(ε² + f²)`
       at the edges, with the deep layer's return flow and the upwelling or

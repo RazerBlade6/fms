@@ -780,10 +780,18 @@ and goes at the mid-latitudes.
 **Checked at the close-out (M2.10.2.8):** after 4 years the Antarctic pack
 reaches 129 kg/m² at most, and soil water there is high, which fits frost landing
 in the bucket. Antarctica's coldest annual mean is 246 K, about 20 K warmer
-than its interior should be; the cause isn't diagnosed.
+than its interior should be.
 
-**Revisit when:** long runs (M4) and the land's seasonal cycle (M2 step 15), or
-sooner if soil temperatures look wrong.
+**Antarctic experiments (4 years, 2.5k cells, zonal mean at 87° S):** the
+standard run gives 253 K, against roughly 224 K on Earth (from memory). Snow
+albedo 0.82 gives 243 K, and adding 1 mm roughness on snow gives 242 K. Applied
+to all snow, 0.82 also cools the global mean from 287.98 to 286.15 K. The
+remaining 18 K or so is untested: cloud cover (0.92 in the albedo run), terrain
+about 800 m too low at this resolution, no surface inversion, no snow
+insulation.
+
+**Revisit when:** the ice-sheet surface in M2 step 11, long runs (M4) and the
+land's seasonal cycle (M2 step 15), or sooner if soil temperatures look wrong.
 
 ### O-34: More rain on the lee of a ridge than the windward side
 
