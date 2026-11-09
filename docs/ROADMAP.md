@@ -272,6 +272,41 @@ Added after the M1 review: tooling the GCM work depends on.
     through freezing and melting; the ice edge and seasonal cycle are
     plausible for an ocean with no transport yet: too much ice is expected
     until step 12, so step 11's tests must not require Earth's extent (O-36).
+    Built in reviewed parts:
+    - [x] 11.1. **Two-layer ocean, no ice**: the ocean moves into `fms-ocean`,
+      with diffusion and convective adjustment. Tests: the old 10 m setup
+      still matches its pinned hash; heat is conserved to round-off.
+      Done: 50 m over 150 m, 2000 m²/s in both layers, edges opened by the
+      smaller of the two ocean fractions, the deep layer starting no warmer
+      than 4 °C. `OceanParams::slab(10.0)` reproduces the aquaplanet bit for
+      bit; diffusion conserves heat to 10⁻¹⁴ on rough coasts and damps a
+      zonal wave at the analytic rate to 2%. On Earth at 2.5k cells, 8 years:
+      289.50 K, albedo 0.327, energy residual +0.0055 W/m²; the ocean is
+      still settling, and with no ice yet it runs below freezing near the
+      poles. Over the warming from one uniform start the leapfrog's budget
+      error is larger than the 10 m slab's (−0.064 W/m² over 425 days at 640
+      cells), a third of that at half the step, and the same with no
+      transport.
+    - [ ] 11.2. **Two-band surface albedo** through radiation and the tiles.
+      Test: equal band albedos reproduce today's results bit for bit.
+    - [ ] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
+      temperature, the authors' growth and melt rules, and the ocean-to-ice
+      flux. Tests: growth against Stefan's law; energy and water close through
+      freezing and melting.
+    - [ ] 11.4. **Snow on sea ice**: its own temperature and heat capacity,
+      melting snow, then ice, then warming the ocean. Tests: budgets close;
+      conduction against an analytic case.
+    - [ ] 11.5. **Aquaplanet ice-albedo runs**: 20 years at 2.5k cells, with
+      and without tilt and with the feedback off, against the paper's
+      no-transport and diffusion-only cases; ice edge, seasons and hemispheric
+      symmetry (O-20, O-36).
+    - [ ] 11.6. **Ice-sheet surface** (below). Test: Antarctica's interior
+      cools by about 10 K with no change to snow-free land.
+    - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and
+      snow insulation, one at a time (O-33).
+    - [ ] 11.8. **Earth run and close-out**: 20 years at 2.5k cells, monthly
+      ice extent per hemisphere, budgets, O-30's coastal cells again, docs.
+
 
     Also an **ice-sheet surface** on land that stays snow-covered, with its
     own albedo (about 0.82, against 0.65 for seasonal snow) and roughness

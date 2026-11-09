@@ -9,9 +9,10 @@ publish = false
 
 [dependencies]
 fms-grid.workspace = true
-fms-fields.workspace = true
-fms-sched.workspace = true
-fms-planet.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+fms-math.workspace = true
 
 [lints]
 workspace = true

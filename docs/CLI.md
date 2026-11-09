@@ -251,13 +251,16 @@ orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 `--surface-pressure`, the sea-level value). The atmosphere flows over the
 world's terrain (`--continent`, `--heightmap`), lightly smoothed
 ([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Each cell has an ocean tile, a
-10 m slab of water, and in proportion to its land fraction a land tile, so
-a skin over a 1 m soil heat store with a 150 mm bucket of soil water and a
-snow pack (a real ocean arrives in M2 step 11). A world with no land is an ice-free aquaplanet, which
-runs warmer than Earth (O-23; see also O-22, O-24, O-25). The run starts at rest from a single-column
-radiative–convective equilibrium with its humidity, in hydrostatic balance
-with the terrain. It takes a few model years to settle and averages the
-final year.
+50 m mixed layer over a 150 m deep layer, with heat moving by horizontal
+diffusion and convective adjustment (sea ice and currents arrive in M2 steps
+11–12), and in proportion to its land fraction a land tile, so a skin over a
+1 m soil heat store with a 150 mm bucket of soil water and a snow pack. A
+world with no land is an ice-free aquaplanet (O-23; see also O-22, O-24,
+O-25). The run starts at rest from a single-column radiative–convective
+equilibrium with its humidity, in hydrostatic balance with the terrain, and
+averages the final year. An ocean this deep takes a couple of decades to
+settle, so the default four years show a climate still warming up: use
+`--years 20` or more for an equilibrium.
 
 | Option | Default | Meaning |
 |---|---|---|

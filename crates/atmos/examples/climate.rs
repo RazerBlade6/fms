@@ -75,7 +75,7 @@ fn main() {
     let mut params = PhysicsParams::default();
     params.co2 = env("FMS_CO2", params.co2);
     params.transfer = env("FMS_TRANSFER", params.transfer);
-    params.slab_depth = env("FMS_SLAB", params.slab_depth);
+    params.ocean = fms_atmos::OceanParams::slab(env("FMS_SLAB", 10.0));
     params.radiation.rayleigh = env("FMS_RAYLEIGH", params.radiation.rayleigh);
     {
         let m = &mut params.moisture;

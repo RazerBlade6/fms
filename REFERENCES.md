@@ -161,7 +161,10 @@ confirmed, the entry says so.
   Generic-PCM (rev. 3423). *Geosci. Model Dev.* 19, 3285–3316.
   [doi:10.5194/gmd-19-3285-2026](https://doi.org/10.5194/gmd-19-3285-2026)
   — the ocean design of M2 steps 11–12 (Sverdrup blend, Gent–McWilliams,
-  sea ice albedo) and its aquaplanet benchmark (PLAN §4.3).
+  sea ice albedo) and its aquaplanet benchmark (PLAN §4.3). Its code and run
+  settings are archived at
+  [doi:10.5281/zenodo.18771594](https://doi.org/10.5281/zenodo.18771594); we
+  follow them where they differ from the paper's text.
 
 ## Planet, terrain, hydrology and climate classification
 

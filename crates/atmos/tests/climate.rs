@@ -7,7 +7,7 @@ use fms_atmos::column_physics::{ApeSst, CLIMATE_LEVELS, LATENT_HEAT, initial_sta
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
     ColumnPhysics, Forcing, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
-    LayeredSemiImplicitOptions, Levels, PhysicsParams,
+    LayeredSemiImplicitOptions, Levels, OceanParams, PhysicsParams,
 };
 use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
@@ -18,10 +18,16 @@ type EachStep<'a> = &'a mut dyn FnMut(&LayeredSemiImplicit, &MeshGeometry, f64);
 /// No terrain: a cell's sub-grid height spread and mean height (m).
 const FLAT: fn(glam::DVec3) -> (f64, f64) = |_| (0.0, 0.0);
 
-/// Run `days` on frequency `k` from the single-column equilibrium, calling
-/// `each` after every step.
+/// Run `days` on frequency `k` over a 10 m slab, which settles in a few
+/// years, from the single-column equilibrium, calling `each` after every
+/// step.
 fn run(k: u32, days: f64, each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64)) {
-    run_with(k, days, Levels::new(&CLIMATE_LEVELS), |_| 0.0, FLAT, each);
+    let params = PhysicsParams {
+        ocean: OceanParams::slab(10.0),
+        ..PhysicsParams::default()
+    };
+    let levels = Levels::new(&CLIMATE_LEVELS);
+    run_over(params, k, days, levels, |_| 0.0, FLAT, each);
 }
 
 /// Land fraction of a continent within 45° of the prime meridian, with
@@ -31,8 +37,22 @@ fn continent_fraction(p: glam::DVec3) -> f64 {
     ((45.0 - lon) / 10.0 + 0.5).clamp(0.0, 1.0)
 }
 
-/// [`run`] on other layers.
+/// [`run`] on other layers, land and relief, over the default ocean.
 fn run_with(
+    k: u32,
+    days: f64,
+    levels: Levels,
+    land: impl Fn(glam::DVec3) -> f64,
+    relief: impl Fn(glam::DVec3) -> (f64, f64),
+    each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
+) {
+    let params = PhysicsParams::default();
+    run_over(params, k, days, levels, land, relief, each);
+}
+
+/// [`run_with`] with any physics.
+fn run_over(
+    params: PhysicsParams,
     k: u32,
     days: f64,
     levels: Levels,
@@ -43,7 +63,6 @@ fn run_with(
     let planet = Planet::earth();
     let (mesh, _) = SphereMesh::centroidal(k, LloydOptions::default());
     let geometry = MeshGeometry::new(&mesh);
-    let params = PhysicsParams::default();
     let model = LayeredModel::new(
         Operators::new(&mesh, &geometry, RADIUS),
         GRAVITY,
@@ -136,13 +155,17 @@ fn budgets_close(
     relief: impl Fn(glam::DVec3) -> (f64, f64),
     mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
 ) {
-    // What the atmosphere (enthalpy and latent energy) and the slab gain
-    // equals sunlight absorbed minus longwave emitted (friction's and
-    // diffusion's lost kinetic energy comes back as heat); only the
-    // time-stepping error is left: measured −0.029 W/m² over these 90 days
-    // of spin-up, and a third of that at half the step. The atmosphere's
-    // water changes by evaporation minus precipitation (and the time
-    // filter's trace), to round-off.
+    // What the atmosphere (enthalpy and latent energy) and the ocean and
+    // land gain equals sunlight absorbed minus longwave emitted (friction's
+    // and diffusion's lost kinetic energy comes back as heat); only the
+    // time-stepping error is left. A 50 m ocean starting at one uniform
+    // temperature is still far from balance at the end of these runs, which
+    // makes that error larger than the old 10 m slab's: −0.042 W/m² over 90
+    // days (10 m: −0.022) and −0.064 over 425 days at 640 cells (10 m:
+    // −0.024). It is not the ocean's transport: a 50 m slab with none gives
+    // −0.064 too, and halving the step takes that to −0.022. The
+    // atmosphere's water changes by evaporation minus precipitation (and
+    // the time filter's trace), to round-off.
     let mut first = None;
     let mut last = None;
     let levels = Levels::new(&CLIMATE_LEVELS);
@@ -180,7 +203,7 @@ fn budgets_close(
         wm2(residual)
     );
     assert!(
-        wm2(residual).abs() < 0.05,
+        wm2(residual).abs() < 0.08,
         "residual {} W/m²",
         wm2(residual)
     );
@@ -202,11 +225,11 @@ fn budgets_close(
         water_residual.abs() < 1e-12 * w1,
         "water residual {water_residual:e} kg"
     );
-    // The filter's trace wanders during spin-up, fully accounted for above:
-    // measured 1.1e-3 of the water at day 90 (1.2e-3 at day 45), and on the
-    // earlier three layers 2.4e-3 at day 45 and 7.5e-4 at day 91. Its sum
-    // grows with the run: 7.2e-3 over 425 days at 640 cells.
-    let filter_limit = 2e-3 * (days / 90.0).max(1.0);
+    // The filter's trace wanders during spin-up, fully accounted for above.
+    // Over the 50 m ocean: measured 6.1e-3 of the water at day 90 (the 10 m
+    // slab's 1.6e-3), where the air has dried to 10 kg/m². Its sum grows with
+    // the run: 2.1e-2 over 425 days at 640 cells (10 m: 7.3e-3).
+    let filter_limit = 1e-2 * (days / 90.0).max(1.0);
     assert!(filter.abs() < filter_limit * w1 && fixer.abs() < 1e-9 * w1);
 
     // The land's share: atmosphere, soil, snow and what ran off together
@@ -323,11 +346,10 @@ fn a_year_on_land_swings_more_than_ocean_and_snow_comes_and_goes() {
         land_day > 3.0 * ocean_day,
         "daily: land {land_day}, ocean {ocean_day}"
     );
-    // The margin is small only because the ocean is still a 10 m slab that
-    // follows the seasons closely: measured land 51.3 K, ocean 28.1 K, and
-    // daily 9.3 K and 0.24 K.
+    // Measured over the 50 m ocean: seasonal land 44.4 K, ocean 8.6 K, and
+    // daily 10.3 K and 0.06 K.
     assert!(
-        land_year > 1.2 * ocean_year,
+        land_year > 3.0 * ocean_year,
         "seasonal: land {land_year}, ocean {ocean_year}"
     );
 }

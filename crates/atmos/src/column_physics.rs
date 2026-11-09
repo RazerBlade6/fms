@@ -8,10 +8,10 @@
 //!
 //! - **Surface**: each cell has an ocean and a land tile, weighted by its
 //!   land fraction, each with its own temperature, albedo, roughness and
-//!   fluxes. The ocean tile is a slab of water of fixed depth (a real ocean
-//!   comes in M2 step 11); the land tile is a skin with no heat capacity
-//!   over a soil heat store, with a bucket of soil water and a pack of
-//!   snow. Each absorbs sunlight and longwave, emits as a black
+//!   fluxes. The ocean tile is the mixed layer of [`fms_ocean::Ocean`], which
+//!   moves heat sideways and down; the land tile is a skin with no heat
+//!   capacity over a soil heat store, with a bucket of soil water and a pack
+//!   of snow. Each absorbs sunlight and longwave, emits as a black
 //!   body, and pays the latent heat of what evaporates; the ocean also pays
 //!   the fusion of the snow that falls on it and melts. The radiation sees one surface per
 //!   cell, with the tiles' mean albedo and mean σT⁴, and splits its fluxes
@@ -68,6 +68,7 @@
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
 use fms_grid::zonal::east_north;
+use fms_ocean::{Ocean, OceanParams};
 use fms_planet::Planet;
 use glam::DVec3;
 use rayon::prelude::*;
@@ -98,8 +99,6 @@ const DAY: f64 = 86_400.0;
 /// inflates its moist static energy and suppresses the subtropical eddy
 /// momentum flux.
 pub const CLIMATE_LEVELS: [f64; 3] = [0.25, 0.5, 0.85];
-/// Volumetric heat capacity of water (J m⁻³ K⁻¹).
-const WATER_HEAT_CAPACITY: f64 = 1000.0 * 4186.0;
 /// Index of each cell's ocean tile.
 const OCEAN: usize = 0;
 /// Index of each cell's land tile.
@@ -229,8 +228,8 @@ pub struct PhysicsParams {
     pub moisture: MoistureParams,
     /// CO₂ (ppm).
     pub co2: f64,
-    /// Slab depth of the ocean tile (m of water).
-    pub slab_depth: f64,
+    /// The ocean under the ocean tile.
+    pub ocean: OceanParams,
     /// The land tile.
     pub land: LandParams,
     /// Sub-grid hills.
@@ -260,7 +259,7 @@ impl Default for PhysicsParams {
             radiation: RadiationParams::default(),
             moisture: MoistureParams::default(),
             co2: 420.0,
-            slab_depth: 10.0,
+            ocean: OceanParams::default(),
             land: LandParams::default(),
             orography: OrographyParams::default(),
             surface_layer: SurfaceLayerParams::default(),
@@ -274,9 +273,9 @@ impl Default for PhysicsParams {
 }
 
 impl PhysicsParams {
-    /// Heat capacity of the ocean tile's slab (J m⁻² K⁻¹).
+    /// Heat capacity of the ocean tile's mixed layer (J m⁻² K⁻¹).
     pub fn heat_capacity(&self) -> f64 {
-        WATER_HEAT_CAPACITY * self.slab_depth
+        self.ocean.mixed_capacity()
     }
 
     /// Heat capacity of the land tile's soil store (J m⁻² K⁻¹).
@@ -703,8 +702,8 @@ pub struct ColumnPhysics<'a> {
     relief: Vec<f64>,
     /// Gradient of each cell's surface height (m per m).
     relief_slope: Vec<DVec3>,
-    /// Temperature of each cell's ocean tile (K).
-    ocean_temperature: Vec<f64>,
+    /// The ocean under each cell's ocean tile.
+    ocean: Ocean,
     /// Skin temperature of each cell's land tile (K).
     land_temperature: Vec<f64>,
     /// Temperature of each cell's soil store (K).
@@ -788,6 +787,12 @@ impl<'a> ColumnPhysics<'a> {
             land_fraction.iter().all(|f| (0.0..=1.0).contains(f)),
             "land fractions must be within 0–1"
         );
+        let ocean = Ocean::new(
+            params.ocean,
+            model.operators(),
+            &land_fraction,
+            surface_temperature.clone(),
+        );
         let mut physics = Self {
             params,
             gas: model.gas(),
@@ -801,10 +806,10 @@ impl<'a> ColumnPhysics<'a> {
             relief: vec![0.0; n],
             relief_slope: vec![DVec3::ZERO; n],
             land_temperature: surface_temperature.clone(),
-            soil_temperature: surface_temperature.clone(),
+            soil_temperature: surface_temperature,
             soil_water: vec![params.land.critical_water(); n],
             snow: vec![0.0; n],
-            ocean_temperature: surface_temperature,
+            ocean,
             radiation: vec![Fluxes::default(); n],
             clear: vec![Fluxes::default(); n],
             tile_radiation: vec![TileRadiation::default(); n],
@@ -874,9 +879,9 @@ impl<'a> ColumnPhysics<'a> {
     pub fn surface_temperature(&self) -> Vec<f64> {
         (0..self.land_fraction.len())
             .map(|i| match self.land_fraction[i] {
-                0.0 => self.ocean_temperature[i],
+                0.0 => self.ocean.mixed_temperature()[i],
                 1.0 => self.land_temperature[i],
-                f => (1.0 - f) * self.ocean_temperature[i] + f * self.land_temperature[i],
+                f => (1.0 - f) * self.ocean.mixed_temperature()[i] + f * self.land_temperature[i],
             })
             .collect()
     }
@@ -913,7 +918,7 @@ impl<'a> ColumnPhysics<'a> {
                 self.params.radiation.albedo,
                 self.params.land.albedo_under(self.snow[i]),
             ],
-            temperature: [self.ocean_temperature[i], self.land_temperature[i]],
+            temperature: [self.ocean.mixed_temperature()[i], self.land_temperature[i]],
         }
     }
 
@@ -1044,7 +1049,7 @@ impl<'a> ColumnPhysics<'a> {
                 let fraction = self.land_fraction[i];
                 let mut tiles = [TileFlux::default(); 2];
                 if fraction < 1.0 {
-                    tiles[OCEAN] = tile(self.ocean_temperature[i], Surface::Ocean, 1.0);
+                    tiles[OCEAN] = tile(self.ocean.mixed_temperature()[i], Surface::Ocean, 1.0);
                 }
                 let mut skin = self.land_temperature[i];
                 if fraction > 0.0 {
@@ -1362,7 +1367,6 @@ impl Forcing for ColumnPhysics<'_> {
         // precipitation the atmosphere was given.
         let areas = &self.ops.geometry().cell_areas;
         let r2 = self.ops.radius() * self.ops.radius();
-        let capacity = self.params.heat_capacity();
         let land_capacity = self.params.land_heat_capacity();
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
         let (tiles, land) = (&self.tile_radiation, &self.land_fraction);
@@ -1390,12 +1394,8 @@ impl Forcing for ColumnPhysics<'_> {
             let uptake: f64 = (0..areas.len()).map(|i| areas[i] * net(i, OCEAN)).sum();
             self.uptake += dt * r2 * uptake;
         } else {
-            self.ocean_temperature
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .filter(|(i, _)| land[*i] < 1.0)
-                .for_each(|(i, t)| *t += dt * net(i, OCEAN) / capacity);
+            self.ocean.add_surface_heat(dt, |i| net(i, OCEAN));
+            self.ocean.transport(dt);
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
         let (mut runoff, mut ocean_exchange) = (0.0, 0.0);
@@ -1454,14 +1454,11 @@ impl Forcing for ColumnPhysics<'_> {
         let stored: f64 = if self.prescribed {
             self.uptake
         } else {
-            let (ocean, land) = (
-                self.params.heat_capacity(),
-                self.params.land_heat_capacity(),
-            );
+            let land = self.params.land_heat_capacity();
             (0..areas.len())
                 .map(|i| {
                     let (a, f) = (areas[i], self.land_fraction[i]);
-                    (1.0 - f) * (a * r2 * ocean * self.ocean_temperature[i])
+                    (1.0 - f) * (a * r2 * self.ocean.heat(i))
                         + f * (a
                             * r2
                             * (land * self.soil_temperature[i] - FUSION_HEAT * self.snow[i]))
@@ -1516,6 +1513,18 @@ impl Forcing for ColumnPhysics<'_> {
                     .zip(&self.land_fraction)
                     .map(|(s, f)| s * f)
                     .collect(),
+            ),
+            field(
+                "ocean.mixed_temperature",
+                "Mixed-layer temperature (its start where a cell has no ocean)",
+                "K",
+                self.ocean.mixed_temperature().to_vec(),
+            ),
+            field(
+                "ocean.deep_temperature",
+                "Deep-layer temperature (its start where a cell has no ocean)",
+                "K",
+                self.ocean.deep_temperature().to_vec(),
             ),
             field(
                 "rad.surface_temperature",
@@ -2079,7 +2088,7 @@ impl SingleColumn {
     /// mean stellar flux `s0`, with [`Self::SINGLE_COLUMN_CLOUD_ALBEDO`].
     pub fn earth(s0: f64) -> Self {
         let mut params = PhysicsParams {
-            slab_depth: 1.0,
+            ocean: OceanParams::slab(1.0),
             ..PhysicsParams::default()
         };
         params.radiation.cloud_albedo = Self::SINGLE_COLUMN_CLOUD_ALBEDO;

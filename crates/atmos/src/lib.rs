@@ -38,6 +38,7 @@ pub use column_physics::{
     ColumnPhysics, Equilibrium, OrographyParams, PhysicsParams, SingleColumn,
 };
 pub use diffusion::{Hyperdiffusion, HyperdiffusionOptions};
+pub use fms_ocean::OceanParams;
 pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};
 pub use helmholtz::{Helmholtz, SolveReport};

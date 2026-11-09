@@ -111,7 +111,7 @@ fn main() {
     let adjusted = |co2: f64| {
         let mut c = eq_col;
         c.params.co2 = co2;
-        c.params.slab_depth = 1e12;
+        c.params.ocean = fms_atmos::OceanParams::slab(1e12);
         for _ in 0..(2 * 365 * 24) {
             c.step(3600.0);
         }

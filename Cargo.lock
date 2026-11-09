@@ -321,6 +321,7 @@ dependencies = [
  "fms-fields",
  "fms-grid",
  "fms-math",
+ "fms-ocean",
  "fms-planet",
  "fms-sched",
  "glam",
@@ -392,10 +393,9 @@ dependencies = [
 name = "fms-ocean"
 version = "0.1.0"
 dependencies = [
- "fms-fields",
  "fms-grid",
- "fms-planet",
- "fms-sched",
+ "fms-math",
+ "rayon",
 ]
 
 [[package]]

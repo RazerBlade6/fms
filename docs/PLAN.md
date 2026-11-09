@@ -310,13 +310,19 @@ et al. (2026), plus a wind-driven gyre:
 - **Two layers** per ocean cell: a mixed layer (50 m) exchanging heat with the
   atmosphere, over a deep layer (150 m), both prognostic temperatures. A
   fixed mixed-layer depth to start (regional depths are a later refinement).
+  The deep layer starts no warmer than 4 °C: until upwelling arrives it can
+  only lose heat, so a warmer start would come back as a false warm spell.
 - **Heat transport**, all as mass or heat fluxes across cell edges so the
   ocean's budget closes exactly: Ekman transport from the surface wind
   stress (frictional, blending into Sverdrup near the equator) with the deep
   layer's return flow and the vertical exchange it implies; Gent–McWilliams
   eddy transport along the isotherm slope; horizontal diffusion; convective
   adjustment. Coefficients follow the paper for Earth's rotation and scale
-  with the deformation radius on other planets.
+  with the deformation radius on other planets. Where the paper and its code
+  (`docs/sources/generic-pcm-r3423/`) differ, we follow the code that
+  produced its results: the diffusivity is 2000 m²/s in both layers, the
+  paper's 8000 scaled by 50 m over the ocean's 200 m. Across an edge the
+  opening is the smaller of the two cells' ocean fractions.
 - **Gyres**: a barotropic Stommel–Munk streamfunction from the wind-stress
   curl over each basin, for western boundary currents (which shape coastal
   climates) and the ocean-current map. Beyond the paper, which has none.

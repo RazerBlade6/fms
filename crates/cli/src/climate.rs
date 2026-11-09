@@ -134,6 +134,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Moisture,
         ),
         (
+            "ocean.deep_temperature",
+            "Deep-ocean temperature",
+            "K",
+            ColorScale::Temperature,
+        ),
+        (
             "rad.shortwave_cloud_effect",
             "Shortwave cloud radiative effect",
             "W m-2",
@@ -233,8 +239,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m ocean slab and a {} m soil store, CO₂ {} ppm",
-            params.slab_depth, params.land.soil_depth, params.co2
+            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean and a {} m soil store, CO₂ {} ppm",
+            params.ocean.mixed_depth, params.ocean.deep_depth, params.land.soil_depth, params.co2
         ),
     );
     eprintln!("climate: {description}");

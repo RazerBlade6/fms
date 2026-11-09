@@ -168,9 +168,15 @@ cells at most.
 **Why it's acceptable for now:** the Caspian really is water, so for climate it
 mostly behaves right, and nothing reads the land/sea split yet.
 
-**Revisit when:** the slab ocean (M2 step 11) needs a real ocean mask: take the
-ocean to be the below-sea-level region connected to the open sea, and leave
-closed basins to hydrology's lakes and depressions.
+**Checked (M2.11.1):** the two-layer ocean doesn't need a mask yet. Diffusion
+only has to stop at coasts, which it does, and a closed basin simply keeps its
+own heat. Fine-grid connectivity is also unreliable: straits like the Bosporus
+are far narrower than a terrain cell, so "connected to the open sea" needs
+care.
+
+**Revisit when:** the gyres of M2 step 12, solved over each basin, need a real
+ocean mask: take the ocean to be the below-sea-level region connected to the
+open sea, and leave closed basins to hydrology's lakes and depressions.
 
 ### O-12: Shallow-water steps are overhead-bound
 

@@ -13,6 +13,7 @@ fms-fields.workspace = true
 fms-sched.workspace = true
 fms-planet.workspace = true
 fms-math.workspace = true
+fms-ocean.workspace = true
 glam.workspace = true
 rayon.workspace = true
 
