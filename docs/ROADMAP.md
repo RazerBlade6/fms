@@ -260,14 +260,18 @@ Added after the M1 review: tooling the GCM work depends on.
         15.
 - [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
     Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
-    over a 150 m deep layer per ocean cell, horizontal diffusion in both,
+    over a 150 m deep layer per ocean cell, horizontal diffusion in both
+    (2000 m²/s, which is what the paper's "8000" comes to in its code),
     and convective adjustment when the surface layer is colder than the deep
-    one. Sea ice holds the mixed layer at freezing and grows or melts with
-    the excess energy; a prognostic ice surface temperature with a linear
-    profile, snow on ice with its own heat capacity, and an albedo that rises
-    with thickness from the ocean's, separately in visible and near-infrared
-    light. Ice-albedo feedback (O-20). Tests: energy conserved through
-    freezing and melting; the ice edge and seasonal cycle are plausible.
+    one. Sea ice forms when the mixed layer falls below freezing, as a
+    fraction and a thickness; the ocean's heat reaches it at a turbulent
+    rate, as in the authors' code. A prognostic ice surface temperature with
+    a linear profile, snow on ice with its own heat capacity, and an albedo
+    that rises with thickness from the ocean's, separately in visible and
+    near-infrared light. Ice-albedo feedback (O-20). Tests: energy conserved
+    through freezing and melting; the ice edge and seasonal cycle are
+    plausible for an ocean with no transport yet: too much ice is expected
+    until step 12, so step 11's tests must not require Earth's extent (O-36).
 
     Also an **ice-sheet surface** on land that stays snow-covered, with its
     own albedo (about 0.82, against 0.65 for seasonal snow) and roughness

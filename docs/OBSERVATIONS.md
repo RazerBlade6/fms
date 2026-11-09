@@ -40,6 +40,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-28 | [More than two layers make the vertical modes non-normal](#o-28-more-than-two-layers-make-the-vertical-modes-non-normal) | Numerics | Accepted |
 | O-29 | [The layered core is ~12% slower than the two-layer one](#o-29-the-layered-core-is-12-slower-than-the-two-layer-one) | Performance | Scheduled: M2 step 16 |
 | O-30 | [Terrain is smoothed, and spreads over coastal ocean](#o-30-terrain-is-smoothed-and-spreads-over-coastal-ocean) | Terrain | Watching |
+| O-36 | [Too much sea ice is expected until M2 step 12](#o-36-too-much-sea-ice-is-expected-until-m2-step-12) | Ocean | Scheduled: M2 step 12 |
 
 ---
 
@@ -870,3 +871,27 @@ not part of a check. The gaps are kept as ignored tests.
 if low cloud limits the Earth run's close-out (step 10.2.8). Candidates are an
 inhibition trigger for deep convection, and an inversion diagnosed from the
 column instead of extrapolated.
+
+### O-36: Too much sea ice is expected until M2 step 12
+
+**Expected (planning M2 step 11):** step 11 adds sea ice but moves heat only by
+horizontal diffusion, at 2000 m²/s. Ekman and eddy transport arrive in step 12.
+Until then the ice edge will sit too far equatorward and the high latitudes will
+be too cold. In Bhatnagar et al. (2026), Earth with no ocean transport has about
+10 million km² too much ice all year and an Arctic up to 15 °C too cold, and on
+their aquaplanet the full transport moves the ice line 10–15° poleward.
+
+The 2000 m²/s comes from their code: the coefficient the paper gives as
+8000 m²/s is multiplied by 50/(50 + 150) m (`ocean_slab_mod.F90`). Their
+diffusion-only aquaplanet case (Case 2) ran this way.
+
+**What this means for step 11:**
+- Its tests must not require Earth's ice extent or SSTs. Compare with the paper's
+  no-transport and diffusion-only cases instead.
+- Too much ice is not a reason to retune albedo, clouds or diffusion. Tuning is
+  step 15.
+- Check for a hemispheric imbalance: the paper finds that without ocean transport
+  ice-albedo feedback can lock one in.
+
+**Revisit when:** step 12's transport is on. The ice edge is then compared with
+the paper's full-transport cases, and this entry is resolved or updated.
