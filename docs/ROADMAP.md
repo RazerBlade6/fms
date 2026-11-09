@@ -217,9 +217,15 @@ Added after the M1 review: tooling the GCM work depends on.
         mid-latitude swings to 9.6 K daily and 49 K seasonally. On Earth at
         2.5k cells: 288.9 K, albedo 0.32, boreal soils wet, subtropics and
         Australia dry, but so is the Amazon, from too little rain (O-32).
-      - [ ] 10.2.5. **Snow**: snow mass, melt and snow albedo. Test: energy
+      - [x] 10.2.5. **Snow**: snow mass, melt and snow albedo. Test: energy
         and water budgets close through melting; snow comes and goes with
         the seasons.
+        Done: land carries a snow pack that brightens it to 0.65 once 10 kg/m²
+        covers it; a skin at freezing melts the pack with its surplus heat
+        (O-33). Over 425 days through a melt season at 640 cells, energy
+        closes to −0.024 W/m² and water to 3×10⁻¹⁴ of the atmosphere's;
+        mid-latitude land snow peaks at 54 kg/m² and melts away entirely. On
+        Earth at 2.5k cells: 288.4 K, albedo 0.328.
       - [ ] 10.2.6. **Sub-grid orography**: orographic rain and drag from
         the height spread. Test: more rain on the windward side of the
         ridge than the lee; the drag slows the flow over rough terrain and

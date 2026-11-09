@@ -246,7 +246,9 @@ crates never depend on it. Everything except the viewer runs headless.
   fluxes and conduction, implicitly with the soil's update, and the soil takes
   exactly the net flux the atmosphere was given. Soil water is Manabe's
   bucket (150 mm), limiting evaporation below 75% full; what overflows runs
-  off, and leaves the planet's water until rivers (M3).
+  off, and leaves the planet's water until rivers (M3). Snow piles up on
+  land, brightening it, and melts when the skin reaches freezing; the pack
+  counts as a heat deficit, `−L_f × snow`, in the planet's stored energy.
 - **Vertical structure** (decided at M2.5, generalized at M2.9.5): sigma
   layers (`σ = p/p_s`, model top at p = 0) at any interfaces
   (`crates/atmos/src/levels.rs`). Two equal-mass layers (interface at σ = 0.5)

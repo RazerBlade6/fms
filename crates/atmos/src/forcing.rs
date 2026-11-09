@@ -54,6 +54,8 @@ pub struct ForcingBudget {
     pub dissipated: f64,
     /// Water held in the soil now (kg).
     pub soil_water: f64,
+    /// Water held as snow on land now (kg).
+    pub snow: f64,
     /// Water that has run off the land (kg).
     pub runoff: f64,
     /// Evaporation minus precipitation over the ocean (kg).

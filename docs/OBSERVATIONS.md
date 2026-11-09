@@ -756,3 +756,21 @@ as a whole, and 2.5k cells is coarse. Dry-soil surface air is also still
 buoyant as if saturated, in `exchange`.
 
 **Revisit when:** the Earth run's close-out (M2 step 10.2.8).
+
+### O-33: The snow pack is simple
+
+**Seen (M2.10.2.5):** a single pack per land tile, with no heat capacity of
+its own. It works through a melt season: the budgets close, and snow comes
+and goes at the mid-latitudes.
+
+**Limits for now:**
+- Snow doesn't insulate the ground, so winter soil is colder under snow than
+  it should be.
+- Nothing limits the pack where snow never melts, so it grows on ice sheets
+  without bound (Antarctica's coast reaches ~90 kg/m² in a year). That's
+  harmless over a few years, but not over the long runs.
+- Frost forms as liquid in the bucket, and rain passes through the pack
+  without freezing.
+
+**Revisit when:** long runs (M4) and the land's seasonal cycle in the Earth run
+(M2 step 10.2.8), or sooner if soil temperatures look wrong.

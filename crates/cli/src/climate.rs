@@ -122,6 +122,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Moisture,
         ),
         (
+            "land.snow",
+            "Snow on land (per unit of cell area)",
+            "kg m-2",
+            ColorScale::Moisture,
+        ),
+        (
             "rad.shortwave_cloud_effect",
             "Shortwave cloud radiative effect",
             "W m-2",
@@ -459,16 +465,18 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             (w1 - w0) - exchanged - filter - fixer,
         );
         let (soil, runoff) = (b1.soil_water - b0.soil_water, b1.runoff - b0.runoff);
+        let snow = b1.snow - b0.snow;
         let ocean = b1.ocean_exchange - b0.ocean_exchange;
         let _ = writeln!(
             summary,
-            "Final-year land water (kg): soil change {:+.4e}, runoff {:.4e}; atmosphere, soil and runoff \
+            "Final-year land water (kg): soil change {:+.4e}, snow change {:+.4e}, runoff {:.4e}; atmosphere, land and runoff \
              change {:+.4e} = ocean evaporation − precipitation {:+.4e} + filter and fixer, residual {:+.1e}",
             soil,
+            snow,
             runoff,
-            (w1 - w0) + soil + runoff,
+            (w1 - w0) + soil + snow + runoff,
             ocean,
-            (w1 - w0) + soil + runoff - ocean - filter - fixer,
+            (w1 - w0) + soil + snow + runoff - ocean - filter - fixer,
         );
     }
     let _ = writeln!(

@@ -10,10 +10,10 @@
 //!   land fraction, each with its own temperature, albedo, roughness and
 //!   fluxes. The ocean tile is a slab of water of fixed depth (a real ocean
 //!   comes in M2 step 11); the land tile is a skin with no heat capacity
-//!   over a soil heat store, with a bucket of soil water (snow comes in M2
-//!   step 10.2). Each absorbs sunlight and longwave, emits as a black
-//!   body, and pays the latent heat of what evaporates, and of fusion for
-//!   the snow that falls on it and melts. The radiation sees one surface per
+//!   over a soil heat store, with a bucket of soil water and a pack of
+//!   snow. Each absorbs sunlight and longwave, emits as a black
+//!   body, and pays the latent heat of what evaporates; the ocean also pays
+//!   the fusion of the snow that falls on it and melts. The radiation sees one surface per
 //!   cell, with the tiles' mean albedo and mean σT⁴, and splits its fluxes
 //!   between them so nothing is lost.
 //! - **Skin and soil**: each step the skin temperature is solved so that
@@ -27,8 +27,14 @@
 //!   of the surface's longwave is absorbed.
 //! - **Soil water**: Manabe's (1969) bucket. Rain and snow fill it, and what
 //!   overflows its capacity runs off; evaporation falls in proportion to its
-//!   water below a critical level. Snow melts on landing until M2 step
-//!   10.2.5. Runoff leaves the planet's water until rivers (M3).
+//!   water below a critical level. Runoff leaves the planet's water until
+//!   rivers (M3).
+//! - **Snow**: what falls on land piles up, brightening the tile as it
+//!   covers it. A skin that would rise above freezing under snow stays at
+//!   freezing, and the surplus melts the snow into the bucket. Evaporation
+//!   takes snow first, paying its fusion too. The pack owes the heat of
+//!   fusion the air was given when it froze, so the planet's stored heat
+//!   counts it as a deficit, `−L_f × snow`.
 //! - **Boundary layer**: the bottom layer is a well-mixed boundary layer
 //!   ([`crate::surface_layer`]): surface air has its potential temperature
 //!   and specific humidity. Bulk formulas with stability-dependent
@@ -92,6 +98,8 @@ const WATER_HEAT_CAPACITY: f64 = 1000.0 * 4186.0;
 const OCEAN: usize = 0;
 /// Index of each cell's land tile.
 const LAND: usize = 1;
+/// The temperature snow melts at (K).
+const MELTING_POINT: f64 = 273.15;
 
 /// The land tile. [`Default`] is a mean Earth-like land surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,6 +119,11 @@ pub struct LandParams {
     pub soil_water_capacity: f64,
     /// Fraction of the capacity above which the soil evaporates freely.
     pub critical_wetness: f64,
+    /// Albedo of land fully covered by snow, a mean over fresh and old snow
+    /// and what vegetation shows through.
+    pub snow_albedo: f64,
+    /// Snow (kg m⁻²) that covers the land fully.
+    pub snow_covering: f64,
 }
 
 impl Default for LandParams {
@@ -123,6 +136,8 @@ impl Default for LandParams {
             skin_conductance: 7.0,
             soil_water_capacity: 150.0,
             critical_wetness: 0.75,
+            snow_albedo: 0.65,
+            snow_covering: 10.0,
         }
     }
 }
@@ -138,16 +153,23 @@ impl LandParams {
         self.critical_wetness * self.soil_water_capacity
     }
 
+    /// The albedo of land under `snow` (kg m⁻²).
+    fn albedo_under(&self, snow: f64) -> f64 {
+        let cover = (snow / self.snow_covering).min(1.0);
+        self.albedo + cover * (self.snow_albedo - self.albedo)
+    }
+
     /// The share (0–1) of the potential evaporation that soil holding
-    /// `water` (kg m⁻²) supplies.
+    /// `water` (kg m⁻², with any snow) supplies.
     fn wetness(&self, water: f64) -> f64 {
         (water / self.critical_water()).min(1.0)
     }
 
     /// Soil `water` (kg m⁻²) after gaining `gain` (kg m⁻²; a loss if
     /// negative): the new amount and what overflowed. Water can't run out:
-    /// evaporation is proportional to it below the critical level, and a
-    /// step evaporates far less than that level (~2 of 112 mm at most).
+    /// evaporation is proportional to soil water and snow below the critical
+    /// level, and a step evaporates far less than that (~2 of 112 mm at
+    /// most), taking snow first.
     fn fill(&self, water: f64, gain: f64) -> (f64, f64) {
         let new = water + gain;
         let overflow = (new - self.soil_water_capacity).max(0.0);
@@ -372,6 +394,12 @@ const SKIN_TOLERANCE: f64 = 1e-3;
 /// coefficients jump as the surface layer changes stability.
 const SKIN_MAX_CHANGE: f64 = 10.0;
 
+/// The snow (kg m⁻², at most `snow`) that `surplus` heat (W m⁻²) melts in
+/// `dt` seconds.
+fn snow_melted(snow: f64, surplus: f64, dt: f64) -> f64 {
+    (surplus.max(0.0) * dt / FUSION_HEAT).min(snow)
+}
+
 /// Black-body emission (W m⁻²) at temperature `t`.
 fn black_body(t: f64) -> f64 {
     STEFAN_BOLTZMANN * t * t * t * t
@@ -539,6 +567,8 @@ pub struct ColumnPhysics<'a> {
     soil_temperature: Vec<f64>,
     /// Water in each cell's soil (kg per m² of land).
     soil_water: Vec<f64>,
+    /// Snow on each cell's land (kg per m² of land).
+    snow: Vec<f64>,
     /// Last radiation call, all-sky and clear-sky, and its division between
     /// the tiles.
     radiation: Vec<Fluxes>,
@@ -627,6 +657,7 @@ impl<'a> ColumnPhysics<'a> {
             land_temperature: surface_temperature.clone(),
             soil_temperature: surface_temperature.clone(),
             soil_water: vec![params.land.critical_water(); n],
+            snow: vec![0.0; n],
             ocean_temperature: surface_temperature,
             radiation: vec![Fluxes::default(); n],
             clear: vec![Fluxes::default(); n],
@@ -659,7 +690,14 @@ impl<'a> ColumnPhysics<'a> {
     /// the surface becomes an infinite heat reservoir whose uptake the
     /// budget counts as stored heat. The atmosphere settles in about a month
     /// instead of the surface's years.
+    ///
+    /// # Panics
+    /// If there is land, which always evolves.
     pub fn with_prescribed_surface(mut self) -> Self {
+        assert!(
+            self.land_fraction.iter().all(|f| *f == 0.0),
+            "only the ocean's temperature can be prescribed"
+        );
         self.prescribed = true;
         self
     }
@@ -698,11 +736,20 @@ impl<'a> ColumnPhysics<'a> {
         &self.soil_water
     }
 
+    /// Snow on each cell's land (kg per m² of land); meaningless where the
+    /// cell has no land.
+    pub fn snow(&self) -> &[f64] {
+        &self.snow
+    }
+
     /// What the radiation sees of cell `i`'s tiles.
     fn tiled_surface(&self, i: usize) -> TiledSurface {
         TiledSurface {
             fraction: self.land_fraction[i],
-            albedo: [self.params.radiation.albedo, self.params.land.albedo],
+            albedo: [
+                self.params.radiation.albedo,
+                self.params.land.albedo_under(self.snow[i]),
+            ],
             temperature: [self.ocean_temperature[i], self.land_temperature[i]],
         }
     }
@@ -838,16 +885,18 @@ impl<'a> ColumnPhysics<'a> {
                 let mut skin = self.land_temperature[i];
                 if fraction > 0.0 {
                     let rough = Surface::Rough(self.params.land.roughness);
-                    let wetness = self.params.land.wetness(self.soil_water[i]);
+                    let snow = self.snow[i];
+                    let wetness = self.params.land.wetness(self.soil_water[i] + snow);
                     if let Some(dt) = dt {
-                        let absorbed = self.tile_radiation[i].shortwave[LAND]
-                            + self.radiation[i].surface_down
-                            - FUSION_HEAT * self.moist[i].snow;
+                        let absorbed =
+                            self.tile_radiation[i].shortwave[LAND] + self.radiation[i].surface_down;
+                        // Evaporating snow also pays for its melting.
+                        let latent = LATENT_HEAT + if snow > 0.0 { FUSION_HEAT } else { 0.0 };
                         // Exchange coefficients are frozen in the slope only.
                         let turbulent = |t: f64| {
                             let x = exchange(sl, rough, &air_over(t));
                             let heat = density * cp * x.heat * x.speed;
-                            let water = LATENT_HEAT * density * x.moisture * x.speed;
+                            let water = latent * density * x.moisture * x.speed;
                             let qs = saturation_humidity(t, ps);
                             let dqs = qs * LATENT_HEAT / (VAPOUR_GAS_CONSTANT * t * t);
                             let water = water * supplied(qs - q, wetness);
@@ -860,6 +909,9 @@ impl<'a> ColumnPhysics<'a> {
                             self.params.land.step_conductance(dt),
                             turbulent,
                         );
+                        if snow > 0.0 {
+                            skin = skin.min(MELTING_POINT);
+                        }
                     }
                     tiles[LAND] = tile(skin, rough, wetness);
                 }
@@ -1151,19 +1203,20 @@ impl Forcing for ColumnPhysics<'_> {
             } else {
                 tiles[i].longwave_up[tile]
             };
+            // Snow landing on the ocean melts at once; on land it's a pack.
+            let fusion = if tile == OCEAN {
+                FUSION_HEAT * moist[i].snow
+            } else {
+                0.0
+            };
             tiles[i].shortwave[tile] + radiation[i].surface_down
                 - emitted
                 - flux.sensible
                 - LATENT_HEAT * flux.evaporation
-                - FUSION_HEAT * moist[i].snow
+                - fusion
         };
         if self.prescribed {
-            let uptake: f64 = (0..areas.len())
-                .map(|i| {
-                    let f = land[i];
-                    areas[i] * ((1.0 - f) * net(i, OCEAN) + f * net(i, LAND))
-                })
-                .sum();
+            let uptake: f64 = (0..areas.len()).map(|i| areas[i] * net(i, OCEAN)).sum();
             self.uptake += dt * r2 * uptake;
         } else {
             self.ocean_temperature
@@ -1172,12 +1225,6 @@ impl Forcing for ColumnPhysics<'_> {
                 .enumerate()
                 .filter(|(i, _)| land[*i] < 1.0)
                 .for_each(|(i, t)| *t += dt * net(i, OCEAN) / capacity);
-            self.soil_temperature
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .filter(|(i, _)| land[*i] > 0.0)
-                .for_each(|(i, t)| *t += dt * net(i, LAND) / land_capacity);
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
         let (mut runoff, mut ocean_exchange) = (0.0, 0.0);
@@ -1188,7 +1235,24 @@ impl Forcing for ColumnPhysics<'_> {
                 ocean_exchange += a * (1.0 - f) * (surface[i].tiles[OCEAN].evaporation - falling);
             }
             if f > 0.0 {
-                let gain = dt * (falling - surface[i].tiles[LAND].evaporation);
+                let evaporation = surface[i].tiles[LAND].evaporation;
+                let pack = self.snow[i] + dt * moist[i].snow;
+                // Evaporation takes the snow first, which costs its fusion.
+                let sublimated = (dt * evaporation).clamp(0.0, pack);
+                let mut heat = net(i, LAND) - FUSION_HEAT * sublimated / dt;
+                // A skin held at freezing: what the balance leaves after
+                // conduction into the soil melts the snow.
+                let melted = if skin[i] == MELTING_POINT {
+                    let conducted = self.params.land.step_conductance(dt)
+                        * (skin[i] - self.soil_temperature[i]);
+                    snow_melted(pack - sublimated, heat - conducted, dt)
+                } else {
+                    0.0
+                };
+                heat -= FUSION_HEAT * melted / dt;
+                self.snow[i] = pack - sublimated - melted;
+                self.soil_temperature[i] += dt * heat / land_capacity;
+                let gain = dt * (moist[i].rain - evaporation) + sublimated + melted;
                 let (water, overflow) = self.params.land.fill(self.soil_water[i], gain);
                 self.soil_water[i] = water;
                 runoff += a * f * overflow;
@@ -1227,7 +1291,9 @@ impl Forcing for ColumnPhysics<'_> {
                 .map(|i| {
                     let (a, f) = (areas[i], self.land_fraction[i]);
                     (1.0 - f) * (a * r2 * ocean * self.ocean_temperature[i])
-                        + f * (a * r2 * land * self.soil_temperature[i])
+                        + f * (a
+                            * r2
+                            * (land * self.soil_temperature[i] - FUSION_HEAT * self.snow[i]))
                 })
                 .sum()
         };
@@ -1240,6 +1306,9 @@ impl Forcing for ColumnPhysics<'_> {
             dissipated: self.dissipated,
             soil_water: (0..areas.len())
                 .map(|i| areas[i] * r2 * self.land_fraction[i] * self.soil_water[i])
+                .sum(),
+            snow: (0..areas.len())
+                .map(|i| areas[i] * r2 * self.land_fraction[i] * self.snow[i])
                 .sum(),
             runoff: self.runoff,
             ocean_exchange: self.ocean_exchange,
@@ -1265,6 +1334,16 @@ impl Forcing for ColumnPhysics<'_> {
                     .iter()
                     .zip(&self.land_fraction)
                     .map(|(w, f)| w * f)
+                    .collect(),
+            ),
+            field(
+                "land.snow",
+                "Snow on land, per unit area of the whole cell",
+                "kg m-2",
+                self.snow
+                    .iter()
+                    .zip(&self.land_fraction)
+                    .map(|(s, f)| s * f)
                     .collect(),
             ),
             field(
@@ -1994,6 +2073,29 @@ mod tests {
         let (water, overflow) = land.fill(capacity - 1.0, 5.0);
         assert_eq!(water, capacity);
         assert!((overflow - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn snow_brightens_the_land_as_it_covers_it() {
+        let land = LandParams::default();
+        assert_eq!(land.albedo_under(0.0), land.albedo);
+        assert_eq!(land.albedo_under(land.snow_covering), land.snow_albedo);
+        assert_eq!(
+            land.albedo_under(5.0 * land.snow_covering),
+            land.snow_albedo
+        );
+        let half = land.albedo_under(0.5 * land.snow_covering);
+        assert!((half - 0.5 * (land.albedo + land.snow_albedo)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn snow_melts_by_the_heat_available_but_no_more_than_there_is() {
+        let dt = 1000.0;
+        let surplus = 334.0;
+        let melted = snow_melted(10.0, surplus, dt);
+        assert!((melted * FUSION_HEAT - surplus * dt).abs() < 1e-9);
+        assert_eq!(snow_melted(0.25, surplus, dt), 0.25);
+        assert_eq!(snow_melted(10.0, -surplus, dt), 0.0);
     }
 
     #[test]

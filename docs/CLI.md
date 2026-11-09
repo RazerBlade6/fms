@@ -252,8 +252,8 @@ orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 world's terrain (`--continent`, `--heightmap`), lightly smoothed
 ([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Each cell has an ocean tile, a
 10 m slab of water, and in proportion to its land fraction a land tile, so
-a skin over a 1 m soil heat store with a 150 mm bucket of soil water (snow
-arrives in M2 step 10.2, a real ocean in step 11). A world with no land is an ice-free aquaplanet, which
+a skin over a 1 m soil heat store with a 150 mm bucket of soil water and a
+snow pack (a real ocean arrives in M2 step 11). A world with no land is an ice-free aquaplanet, which
 runs warmer than Earth (O-23; see also O-22, O-24, O-25). The run starts at rest from a single-column
 radiative–convective equilibrium with its humidity, in hydrostatic balance
 with the terrain. It takes a few model years to settle and averages the

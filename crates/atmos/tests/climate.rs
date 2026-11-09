@@ -103,15 +103,22 @@ fn a_world_without_land_is_the_aquaplanet_bit_for_bit() {
 
 #[test]
 fn the_planets_energy_and_water_budgets_close() {
-    budgets_close(|_| 0.0);
+    budgets_close(16, 90.0, |_| 0.0, |_, _, _| ());
 }
 
 #[test]
 fn the_planets_energy_and_water_budgets_close_with_land_tiles() {
-    budgets_close(continent_fraction);
+    budgets_close(16, 90.0, continent_fraction, |_, _, _| ());
 }
 
-fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
+/// Run `days` at frequency `k`, calling `each` after every step, and check
+/// the planet's budgets over the run.
+fn budgets_close(
+    k: u32,
+    days: f64,
+    land: impl Fn(glam::DVec3) -> f64,
+    mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
+) {
     // What the atmosphere (enthalpy and latent energy) and the slab gain
     // equals sunlight absorbed minus longwave emitted (friction's and
     // diffusion's lost kinetic energy comes back as heat); only the
@@ -122,7 +129,8 @@ fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
     let mut first = None;
     let mut last = None;
     let levels = Levels::new(&CLIMATE_LEVELS);
-    run_with(16, 90.0, levels, land, |si, _, dt| {
+    run_with(k, days, levels, land, |si, geometry, dt| {
+        each(si, geometry, dt);
         let budget = si.model().forcing().unwrap().budget().unwrap();
         let row = (
             si.model().diagnostics(si.state()),
@@ -148,7 +156,7 @@ fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
         + (e1.diffusion.total() - e0.diffusion.total());
     let residual = toa - uptake + removed;
     eprintln!(
-        "90 days: net in at the top {:+.3} W/m², uptake {:+.3}, kinetic energy removed {:.3}, residual {:+.5}",
+        "{days} days: net in at the top {:+.3} W/m², uptake {:+.3}, kinetic energy removed {:.3}, residual {:+.5}",
         wm2(toa),
         wm2(uptake),
         -wm2(removed),
@@ -179,17 +187,21 @@ fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
     );
     // The filter's trace wanders during spin-up, fully accounted for above:
     // measured 1.1e-3 of the water at day 90 (1.2e-3 at day 45), and on the
-    // earlier three layers 2.4e-3 at day 45 and 7.5e-4 at day 91.
-    assert!(filter.abs() < 2e-3 * w1 && fixer.abs() < 1e-9 * w1);
+    // earlier three layers 2.4e-3 at day 45 and 7.5e-4 at day 91. Its sum
+    // grows with the run: 7.2e-3 over 425 days at 640 cells.
+    let filter_limit = 2e-3 * (days / 90.0).max(1.0);
+    assert!(filter.abs() < filter_limit * w1 && fixer.abs() < 1e-9 * w1);
 
-    // The soil's share: atmosphere, soil and what ran off together change
-    // only by what the ocean tiles exchange with the air.
+    // The land's share: atmosphere, soil, snow and what ran off together
+    // change only by what the ocean tiles exchange with the air.
     let (soil, runoff) = (b1.soil_water - b0.soil_water, b1.runoff - b0.runoff);
+    let snow = b1.snow - b0.snow;
     let ocean = b1.ocean_exchange - b0.ocean_exchange;
-    let total_residual = (w1 - w0) + soil + runoff - ocean - filter - fixer;
+    let total_residual = (w1 - w0) + soil + snow + runoff - ocean - filter - fixer;
     eprintln!(
-        "soil water {:+.4} mm/day, runoff {:.4} mm/day, residual {:+.1e} of the water",
+        "soil water {:+.4} mm/day, snow {:+.4} mm/day, runoff {:.4} mm/day, residual {:+.1e} of the water",
         mm_day(soil),
+        mm_day(snow),
         mm_day(runoff),
         total_residual / w1
     );
@@ -200,9 +212,10 @@ fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
 }
 
 #[test]
-fn land_swings_more_than_ocean_daily_and_seasonally() {
+fn a_year_on_land_swings_more_than_ocean_and_snow_comes_and_goes() {
     // A year after two months of spin-up, in the mid-latitudes of the
-    // continent and of the ocean around it.
+    // continent and of the ocean around it. Melting happens here, so the
+    // budgets are checked across it.
     let (mesh, _) = SphereMesh::centroidal(8, LloydOptions::default());
     let band = |p: &glam::DVec3| (30.0..60.0).contains(&fms_math::asin(p.z).abs().to_degrees());
     let cells = |tile: f64| -> Vec<usize> {
@@ -220,8 +233,8 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
     let mut record: Vec<Vec<f64>> = vec![Vec::new(); mesh.n_cells()];
     let mut per_day = 0;
     let (mut driest, mut wettest) = (f64::MAX, f64::MIN);
-    let levels = Levels::new(&CLIMATE_LEVELS);
-    run_with(8, days, levels, continent_fraction, |si, _, dt| {
+    let (mut most_snow, mut least_snow) = (vec![f64::MIN; land.len()], vec![f64::MAX; land.len()]);
+    budgets_close(8, days, continent_fraction, |si, _, dt| {
         per_day = (DAY / dt).round() as usize;
         let fields = si.model().forcing().unwrap().cell_fields();
         let water = fields.iter().find(|f| f.name == "land.soil_water").unwrap();
@@ -231,6 +244,11 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
         }
         if si.steps() as f64 * dt <= spin_up * DAY {
             return;
+        }
+        let snow = fields.iter().find(|f| f.name == "land.snow").unwrap();
+        for (j, &i) in land.iter().enumerate() {
+            most_snow[j] = most_snow[j].max(snow.values[i]);
+            least_snow[j] = least_snow[j].min(snow.values[i]);
         }
         let ts = fields
             .iter()
@@ -246,6 +264,13 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
     eprintln!("soil water over mid-latitude land: {driest:.1} to {wettest:.1} kg/m²");
     assert!(driest >= 0.0 && wettest <= capacity + 1e-9);
     assert!(driest < 0.5 * capacity, "the soil never dried: {driest}");
+    let average = |x: &[f64]| x.iter().sum::<f64>() / x.len() as f64;
+    let (most, least) = (average(&most_snow), average(&least_snow));
+    eprintln!(
+        "snow over mid-latitude land: {least:.2} at the year's least, {most:.1} kg/m² at its most"
+    );
+    assert!(most > 5.0, "no winter snow: {most}");
+    assert!(least < 0.5, "the snow never melted: {least}");
     let range = |x: &[f64]| {
         let max = x.iter().copied().fold(f64::MIN, f64::max);
         let min = x.iter().copied().fold(f64::MAX, f64::min);
@@ -282,8 +307,8 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
         "daily: land {land_day}, ocean {ocean_day}"
     );
     // The margin is small only because the ocean is still a 10 m slab that
-    // follows the seasons closely: measured land 49.0 K, ocean 28.2 K, and
-    // daily 9.6 K and 0.23 K.
+    // follows the seasons closely: measured land 51.3 K, ocean 28.1 K, and
+    // daily 9.3 K and 0.24 K.
     assert!(
         land_year > 1.2 * ocean_year,
         "seasonal: land {land_year}, ocean {ocean_year}"
