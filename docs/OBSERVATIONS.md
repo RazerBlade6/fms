@@ -694,6 +694,22 @@ that matter, and it does not grow with resolution (0.83 m/s at 20k cells with
 lose some height at the grid scale, as in any GCM; sub-grid effects are step
 10.2.6's job.
 
-**Revisit when:** the ocean tile arrives (M2 step 10.2.2). An ocean surface
-at height is colder and at lower pressure than sea level, so check whether
-the lifted cells matter or the smoothing should hold the ocean at sea level.
+**Checked with ocean tiles (M2.10.2.2):** holding all-ocean cells at sea
+level during smoothing brings steep steps back at the coast, raising the
+persistent wind error from 0.87 to 1.18 m/s at 10k cells, and loses the
+filter's conservation. Leaving them lifted costs little. After 400 days on
+Earth's terrain at 2.5k cells, the lifted cells' surface temperature against
+sea-level ocean within 3° of latitude is:
+
+| Lifted height | Cells | Mean height | Temperature difference |
+|---|---|---|---|
+| 50–100 m | 93 | 71 m | −0.56 K |
+| 100–200 m | 53 | 134 m | −0.64 K |
+| 200–500 m | 30 | 293 m | −1.06 K |
+| above 500 m | 2 | 722 m | −2.08 K |
+
+These cells all sit beside land, so continental air explains part of the
+difference. We keep the lift.
+
+**Revisit when:** the slab ocean (M2 step 11), which gives cells at height
+sea ice and heat transport: check the same cells again.

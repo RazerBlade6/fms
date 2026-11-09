@@ -22,7 +22,7 @@ cargo build --release -p fms-cli
 | `fms williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
 | `fms held-suarez` | Run the Held–Suarez dynamical-core benchmark; write zonal-mean profiles (CSV and chart), a summary, maps and a GIF to `output/held_suarez/` |
-| `fms climate` | Run the model driven by radiation and moisture over a slab aquaplanet on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
+| `fms climate` | Run the model driven by radiation and moisture over slab ocean and land tiles on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
 
 ### Cell, edge and vertex fields
 
@@ -250,10 +250,11 @@ instead of an idealized forcing (PLAN §4.2), on the world's planet: its
 orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 `--surface-pressure`, the sea-level value). The atmosphere flows over the
 world's terrain (`--continent`, `--heightmap`), lightly smoothed
-([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Until land and ocean arrive (M2
-steps 10–11) the surface is one 10 m slab of water everywhere, even on
-mountains, an ice-free aquaplanet, which runs warmer than Earth (O-23; see
-also O-22, O-24, O-25). The run starts at rest from a single-column
+([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Each cell has an ocean tile, a
+10 m slab of water, and in proportion to its land fraction a land tile, so
+far a 1 m slab that is always wet (soil and snow arrive in M2 step 10.2, a
+real ocean in step 11). A world with no land is an ice-free aquaplanet, which
+runs warmer than Earth (O-23; see also O-22, O-24, O-25). The run starts at rest from a single-column
 radiative–convective equilibrium with its humidity, in hydrostatic balance
 with the terrain. It takes a few model years to settle and averages the
 final year.

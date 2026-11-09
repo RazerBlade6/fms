@@ -189,12 +189,16 @@ Added after the M1 review: tooling the GCM work depends on.
         (O-30). 1.2 years of full physics run stably on the continent and
         on Earth's terrain, energy closing to under 0.01 W/m². The surface
         is still the slab until the next step.
-      - [ ] 10.2.2. **Land and ocean tiles**: land fraction into the
+      - [x] 10.2.2. **Land and ocean tiles**: land fraction into the
         physics; each cell has a land and an ocean tile with its own surface
         temperature, albedo, roughness, radiation and fluxes, weighted by
         land fraction (land starts as a slab; the ocean tile stays the 10 m
         slab until step 11). Tests: no land reproduces the aquaplanet bit
         for bit; energy and water budgets close with tiles.
+        Done: land is a 1 m wet slab, albedo 0.2, roughness 0.1 m. No land
+        matches the pre-tile aquaplanet's state hash exactly; with a
+        continent, energy closes to −0.02 W/m² over 90 days and water to
+        6×10⁻¹⁴. Lifted coastal ocean stays lifted (O-30).
       - [ ] 10.2.3. **Land energy balance**: a skin temperature over a thin
         soil heat store, solved implicitly. Tests: the implicit solve
         against an analytic case; land swings more than ocean daily and

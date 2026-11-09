@@ -207,6 +207,11 @@ crates never depend on `app`. Everything except `app` runs headless.
   - large-scale condensation and simple convective adjustment
   - orographic lift using the sub-grid terrain statistics
   - boundary-layer friction
+- **Surface tiles** (decided at M2.10.2): each cell has an ocean and a land
+  tile, weighted by land fraction, with its own temperature, albedo,
+  roughness and bulk fluxes. The radiation sees one surface per cell (mean
+  albedo, mean σT⁴) and divides its fluxes between the tiles conservatively:
+  absorbed sunlight by `1 − α`, emitted longwave by `T⁴`.
 - **Vertical structure** (decided at M2.5, generalized at M2.9.5): sigma
   layers (`σ = p/p_s`, model top at p = 0) at any interfaces
   (`crates/atmos/src/levels.rs`). Two equal-mass layers (interface at σ = 0.5)

@@ -17,7 +17,14 @@ const DAY: f64 = 86_400.0;
 /// Run `days` on frequency `k` from the single-column equilibrium, calling
 /// `each` after every step.
 fn run(k: u32, days: f64, each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64)) {
-    run_with(k, days, Levels::new(&CLIMATE_LEVELS), each);
+    run_with(k, days, Levels::new(&CLIMATE_LEVELS), |_| 0.0, each);
+}
+
+/// Land fraction of a continent within 45° of the prime meridian, with
+/// partly land cells along its coasts.
+fn continent_fraction(p: glam::DVec3) -> f64 {
+    let lon = fms_math::atan2(p.y, p.x).abs().to_degrees();
+    ((45.0 - lon) / 10.0 + 0.5).clamp(0.0, 1.0)
 }
 
 /// [`run`] on other layers.
@@ -25,6 +32,7 @@ fn run_with(
     k: u32,
     days: f64,
     levels: Levels,
+    land: impl Fn(glam::DVec3) -> f64,
     mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
 ) {
     let planet = Planet::earth();
@@ -47,13 +55,14 @@ fn run_with(
     let dt = LayeredSemiImplicit::stable_dt(&model, 120.0, 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
-    let physics = ColumnPhysics::new(
+    let physics = ColumnPhysics::with_land(
         &model,
         &planet,
         params,
         0.0,
         &state,
         vec![ts; mesh.n_cells()],
+        mesh.cell_centers().iter().map(|&p| land(p)).collect(),
     );
     let model = model
         .with_hyperdiffusion(diffusion)
@@ -68,8 +77,41 @@ fn run_with(
     }
 }
 
+/// FNV-1a hash of every prognostic field's bits.
+fn state_hash(s: &fms_atmos::LayeredState) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let fields = std::iter::once(&s.ps)
+        .chain(&s.u)
+        .chain(&s.theta_ps)
+        .chain(&s.q_ps);
+    for x in fields.flatten() {
+        h = (h ^ x.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+#[test]
+fn a_world_without_land_is_the_aquaplanet_bit_for_bit() {
+    // Pinned from the aquaplanet before land tiles existed (M2 step 10.2.2).
+    // If this fails, first ask whether the change was meant to alter the
+    // ocean-only climate; only then paste in the new value.
+    const GOLDEN: u64 = 0x486a_e2ae_51ae_7969;
+    let mut hash = 0;
+    run(8, 5.0, |si, _, _| hash = state_hash(si.state()));
+    assert_eq!(hash, GOLDEN, "new hash: {hash:#018x}");
+}
+
 #[test]
 fn the_planets_energy_and_water_budgets_close() {
+    budgets_close(|_| 0.0);
+}
+
+#[test]
+fn the_planets_energy_and_water_budgets_close_with_land_tiles() {
+    budgets_close(continent_fraction);
+}
+
+fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
     // What the atmosphere (enthalpy and latent energy) and the slab gain
     // equals sunlight absorbed minus longwave emitted (friction's and
     // diffusion's lost kinetic energy comes back as heat); only the
@@ -79,7 +121,8 @@ fn the_planets_energy_and_water_budgets_close() {
     // filter's trace), to round-off.
     let mut first = None;
     let mut last = None;
-    run(16, 90.0, |si, _, dt| {
+    let levels = Levels::new(&CLIMATE_LEVELS);
+    run_with(16, 90.0, levels, land, |si, _, dt| {
         let budget = si.model().forcing().unwrap().budget().unwrap();
         let row = (
             si.model().diagnostics(si.state()),
@@ -153,36 +196,42 @@ fn more_layers_run_the_moist_aquaplanet() {
         let mut first = None;
         let mut last = None;
         let mut fields: Vec<(String, f64)> = Vec::new();
-        run_with(16, 60.0, levels, |si, geometry, dt| {
-            let forcing = si.model().forcing().unwrap();
-            let row = (
-                si.model().diagnostics(si.state()),
-                si.energy_budget(),
-                forcing.budget().unwrap(),
-                si.steps() as f64 * dt,
-                si.water(),
-                si.water_budget(),
-            );
-            if first.is_none() || (si.steps() as f64 * dt - 30.0 * 86_400.0).abs() < 0.5 * dt {
-                first = Some(row);
-            }
-            last = Some(row);
-            let total: f64 = geometry.cell_areas.iter().sum();
-            fields = forcing
-                .cell_fields()
-                .into_iter()
-                .map(|f| {
-                    let mean = f
-                        .values
-                        .iter()
-                        .zip(&geometry.cell_areas)
-                        .map(|(v, a)| v * a)
-                        .sum::<f64>()
-                        / total;
-                    (f.name.to_string(), mean)
-                })
-                .collect();
-        });
+        run_with(
+            16,
+            60.0,
+            levels,
+            |_| 0.0,
+            |si, geometry, dt| {
+                let forcing = si.model().forcing().unwrap();
+                let row = (
+                    si.model().diagnostics(si.state()),
+                    si.energy_budget(),
+                    forcing.budget().unwrap(),
+                    si.steps() as f64 * dt,
+                    si.water(),
+                    si.water_budget(),
+                );
+                if first.is_none() || (si.steps() as f64 * dt - 30.0 * 86_400.0).abs() < 0.5 * dt {
+                    first = Some(row);
+                }
+                last = Some(row);
+                let total: f64 = geometry.cell_areas.iter().sum();
+                fields = forcing
+                    .cell_fields()
+                    .into_iter()
+                    .map(|f| {
+                        let mean = f
+                            .values
+                            .iter()
+                            .zip(&geometry.cell_areas)
+                            .map(|(v, a)| v * a)
+                            .sum::<f64>()
+                            / total;
+                        (f.name.to_string(), mean)
+                    })
+                    .collect();
+            },
+        );
         let ((d0, e0, b0, t0, w0, wb0), (d1, e1, b1, t1, w1, wb1)) =
             (first.unwrap(), last.unwrap());
         let area = 4.0 * std::f64::consts::PI * RADIUS * RADIUS;

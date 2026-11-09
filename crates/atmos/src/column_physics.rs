@@ -6,10 +6,15 @@
 //!
 //! # Pieces (3-D)
 //!
-//! - **Surface**: one slab of water of fixed depth everywhere (an
-//!   aquaplanet; land and ocean come in M2 steps 10–11). It absorbs sunlight
-//!   and longwave, emits as a black body, and pays the latent heat of what
-//!   evaporates, and of fusion for the snow that falls on it and melts.
+//! - **Surface**: each cell has an ocean and a land tile, weighted by its
+//!   land fraction, each with its own temperature, albedo, roughness and
+//!   fluxes. The ocean tile is a slab of water of fixed depth (a real ocean
+//!   comes in M2 step 11); the land tile so far is a thinner, always wet
+//!   slab (soil and snow come in M2 step 10.2). Each absorbs sunlight and
+//!   longwave, emits as a black body, and pays the latent heat of what
+//!   evaporates, and of fusion for the snow that falls on it and melts. The
+//!   radiation sees one surface per cell, with the tiles' mean albedo and
+//!   mean σT⁴, and splits its fluxes between them so nothing is lost.
 //! - **Boundary layer**: the bottom layer is a well-mixed boundary layer
 //!   ([`crate::surface_layer`]): surface air has its potential temperature
 //!   and specific humidity. Bulk formulas with stability-dependent
@@ -68,6 +73,31 @@ const DAY: f64 = 86_400.0;
 pub const CLIMATE_LEVELS: [f64; 3] = [0.25, 0.5, 0.85];
 /// Volumetric heat capacity of water (J m⁻³ K⁻¹).
 const WATER_HEAT_CAPACITY: f64 = 1000.0 * 4186.0;
+/// Index of each cell's ocean tile.
+const OCEAN: usize = 0;
+/// Index of each cell's land tile.
+const LAND: usize = 1;
+
+/// The land tile. [`Default`] is a mean Earth-like land surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LandParams {
+    /// Surface albedo.
+    pub albedo: f64,
+    /// Momentum roughness length (m).
+    pub roughness: f64,
+    /// Depth of the land slab (m of water), until the soil heat store.
+    pub slab_depth: f64,
+}
+
+impl Default for LandParams {
+    fn default() -> Self {
+        Self {
+            albedo: 0.2,
+            roughness: 0.1,
+            slab_depth: 1.0,
+        }
+    }
+}
 
 /// Column-physics parameters. [`Default`] is Earth-like.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,8 +108,10 @@ pub struct PhysicsParams {
     pub moisture: MoistureParams,
     /// CO₂ (ppm).
     pub co2: f64,
-    /// Slab depth (m of water).
+    /// Slab depth of the ocean tile (m of water).
     pub slab_depth: f64,
+    /// The land tile.
+    pub land: LandParams,
     /// The surface layer and boundary-layer top (3-D).
     pub surface_layer: SurfaceLayerParams,
     /// The single column's bulk transfer coefficient for heat and moisture.
@@ -106,6 +138,7 @@ impl Default for PhysicsParams {
             moisture: MoistureParams::default(),
             co2: 420.0,
             slab_depth: 10.0,
+            land: LandParams::default(),
             surface_layer: SurfaceLayerParams::default(),
             transfer: 1.3e-3,
             gust: 3.0,
@@ -117,9 +150,14 @@ impl Default for PhysicsParams {
 }
 
 impl PhysicsParams {
-    /// Slab heat capacity (J m⁻² K⁻¹).
+    /// Heat capacity of the ocean tile's slab (J m⁻² K⁻¹).
     pub fn heat_capacity(&self) -> f64 {
         WATER_HEAT_CAPACITY * self.slab_depth
+    }
+
+    /// Heat capacity of the land tile's slab (J m⁻² K⁻¹).
+    pub fn land_heat_capacity(&self) -> f64 {
+        WATER_HEAT_CAPACITY * self.land.slab_depth
     }
 }
 
@@ -223,10 +261,106 @@ fn theta_tendency(gas: Gas, gravity: f64, dsigma: f64, exner: f64, q: f64) -> f6
     gravity * q / (gas.heat_capacity * dsigma * exner)
 }
 
+/// One tile's exchange with the bottom layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TileFlux {
+    /// Sensible heat (W m⁻², upward).
+    sensible: f64,
+    /// Evaporation (kg m⁻² s⁻¹).
+    evaporation: f64,
+    /// Drag on the bottom layer's wind (s⁻¹).
+    drag: f64,
+    /// 10 m wind speed (m s⁻¹) and surface stress (N m⁻²).
+    wind: f64,
+    stress: f64,
+    /// Eastward and northward stress of the surface on the air (N m⁻²).
+    stress_east: f64,
+    stress_north: f64,
+}
+
+impl TileFlux {
+    /// The mean of an ocean and a land tile, weighted by land `fraction`.
+    fn blend(ocean: Self, land: Self, fraction: f64) -> Self {
+        if fraction == 0.0 {
+            return ocean;
+        }
+        if fraction == 1.0 {
+            return land;
+        }
+        let mean = |a: f64, b: f64| (1.0 - fraction) * a + fraction * b;
+        Self {
+            sensible: mean(ocean.sensible, land.sensible),
+            evaporation: mean(ocean.evaporation, land.evaporation),
+            drag: mean(ocean.drag, land.drag),
+            wind: mean(ocean.wind, land.wind),
+            stress: mean(ocean.stress, land.stress),
+            stress_east: mean(ocean.stress_east, land.stress_east),
+            stress_north: mean(ocean.stress_north, land.stress_north),
+        }
+    }
+}
+
+/// The surface radiation of one cell's tiles (W m⁻²): sunlight absorbed and
+/// longwave emitted, per unit area of each tile.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TileRadiation {
+    shortwave: [f64; 2],
+    longwave_up: [f64; 2],
+}
+
+/// What the radiation sees of a cell's two tiles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TiledSurface {
+    /// Land fraction.
+    fraction: f64,
+    /// Each tile's albedo.
+    albedo: [f64; 2],
+    /// Each tile's temperature (K).
+    temperature: [f64; 2],
+}
+
+impl TiledSurface {
+    /// Area-weighted albedo.
+    fn mean_albedo(&self) -> f64 {
+        (1.0 - self.fraction) * self.albedo[OCEAN] + self.fraction * self.albedo[LAND]
+    }
+
+    /// `T⁴` of each tile, and their area-weighted mean.
+    fn fourth_powers(&self) -> ([f64; 2], f64) {
+        let [a, b] = self.temperature.map(|t| t * t * t * t);
+        ([a, b], (1.0 - self.fraction) * a + self.fraction * b)
+    }
+
+    /// The single temperature whose black-body emission is the tiles' mean.
+    fn radiating_temperature(&self) -> f64 {
+        if self.fraction == 0.0 {
+            self.temperature[OCEAN]
+        } else if self.fraction == 1.0 {
+            self.temperature[LAND]
+        } else {
+            self.fourth_powers().1.sqrt().sqrt()
+        }
+    }
+
+    /// Divide the cell's surface `shortwave` and `longwave_up` between the
+    /// tiles, conserving both: each tile absorbs in proportion to `1 − α`
+    /// and emits in proportion to `T⁴`.
+    fn split(&self, shortwave: f64, longwave_up: f64) -> TileRadiation {
+        let co_albedo = 1.0 - self.mean_albedo();
+        let (fourth, mean) = self.fourth_powers();
+        TileRadiation {
+            shortwave: self.albedo.map(|a| shortwave * ((1.0 - a) / co_albedo)),
+            longwave_up: fourth.map(|t| longwave_up * (t / mean)),
+        }
+    }
+}
+
 /// Exchange between the surface, the boundary layer and the layer above in
-/// one cell.
+/// one cell: the area-weighted mean of its tiles' fluxes, and each tile's.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct SurfaceFlux {
+    /// Each tile's flux; unset for a tile with no area.
+    tiles: [TileFlux; 2],
     /// Sensible heat (W m⁻², upward).
     sensible: f64,
     /// Evaporation (kg m⁻² s⁻¹).
@@ -265,10 +399,17 @@ pub struct ColumnPhysics<'a> {
     /// Model time (s since t = 0).
     time: f64,
     next_radiation: f64,
-    surface_temperature: Vec<f64>,
-    /// Last radiation call, all-sky and clear-sky.
+    /// Land fraction of each cell.
+    land_fraction: Vec<f64>,
+    /// Temperature of each cell's ocean tile (K).
+    ocean_temperature: Vec<f64>,
+    /// Temperature of each cell's land tile (K).
+    land_temperature: Vec<f64>,
+    /// Last radiation call, all-sky and clear-sky, and its division between
+    /// the tiles.
     radiation: Vec<Fluxes>,
     clear: Vec<Fluxes>,
+    tile_radiation: Vec<TileRadiation>,
     /// Surface fluxes, from the last step.
     surface: Vec<SurfaceFlux>,
     /// The moist physics of the last tendency evaluation.
@@ -290,8 +431,8 @@ pub struct ColumnPhysics<'a> {
 }
 
 impl<'a> ColumnPhysics<'a> {
-    /// Physics for `model` on `planet`, starting at time `time` (s) from
-    /// `state` with surface temperatures `surface_temperature` (K).
+    /// Physics for `model` on `planet` with no land, starting at time `time`
+    /// (s) from `state` with surface temperatures `surface_temperature` (K).
     ///
     /// # Panics
     /// If `state` is dry.
@@ -303,9 +444,40 @@ impl<'a> ColumnPhysics<'a> {
         state: &LayeredState,
         surface_temperature: Vec<f64>,
     ) -> Self {
+        let no_land = vec![0.0; surface_temperature.len()];
+        Self::with_land(
+            model,
+            planet,
+            params,
+            time,
+            state,
+            surface_temperature,
+            no_land,
+        )
+    }
+
+    /// As [`new`](Self::new), with land covering `land_fraction` (0–1) of
+    /// each cell; both tiles start at `surface_temperature`.
+    ///
+    /// # Panics
+    /// If `state` is dry, or a land fraction is outside 0–1.
+    pub fn with_land(
+        model: &LayeredModel<'a>,
+        planet: &'a Planet,
+        params: PhysicsParams,
+        time: f64,
+        state: &LayeredState,
+        surface_temperature: Vec<f64>,
+        land_fraction: Vec<f64>,
+    ) -> Self {
         assert!(state.is_moist(), "column physics needs a moist state");
         let n = state.ps.len();
         assert_eq!(surface_temperature.len(), n);
+        assert_eq!(land_fraction.len(), n);
+        assert!(
+            land_fraction.iter().all(|f| (0.0..=1.0).contains(f)),
+            "land fractions must be within 0–1"
+        );
         let mut physics = Self {
             params,
             gas: model.gas(),
@@ -315,9 +487,12 @@ impl<'a> ColumnPhysics<'a> {
             planet,
             time,
             next_radiation: time,
-            surface_temperature,
+            land_fraction,
+            land_temperature: surface_temperature.clone(),
+            ocean_temperature: surface_temperature,
             radiation: vec![Fluxes::default(); n],
             clear: vec![Fluxes::default(); n],
+            tile_radiation: vec![TileRadiation::default(); n],
             surface: vec![SurfaceFlux::default(); n],
             moist: vec![MoistTendency::default(); n],
             heating: model.kinetic_heating(),
@@ -354,9 +529,30 @@ impl<'a> ColumnPhysics<'a> {
         &self.params
     }
 
-    /// Surface temperature per cell (K).
-    pub fn surface_temperature(&self) -> &[f64] {
-        &self.surface_temperature
+    /// Area-weighted mean surface temperature per cell (K).
+    pub fn surface_temperature(&self) -> Vec<f64> {
+        (0..self.land_fraction.len())
+            .map(|i| match self.land_fraction[i] {
+                0.0 => self.ocean_temperature[i],
+                1.0 => self.land_temperature[i],
+                f => (1.0 - f) * self.ocean_temperature[i] + f * self.land_temperature[i],
+            })
+            .collect()
+    }
+
+    /// Temperature of each cell's land tile (K); meaningless where the cell
+    /// has no land.
+    pub fn land_temperature(&self) -> &[f64] {
+        &self.land_temperature
+    }
+
+    /// What the radiation sees of cell `i`'s tiles.
+    fn tiled_surface(&self, i: usize) -> TiledSurface {
+        TiledSurface {
+            fraction: self.land_fraction[i],
+            albedo: [self.params.radiation.albedo, self.params.land.albedo],
+            temperature: [self.ocean_temperature[i], self.land_temperature[i]],
+        }
     }
 
     /// The last radiation call's fluxes per cell.
@@ -446,26 +642,51 @@ impl<'a> ColumnPhysics<'a> {
                 let p_mean = REFERENCE_PRESSURE * fms_math::pow(exner[bottom], 1.0 / gas.kappa());
                 let height = scale * fms_math::ln(ps / p_mean);
                 let depth = -scale * fms_math::ln(top);
-                let ts = self.surface_temperature[i];
-                let x = exchange(
-                    sl,
-                    Surface::Ocean,
-                    &SurfaceAir {
-                        wind: (e * e + nn * nn).sqrt(),
-                        height,
-                        theta,
-                        humidity: q,
-                        surface_temperature: ts,
-                        ps,
-                        surface_exner,
-                        convective_velocity: old[i].convective_velocity,
-                        gravity: g,
-                    },
-                );
                 let density = ps / (rd * air);
-                let sensible = density * cp * x.heat * x.speed * (ts - air);
-                let evaporation =
-                    density * x.moisture * x.speed * (saturation_humidity(ts, ps) - q);
+                let wind = (e * e + nn * nn).sqrt();
+                let tile = |ts: f64, surface: Surface| {
+                    let x = exchange(
+                        sl,
+                        surface,
+                        &SurfaceAir {
+                            wind,
+                            height,
+                            theta,
+                            humidity: q,
+                            surface_temperature: ts,
+                            ps,
+                            surface_exner,
+                            convective_velocity: old[i].convective_velocity,
+                            gravity: g,
+                        },
+                    );
+                    let momentum = x.momentum(density);
+                    TileFlux {
+                        sensible: density * cp * x.heat * x.speed * (ts - air),
+                        evaporation: density
+                            * x.moisture
+                            * x.speed
+                            * (saturation_humidity(ts, ps) - q),
+                        drag: g * momentum * x.wind_ratio / (ps * ds[bottom]),
+                        wind: x.wind,
+                        stress: momentum * x.wind,
+                        stress_east: -momentum * x.wind_ratio * e,
+                        stress_north: -momentum * x.wind_ratio * nn,
+                    }
+                };
+                let fraction = self.land_fraction[i];
+                let mut tiles = [TileFlux::default(); 2];
+                if fraction < 1.0 {
+                    tiles[OCEAN] = tile(self.ocean_temperature[i], Surface::Ocean);
+                }
+                if fraction > 0.0 {
+                    tiles[LAND] = tile(
+                        self.land_temperature[i],
+                        Surface::Rough(self.params.land.roughness),
+                    );
+                }
+                let mean = TileFlux::blend(tiles[OCEAN], tiles[LAND], fraction);
+                let (sensible, evaporation) = (mean.sensible, mean.evaporation);
                 // Clouds' longwave cooling of the layer drives turbulence
                 // from its top.
                 let cloud_top_cooling =
@@ -500,11 +721,11 @@ impl<'a> ColumnPhysics<'a> {
                 let cumulus = q_parcel < q
                     && t_parcel * (1.0 + 0.608 * q_parcel) > t_top * virtual_factor(above);
                 let density_top = p_top / (rd * t_top);
-                let momentum = x.momentum(density);
                 SurfaceFlux {
+                    tiles,
                     sensible,
                     evaporation,
-                    drag: g * momentum * x.wind_ratio / (ps * ds[bottom]),
+                    drag: mean.drag,
                     entrainment: density_top * w_e,
                     cumulus: if cumulus {
                         sl.cumulus * density_top * w_star
@@ -513,8 +734,8 @@ impl<'a> ColumnPhysics<'a> {
                     },
                     entrainment_velocity: w_e,
                     convective_velocity: w_star,
-                    wind: x.wind,
-                    stress: momentum * x.wind,
+                    wind: mean.wind,
+                    stress: mean.stress,
                     export: (density_top * w_e
                         + if cumulus {
                             sl.cumulus * density_top * w_star
@@ -523,8 +744,8 @@ impl<'a> ColumnPhysics<'a> {
                         })
                         * (state.q_ps[bottom][i] - state.q_ps[above][i])
                         / ps,
-                    stress_east: -momentum * x.wind_ratio * e,
-                    stress_north: -momentum * x.wind_ratio * nn,
+                    stress_east: mean.stress_east,
+                    stress_north: mean.stress_north,
                 }
             })
             .collect();
@@ -552,11 +773,17 @@ impl<'a> ColumnPhysics<'a> {
         let layers = levels.count();
         let clouds = &params.moisture.clouds;
         let moist = &self.moist;
-        let both: Vec<(Fluxes, Fluxes)> = (0..n)
+        let this = &*self;
+        let results: Vec<(Fluxes, Fluxes, TileRadiation)> = (0..n)
             .into_par_iter()
             .with_min_len(MIN_CHUNK / 16)
             .map(|i| {
                 let ps = state.ps[i];
+                let surface = this.tiled_surface(i);
+                let radiation = RadiationParams {
+                    albedo: surface.mean_albedo(),
+                    ..params.radiation
+                };
                 let cover = moist[i].clouds;
                 let theta: Vec<f64> = (0..layers).map(|k| state.theta_ps[k][i] / ps).collect();
                 let q: Vec<f64> = (0..layers).map(|k| state.q_ps[k][i] / ps).collect();
@@ -567,7 +794,7 @@ impl<'a> ColumnPhysics<'a> {
                 });
                 let mut column = Column {
                     ps,
-                    surface_temperature: self.surface_temperature[i],
+                    surface_temperature: surface.radiating_temperature(),
                     theta: &theta,
                     levels,
                     gravity,
@@ -576,12 +803,27 @@ impl<'a> ColumnPhysics<'a> {
                     humidity: Humidity::Layers(&q),
                     clouds: &sheets,
                 };
-                let all = column_fluxes(&params.radiation, gas, &column);
+                let all = column_fluxes(&radiation, gas, &column);
                 column.clouds = &[Cloud::NONE; 2];
-                (all, column_fluxes(&params.radiation, gas, &column))
+                let clear = column_fluxes(&radiation, gas, &column);
+                let tiles = surface.split(all.surface_shortwave, all.surface_up);
+                (all, clear, tiles)
             })
             .collect();
-        (self.radiation, self.clear) = both.into_iter().unzip();
+        let n_results = results.len();
+        let (mut all, mut clear, mut tiles) = (
+            Vec::with_capacity(n_results),
+            Vec::with_capacity(n_results),
+            Vec::with_capacity(n_results),
+        );
+        for (a, c, t) in results {
+            all.push(a);
+            clear.push(c);
+            tiles.push(t);
+        }
+        self.radiation = all;
+        self.clear = clear;
+        self.tile_radiation = tiles;
         self.next_radiation = self.time + self.params.radiation_interval;
     }
 }
@@ -703,23 +945,38 @@ impl Forcing for ColumnPhysics<'_> {
         let areas = &self.ops.geometry().cell_areas;
         let r2 = self.ops.radius() * self.ops.radius();
         let capacity = self.params.heat_capacity();
+        let land_capacity = self.params.land_heat_capacity();
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
-        let net = |i: usize| {
-            let s = surface[i];
-            radiation[i].surface()
-                - s.sensible
-                - LATENT_HEAT * s.evaporation
+        let (tiles, land) = (&self.tile_radiation, &self.land_fraction);
+        let net = |i: usize, tile: usize| {
+            let flux = surface[i].tiles[tile];
+            tiles[i].shortwave[tile] + radiation[i].surface_down
+                - tiles[i].longwave_up[tile]
+                - flux.sensible
+                - LATENT_HEAT * flux.evaporation
                 - FUSION_HEAT * moist[i].snow
         };
         if self.prescribed {
-            let uptake: f64 = (0..areas.len()).map(|i| areas[i] * net(i)).sum();
+            let uptake: f64 = (0..areas.len())
+                .map(|i| {
+                    let f = land[i];
+                    areas[i] * ((1.0 - f) * net(i, OCEAN) + f * net(i, LAND))
+                })
+                .sum();
             self.uptake += dt * r2 * uptake;
         } else {
-            self.surface_temperature
+            self.ocean_temperature
                 .par_iter_mut()
                 .with_min_len(MIN_CHUNK)
                 .enumerate()
-                .for_each(|(i, t)| *t += dt * net(i) / capacity);
+                .filter(|(i, _)| land[*i] < 1.0)
+                .for_each(|(i, t)| *t += dt * net(i, OCEAN) / capacity);
+            self.land_temperature
+                .par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .filter(|(i, _)| land[*i] > 0.0)
+                .for_each(|(i, t)| *t += dt * net(i, LAND) / land_capacity);
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
         for i in 0..areas.len() {
@@ -747,10 +1004,16 @@ impl Forcing for ColumnPhysics<'_> {
         let stored: f64 = if self.prescribed {
             self.uptake
         } else {
-            self.surface_temperature
-                .iter()
-                .zip(areas)
-                .map(|(t, a)| a * r2 * self.params.heat_capacity() * t)
+            let (ocean, land) = (
+                self.params.heat_capacity(),
+                self.params.land_heat_capacity(),
+            );
+            (0..areas.len())
+                .map(|i| {
+                    let (a, f) = (areas[i], self.land_fraction[i]);
+                    (1.0 - f) * (a * r2 * ocean * self.ocean_temperature[i])
+                        + f * (a * r2 * land * self.land_temperature[i])
+                })
                 .sum()
         };
         Some(ForcingBudget {
@@ -778,7 +1041,7 @@ impl Forcing for ColumnPhysics<'_> {
                 "rad.surface_temperature",
                 "Surface temperature",
                 "K",
-                self.surface_temperature.clone(),
+                self.surface_temperature(),
             ),
             field(
                 "rad.outgoing_longwave",
@@ -1473,6 +1736,70 @@ mod tests {
     use super::*;
 
     const GAS: Gas = Gas::EARTH_AIR;
+
+    fn mixed_surface() -> TiledSurface {
+        TiledSurface {
+            fraction: 0.3,
+            albedo: [0.08, 0.2],
+            temperature: [290.0, 305.0],
+        }
+    }
+
+    #[test]
+    fn splitting_radiation_between_tiles_conserves_it() {
+        let s = mixed_surface();
+        let t = s.split(180.0, 400.0);
+        let mean = |x: [f64; 2]| (1.0 - s.fraction) * x[OCEAN] + s.fraction * x[LAND];
+        assert!((mean(t.shortwave) - 180.0).abs() < 1e-10);
+        assert!((mean(t.longwave_up) - 400.0).abs() < 1e-10);
+        // The brighter tile absorbs less, the warmer tile emits more.
+        assert!(t.shortwave[LAND] < t.shortwave[OCEAN]);
+        assert!(t.longwave_up[LAND] > t.longwave_up[OCEAN]);
+    }
+
+    #[test]
+    fn the_radiating_temperature_has_the_tiles_mean_emission() {
+        let s = mixed_surface();
+        let t = s.radiating_temperature();
+        assert!((t * t * t * t / s.fourth_powers().1 - 1.0).abs() < 1e-14);
+        assert!(t > 290.0 && t < 305.0);
+    }
+
+    #[test]
+    fn a_tile_covering_the_whole_cell_is_used_exactly() {
+        for (fraction, tile) in [(0.0, OCEAN), (1.0, LAND)] {
+            let s = TiledSurface {
+                fraction,
+                ..mixed_surface()
+            };
+            let t = s.split(180.0, 400.0);
+            assert_eq!(s.radiating_temperature(), s.temperature[tile]);
+            assert_eq!(s.mean_albedo(), s.albedo[tile]);
+            assert_eq!(t.shortwave[tile], 180.0);
+            assert_eq!(t.longwave_up[tile], 400.0);
+        }
+    }
+
+    #[test]
+    fn blending_tiles_weights_them_by_land_fraction() {
+        let ocean = TileFlux {
+            sensible: 10.0,
+            evaporation: 1e-5,
+            drag: 1e-5,
+            ..TileFlux::default()
+        };
+        let land = TileFlux {
+            sensible: 50.0,
+            evaporation: 3e-5,
+            drag: 5e-5,
+            ..TileFlux::default()
+        };
+        assert_eq!(TileFlux::blend(ocean, land, 0.0), ocean);
+        assert_eq!(TileFlux::blend(ocean, land, 1.0), land);
+        let mean = TileFlux::blend(ocean, land, 0.25);
+        assert!((mean.sensible - 20.0).abs() < 1e-12);
+        assert!((mean.drag - 2e-5).abs() < 1e-17);
+    }
 
     #[test]
     fn an_isothermal_rest_profile_has_the_barometric_pressure() {

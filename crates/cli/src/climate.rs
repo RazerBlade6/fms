@@ -1,7 +1,7 @@
 //! `fms climate`: the layered model (four layers by default, the bottom one
-//! the boundary layer) driven by radiation and moist physics over a slab
-//! aquaplanet, on the world's planet (orbit, CO₂, surface
-//! pressure). Spins up, then averages the final year: zonal means, a global
+//! the boundary layer) driven by radiation and moist physics over slab
+//! ocean and land tiles and the world's terrain, on the world's planet
+//! (orbit, CO₂, surface pressure). Spins up, then averages the final year: zonal means, a global
 //! summary with the planet's energy and water budgets, and annual-mean maps,
 //! in `output/climate/`.
 
@@ -176,13 +176,14 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let nc = mesh.n_cells();
     let (state, surface_temperature) = initial_state(&model, &world.planet, &params);
     eprintln!("climate: single-column start at {surface_temperature:.1} K");
-    let physics = ColumnPhysics::new(
+    let physics = ColumnPhysics::with_land(
         &model,
         &world.planet,
         params,
         0.0,
         &state,
         initial_surface_temperature(&model, &params, surface_temperature),
+        world.fields.read(world.core.terrain.land_fraction).to_vec(),
     );
     // Where each wanted field sits in the physics' list.
     let fields_now = physics.cell_fields();
@@ -207,8 +208,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m slab, CO₂ {} ppm",
-            params.slab_depth, params.co2
+            "; radiation and moisture over a {} m ocean slab and a {} m land slab, CO₂ {} ppm",
+            params.slab_depth, params.land.slab_depth, params.co2
         ),
     );
     eprintln!("climate: {description}");
