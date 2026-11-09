@@ -11,7 +11,7 @@
 //! the winds' kinetic-energy rate exactly.
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use rayon::prelude::*;
 
 use crate::layered::Gas;
@@ -55,7 +55,7 @@ impl KineticHeating {
         let (gas, levels) = (self.gas, &self.levels);
         self.exner
             .par_chunks_mut(levels.count())
-            .with_min_len(MIN_CHUNK / 128)
+            .with_min_len(MIN_COLUMNS)
             .zip(ps.par_iter())
             .for_each(|(e, &p)| levels.layer_exner_into(gas, p, e));
     }

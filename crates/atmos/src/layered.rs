@@ -64,7 +64,7 @@
 //! here, the upwind one in the semi-implicit stepper's positive scheme.
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use rayon::prelude::*;
 
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};
@@ -957,7 +957,7 @@ fn energy_rate(params: &Parameters, state: &LayeredState, tendency: &LayeredStat
     let mut exner = vec![0.0; n * state.ps.len()];
     exner
         .par_chunks_mut(n)
-        .with_min_len(MIN_CHUNK / 128)
+        .with_min_len(MIN_COLUMNS)
         .zip(state.ps.par_iter())
         .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
     let exner = &exner;
@@ -999,7 +999,7 @@ fn interface_ratios(params: &Parameters, state: &LayeredState) -> Vec<[Vec<f64>;
     let n = params.levels.count();
     let ratios: Vec<Vec<[f64; 2]>> = (0..state.ps.len())
         .into_par_iter()
-        .with_min_len(MIN_CHUNK / 128)
+        .with_min_len(MIN_COLUMNS)
         .map(|i| {
             let ps = state.ps[i];
             let mut exner = [0.0; MAX_LAYERS];
@@ -1123,7 +1123,7 @@ fn compute_tendency(
         let layers = &*layers;
         column
             .par_chunks_mut(2 * n)
-            .with_min_len(MIN_CHUNK / 128)
+            .with_min_len(MIN_COLUMNS)
             .enumerate()
             .for_each(|(i, c)| {
                 let (exner, phi) = c.split_at_mut(n);

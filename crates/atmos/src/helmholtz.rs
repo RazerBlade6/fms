@@ -164,12 +164,16 @@ fn precondition(inverse_diagonal: &[f64], r: &[f64], z: &mut [f64]) {
         .for_each(|(i, z)| *z = inverse_diagonal[i] * r[i]);
 }
 
+/// Elements per partial sum of [`dot`]. Results depend on it: changing it
+/// changes every solve in the last bits.
+const DOT_CHUNK: usize = 4096;
+
 /// Dot product with a fixed summation order: chunk sums in parallel, then
 /// the chunk sums in order.
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len());
-    a.par_chunks(MIN_CHUNK)
-        .zip(b.par_chunks(MIN_CHUNK))
+    a.par_chunks(DOT_CHUNK)
+        .zip(b.par_chunks(DOT_CHUNK))
         .map(|(a, b)| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>())
         .collect::<Vec<f64>>()
         .iter()

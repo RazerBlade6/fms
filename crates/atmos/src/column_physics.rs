@@ -66,7 +66,7 @@
 //! by evaporation minus precipitation.
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use fms_grid::zonal::east_north;
 use fms_ocean::{Ocean, OceanParams};
 use fms_planet::Planet;
@@ -974,7 +974,7 @@ impl<'a> ColumnPhysics<'a> {
     fn update_moisture(&mut self, state: &LayeredState) {
         let moist: Vec<MoistTendency> = (0..state.ps.len())
             .into_par_iter()
-            .with_min_len(MIN_CHUNK / 128)
+            .with_min_len(MIN_COLUMNS)
             .map(|i| moist_physics(&self.setting(), &self.moist_column(state, i)))
             .collect();
         self.moist = moist;
@@ -996,7 +996,7 @@ impl<'a> ColumnPhysics<'a> {
         let old = &self.surface;
         let surface: Vec<SurfaceFlux> = (0..state.ps.len())
             .into_par_iter()
-            .with_min_len(MIN_CHUNK / 128)
+            .with_min_len(MIN_COLUMNS)
             .map(|i| {
                 let (e, nn) = east_north(centers[i], winds[i]);
                 let ps = state.ps[i];
@@ -1188,7 +1188,7 @@ impl<'a> ColumnPhysics<'a> {
         let this = &*self;
         let results: Vec<(Fluxes, Fluxes, TileRadiation)> = (0..n)
             .into_par_iter()
-            .with_min_len(MIN_CHUNK / 128)
+            .with_min_len(MIN_COLUMNS)
             .map(|i| {
                 let ps = state.ps[i];
                 let surface = this.tiled_surface(i);
@@ -1255,7 +1255,7 @@ impl Forcing for ColumnPhysics<'_> {
         let mut exner = vec![0.0; n * state.ps.len()];
         exner
             .par_chunks_mut(n)
-            .with_min_len(MIN_CHUNK / 128)
+            .with_min_len(MIN_COLUMNS)
             .zip(state.ps.par_iter())
             .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
         let (radiation, surface, moist) = (&self.radiation, &self.surface, &self.moist);
@@ -1882,7 +1882,7 @@ pub fn initial_state(
     let columns: Vec<(f64, Vec<f64>, Vec<f64>)> = model
         .surface_geopotential()
         .par_iter()
-        .with_min_len(MIN_CHUNK / 128)
+        .with_min_len(MIN_COLUMNS)
         .map(|&phi| {
             if phi == 0.0 {
                 return (ps, theta0.clone(), q.clone());

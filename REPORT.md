@@ -19,14 +19,18 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 | `eaaf764` | Humidity transport: layers in parallel | 7.47 | 7.05 | unchanged |
 | `ab134a2` | Longwave: each slab's transmissivity computed once per term instead of four times | 7.05 | 7.00 (1 thread: 24.5 -> 23.8) | unchanged |
 | `906ea95` | Moist physics (the one hash change): `lift` steps pressure by a ratio (no `exp(ln p)`) and carries saturation between calls; in-layer profile factors `(σ/σ̄ₖ)^β` memoized per `Levels` (no `pow` per node); `planck_tail` gets `e^{-nx}` by multiplication | 7.00 | 5.91 (1 thread: 23.8 -> 18.6) | updated to `0xe70e_3500_47bd_d6b0`; climate (642 cells, 4 years, last year): T_s 291.171 vs 291.194 K (-0.02), albedo 0.314 vs 0.315, OLR 233.4 vs 233.3, P 3.765 vs 3.750 mm/day |
-| (next) | Column physics split into chunks of 32 columns, not 256 (uneven column cost); its tendency assembly per layer in parallel | 5.91 | 5.63 | unchanged |
-| (next, same commit) | `LayeredModel::step_tendencies`: the forcing (column physics) runs beside the tendency and hyperdiffusion (`rayon::join`) | 5.63 | 5.06 (15 threads: 6.25 -> 5.28) | unchanged |
+| `c482ee5` | Column physics split into chunks of 32 columns, not 256 (uneven column cost); its tendency assembly per layer in parallel | 5.91 | 5.63 | unchanged |
+| `c482ee5` | `LayeredModel::step_tendencies`: the forcing (column physics) runs beside the tendency and hyperdiffusion (`rayon::join`) | 5.63 | 5.06 (15 threads: 6.25 -> 5.28) | unchanged |
+| (next) | `LayeredSemiImplicit::step` runs on a pool thread (`rayon::scope`); `dot`'s chunk and the column chunk get their own constants (`DOT_CHUNK`, `MIN_COLUMNS`) | 5.06 | 4.87 (15 threads: 5.28 -> 4.94) | unchanged |
 
 ## Tried and rejected
 
 - Coarser `lift` steps (0.1, 0.2 in ln p) or RK4: the scheme is first order
   through the condensation level, so the reference profile moves by ~1 K.
   Not done.
+
+- `MIN_CHUNK` 1024 with the step in the pool: 4.75 ms at 8 threads but 5.70 at
+  15 (from 4.94). Kept 4096.
 
 ## Unfinished / uncommitted
 

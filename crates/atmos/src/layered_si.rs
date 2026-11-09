@@ -472,6 +472,14 @@ impl<'a> LayeredSemiImplicit<'a> {
     // Loops over the layers index several per-layer arrays together.
     #[allow(clippy::needless_range_loop)]
     pub fn step(&mut self) -> Vec<SolveReport> {
+        // On a pool thread, so the step's many small parallel loops start
+        // without a hand-off from the caller's thread each time.
+        rayon::scope(|_| self.step_in_pool())
+    }
+
+    // Loops over the layers index several per-layer arrays together.
+    #[allow(clippy::needless_range_loop)]
+    fn step_in_pool(&mut self) -> Vec<SolveReport> {
         let ops = self.ops;
         let dt = self.dt;
         let n = self.model.layers();

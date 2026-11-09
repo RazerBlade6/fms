@@ -51,6 +51,10 @@ use crate::mesh::{CellId, SphereMesh, VertexId};
 /// it saves (measured: 7× slower on a 2.5k-cell mesh with 15 threads).
 pub const MIN_CHUNK: usize = 4096;
 
+/// Smallest number of columns handed to one thread where each is expensive
+/// and their costs differ (the column physics).
+pub const MIN_COLUMNS: usize = 32;
+
 /// The TRiSK operators for one mesh at one planet radius.
 #[derive(Clone, Copy, Debug)]
 pub struct Operators<'a> {
