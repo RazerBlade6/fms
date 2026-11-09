@@ -106,3 +106,4 @@ before and 98.4% after the baseline (`top -l 2`).
 | Commit | 2,562 cells, 8 threads | 15 threads | 1 thread | 642 cells, 4 threads | 1 thread |
 |---|---|---|---|---|---|
 | `775c84a` (baseline) | 11.19 ms/step | 11.63 | 35.53 | 6.37 | 10.85 |
+| `90259f9` (05:15 IST, same conditions, CPU idle 98.6% before and after) | 4.30 | 4.55 | 16.17 | 1.66 | 5.02 |

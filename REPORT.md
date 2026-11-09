@@ -23,7 +23,7 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 | `c482ee5` | `LayeredModel::step_tendencies`: the forcing (column physics) runs beside the tendency and hyperdiffusion (`rayon::join`) | 5.63 | 5.06 (15 threads: 6.25 -> 5.28) | unchanged |
 | `2ad417a` | `LayeredSemiImplicit::step` runs on a pool thread (`rayon::scope`); `dot`'s chunk and the column chunk get their own constants (`DOT_CHUNK`, `MIN_COLUMNS`) | 5.06 | 4.87 (15 threads: 5.28 -> 4.94) | unchanged |
 | `127fd95` | Humidity interface ratios computed beside the Helmholtz solves; longwave scratch allocated once per column | 4.87 | 4.63 | unchanged |
-| (next) | `lift` reads saturation vapour pressure from a cubic-Hermite table (0.125 K, error < 1e-8 relative; formula outside 148-353 K). A second change to moist results, separate so it can be reverted alone | 4.63 | 4.30 (1 thread: 18.05 -> 15.9) | pinned hash did not move (see Observations), but convecting columns change at ~1e-9; climate: T_s 291.275 vs 291.194 K (+0.08), albedo 0.313 vs 0.315, P 3.761 vs 3.750 mm/day |
+| `90259f9` | `lift` reads saturation vapour pressure from a cubic-Hermite table (0.125 K, error < 1e-8 relative; formula outside 148-353 K). A second change to moist results, separate so it can be reverted alone | 4.63 | 4.30 (1 thread: 18.05 -> 15.9) | pinned hash did not move (see Observations), but convecting columns change at ~1e-9; climate: T_s 291.275 vs 291.194 K (+0.08), albedo 0.313 vs 0.315, P 3.761 vs 3.750 mm/day |
 
 ## Tried and rejected
 
@@ -39,6 +39,20 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
   reference is floored at the stratosphere temperature. Reverted.
 
 ## Unfinished / uncommitted
+
+Fable hit its usage limit after `90259f9`; nothing was left uncommitted. Final
+checks were run afterwards on Opus, at `90259f9`.
+
+- Final formal benchmark (`docs/BENCHMARKS.md`): 2.5k cells 4.30 ms/step at 8
+  threads (2.60x), 4.55 at 15 (2.56x), 16.17 at 1 (2.20x); 642 cells 1.66 at 4
+  threads (3.84x), 5.02 at 1 (2.16x).
+- `cargo test --workspace --release --no-fail-fast -- --include-ignored`: 276
+  passed, 2 failed, about 9 minutes. Both failures are `#[ignore]`d known gaps
+  (O-35: `bomex_trade_cumulus_do_not_rain`,
+  `dycoms_stratocumulus_entrains_slowly_and_stays_overcast`) and fail the same
+  way at `775c84a`. Clippy is clean.
+- Not reached: precomputed flat operator coefficients and fused operator
+  loops; no review of O-8, O-12, O-13 or O-29 is recorded.
 
 ## Observations
 
