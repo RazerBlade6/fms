@@ -181,6 +181,22 @@ fn budgets_close(land: impl Fn(glam::DVec3) -> f64) {
     // measured 1.1e-3 of the water at day 90 (1.2e-3 at day 45), and on the
     // earlier three layers 2.4e-3 at day 45 and 7.5e-4 at day 91.
     assert!(filter.abs() < 2e-3 * w1 && fixer.abs() < 1e-9 * w1);
+
+    // The soil's share: atmosphere, soil and what ran off together change
+    // only by what the ocean tiles exchange with the air.
+    let (soil, runoff) = (b1.soil_water - b0.soil_water, b1.runoff - b0.runoff);
+    let ocean = b1.ocean_exchange - b0.ocean_exchange;
+    let total_residual = (w1 - w0) + soil + runoff - ocean - filter - fixer;
+    eprintln!(
+        "soil water {:+.4} mm/day, runoff {:.4} mm/day, residual {:+.1e} of the water",
+        mm_day(soil),
+        mm_day(runoff),
+        total_residual / w1
+    );
+    assert!(
+        total_residual.abs() < 1e-11 * w1,
+        "total residual {total_residual:e} kg"
+    );
 }
 
 #[test]
@@ -203,13 +219,19 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
     let days = spin_up + 365.0;
     let mut record: Vec<Vec<f64>> = vec![Vec::new(); mesh.n_cells()];
     let mut per_day = 0;
+    let (mut driest, mut wettest) = (f64::MAX, f64::MIN);
     let levels = Levels::new(&CLIMATE_LEVELS);
     run_with(8, days, levels, continent_fraction, |si, _, dt| {
         per_day = (DAY / dt).round() as usize;
+        let fields = si.model().forcing().unwrap().cell_fields();
+        let water = fields.iter().find(|f| f.name == "land.soil_water").unwrap();
+        for &i in &land {
+            driest = driest.min(water.values[i]);
+            wettest = wettest.max(water.values[i]);
+        }
         if si.steps() as f64 * dt <= spin_up * DAY {
             return;
         }
-        let fields = si.model().forcing().unwrap().cell_fields();
         let ts = fields
             .iter()
             .find(|f| f.name == "rad.surface_temperature")
@@ -218,6 +240,12 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
             record[i].push(ts.values[i]);
         }
     });
+    // The bucket stays within its limits and really does limit evaporation
+    // somewhere: it starts at the critical level, 112.5 kg/m².
+    let capacity = PhysicsParams::default().land.soil_water_capacity;
+    eprintln!("soil water over mid-latitude land: {driest:.1} to {wettest:.1} kg/m²");
+    assert!(driest >= 0.0 && wettest <= capacity + 1e-9);
+    assert!(driest < 0.5 * capacity, "the soil never dried: {driest}");
     let range = |x: &[f64]| {
         let max = x.iter().copied().fold(f64::MIN, f64::max);
         let min = x.iter().copied().fold(f64::MAX, f64::min);
@@ -254,9 +282,8 @@ fn land_swings_more_than_ocean_daily_and_seasonally() {
         "daily: land {land_day}, ocean {ocean_day}"
     );
     // The margin is small only because the ocean is still a 10 m slab that
-    // follows the seasons closely: measured land 41.9 K, ocean 28.1 K, and
-    // daily 6.2 K and 0.23 K. The same run with a 50 m slab (step 11's mixed
-    // layer) gave 32.9 K and 8.5 K.
+    // follows the seasons closely: measured land 49.0 K, ocean 28.2 K, and
+    // daily 9.6 K and 0.23 K.
     assert!(
         land_year > 1.2 * ocean_year,
         "seasonal: land {land_year}, ocean {ocean_year}"

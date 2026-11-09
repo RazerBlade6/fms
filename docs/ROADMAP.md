@@ -209,8 +209,14 @@ Added after the M1 review: tooling the GCM work depends on.
         land swings 6.2 K daily and 41.9 K seasonally against the 10 m ocean
         slab's 0.23 K and 28.1 K. 1.2-year runs are stable on the continent
         and on Earth's terrain at 2.5k cells, energy closing to 0.011 W/m².
-      - [ ] 10.2.4. **Soil water**: Manabe bucket limiting evaporation, with
+      - [x] 10.2.4. **Soil water**: Manabe bucket limiting evaporation, with
         runoff. Test: the water budget closes with soil water and runoff.
+        Done: a 150 mm bucket, evaporating freely above 75% of that. Air, soil
+        and runoff together change only by the ocean's evaporation minus
+        precipitation, to 5×10⁻¹⁴ of the atmosphere's water. Dry land raises
+        mid-latitude swings to 9.6 K daily and 49 K seasonally. On Earth at
+        2.5k cells: 288.9 K, albedo 0.32, boreal soils wet, subtropics and
+        Australia dry, but so is the Amazon, from too little rain (O-32).
       - [ ] 10.2.5. **Snow**: snow mass, melt and snow albedo. Test: energy
         and water budgets close through melting; snow comes and goes with
         the seasons.

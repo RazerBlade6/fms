@@ -52,6 +52,12 @@ pub struct ForcingBudget {
     /// Kinetic energy the forcing removed from the winds and returned as
     /// heat (J; [`crate::dissipation`]).
     pub dissipated: f64,
+    /// Water held in the soil now (kg).
+    pub soil_water: f64,
+    /// Water that has run off the land (kg).
+    pub runoff: f64,
+    /// Evaporation minus precipitation over the ocean (kg).
+    pub ocean_exchange: f64,
 }
 
 /// A named cell field.

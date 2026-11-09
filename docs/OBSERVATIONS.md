@@ -741,3 +741,18 @@ into heating.
 
 **Revisit when:** the Earth run's seasonal cycle is compared with observations
 (step 10.2.8), if continental interiors are too extreme or too early.
+
+### O-32: Too little rain over the Amazon
+
+**Seen (M2.10.2.4):** after 1.2 years on Earth's terrain at 2.5k cells, the
+Amazon's soil is dry. The soil is right to be: the annual-mean rain there is
+only about 2–3 mm/day, where Earth gets 6 or more. The rain belts over the
+oceans and the Maritime Continent are present and the bucket follows them
+elsewhere (wet boreal zones, dry subtropics and Australia).
+
+**Why it's acceptable for now:** this step only needed the bucket to respond
+to the rain it's given. Tropical land rainfall depends on the land surface
+as a whole, and 2.5k cells is coarse. Dry-soil surface air is also still
+buoyant as if saturated, in `exchange`.
+
+**Revisit when:** the Earth run's close-out (M2 step 10.2.8).

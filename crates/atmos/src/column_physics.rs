@@ -10,8 +10,8 @@
 //!   land fraction, each with its own temperature, albedo, roughness and
 //!   fluxes. The ocean tile is a slab of water of fixed depth (a real ocean
 //!   comes in M2 step 11); the land tile is a skin with no heat capacity
-//!   over a soil heat store, always wet so far (soil water and snow come in
-//!   M2 step 10.2). Each absorbs sunlight and longwave, emits as a black
+//!   over a soil heat store, with a bucket of soil water (snow comes in M2
+//!   step 10.2). Each absorbs sunlight and longwave, emits as a black
 //!   body, and pays the latent heat of what evaporates, and of fusion for
 //!   the snow that falls on it and melts. The radiation sees one surface per
 //!   cell, with the tiles' mean albedo and mean σT⁴, and splits its fluxes
@@ -25,6 +25,10 @@
 //!   its current skin temperature, and the difference from what the last
 //!   radiation call counted goes into the bottom layer, which is where most
 //!   of the surface's longwave is absorbed.
+//! - **Soil water**: Manabe's (1969) bucket. Rain and snow fill it, and what
+//!   overflows its capacity runs off; evaporation falls in proportion to its
+//!   water below a critical level. Snow melts on landing until M2 step
+//!   10.2.5. Runoff leaves the planet's water until rivers (M3).
 //! - **Boundary layer**: the bottom layer is a well-mixed boundary layer
 //!   ([`crate::surface_layer`]): surface air has its potential temperature
 //!   and specific humidity. Bulk formulas with stability-dependent
@@ -103,6 +107,10 @@ pub struct LandParams {
     /// Thermal conductance between the skin and the soil store (W m⁻² K⁻¹):
     /// soil's ~1 W m⁻¹ K⁻¹ over the ~15 cm that the day's heating reaches.
     pub skin_conductance: f64,
+    /// Most water the soil holds before it runs off (kg m⁻², or mm).
+    pub soil_water_capacity: f64,
+    /// Fraction of the capacity above which the soil evaporates freely.
+    pub critical_wetness: f64,
 }
 
 impl Default for LandParams {
@@ -113,6 +121,8 @@ impl Default for LandParams {
             soil_depth: 1.0,
             soil_heat_capacity: 2.5e6,
             skin_conductance: 7.0,
+            soil_water_capacity: 150.0,
+            critical_wetness: 0.75,
         }
     }
 }
@@ -121,6 +131,27 @@ impl LandParams {
     /// Heat capacity of the soil store (J m⁻² K⁻¹).
     pub fn heat_capacity(&self) -> f64 {
         self.soil_depth * self.soil_heat_capacity
+    }
+
+    /// Soil water (kg m⁻²) at which evaporation starts to be limited.
+    fn critical_water(&self) -> f64 {
+        self.critical_wetness * self.soil_water_capacity
+    }
+
+    /// The share (0–1) of the potential evaporation that soil holding
+    /// `water` (kg m⁻²) supplies.
+    fn wetness(&self, water: f64) -> f64 {
+        (water / self.critical_water()).min(1.0)
+    }
+
+    /// Soil `water` (kg m⁻²) after gaining `gain` (kg m⁻²; a loss if
+    /// negative): the new amount and what overflowed. Water can't run out:
+    /// evaporation is proportional to it below the critical level, and a
+    /// step evaporates far less than that level (~2 of 112 mm at most).
+    fn fill(&self, water: f64, gain: f64) -> (f64, f64) {
+        let new = water + gain;
+        let overflow = (new - self.soil_water_capacity).max(0.0);
+        (new - overflow, overflow)
     }
 
     /// The conductance the skin feels over a step of `dt` seconds. The soil
@@ -506,6 +537,8 @@ pub struct ColumnPhysics<'a> {
     land_temperature: Vec<f64>,
     /// Temperature of each cell's soil store (K).
     soil_temperature: Vec<f64>,
+    /// Water in each cell's soil (kg per m² of land).
+    soil_water: Vec<f64>,
     /// Last radiation call, all-sky and clear-sky, and its division between
     /// the tiles.
     radiation: Vec<Fluxes>,
@@ -529,6 +562,8 @@ pub struct ColumnPhysics<'a> {
     outgoing: f64,
     evaporated: f64,
     precipitated: f64,
+    runoff: f64,
+    ocean_exchange: f64,
 }
 
 impl<'a> ColumnPhysics<'a> {
@@ -591,6 +626,7 @@ impl<'a> ColumnPhysics<'a> {
             land_fraction,
             land_temperature: surface_temperature.clone(),
             soil_temperature: surface_temperature.clone(),
+            soil_water: vec![params.land.critical_water(); n],
             ocean_temperature: surface_temperature,
             radiation: vec![Fluxes::default(); n],
             clear: vec![Fluxes::default(); n],
@@ -606,6 +642,8 @@ impl<'a> ColumnPhysics<'a> {
             outgoing: 0.0,
             evaporated: 0.0,
             precipitated: 0.0,
+            runoff: 0.0,
+            ocean_exchange: 0.0,
         };
         // Clouds for the first radiation call; radiation (clear sky) for the
         // first convection's stratosphere temperature.
@@ -652,6 +690,12 @@ impl<'a> ColumnPhysics<'a> {
     /// has no land.
     pub fn soil_temperature(&self) -> &[f64] {
         &self.soil_temperature
+    }
+
+    /// Water in each cell's soil (kg per m² of land); meaningless where the
+    /// cell has no land.
+    pub fn soil_water(&self) -> &[f64] {
+        &self.soil_water
     }
 
     /// What the radiation sees of cell `i`'s tiles.
@@ -765,15 +809,20 @@ impl<'a> ColumnPhysics<'a> {
                     convective_velocity: old[i].convective_velocity,
                     gravity: g,
                 };
-                let tile = |ts: f64, surface: Surface| {
+                // Dew condenses whatever the soil holds.
+                let supplied =
+                    |deficit: f64, wetness: f64| if deficit > 0.0 { wetness } else { 1.0 };
+                let tile = |ts: f64, surface: Surface, wetness: f64| {
                     let x = exchange(sl, surface, &air_over(ts));
+                    let deficit = saturation_humidity(ts, ps) - q;
                     let momentum = x.momentum(density);
                     TileFlux {
                         sensible: density * cp * x.heat * x.speed * (ts - air),
                         evaporation: density
                             * x.moisture
                             * x.speed
-                            * (saturation_humidity(ts, ps) - q),
+                            * deficit
+                            * supplied(deficit, wetness),
                         drag: g * momentum * x.wind_ratio / (ps * ds[bottom]),
                         wind: x.wind,
                         stress: momentum * x.wind,
@@ -784,11 +833,12 @@ impl<'a> ColumnPhysics<'a> {
                 let fraction = self.land_fraction[i];
                 let mut tiles = [TileFlux::default(); 2];
                 if fraction < 1.0 {
-                    tiles[OCEAN] = tile(self.ocean_temperature[i], Surface::Ocean);
+                    tiles[OCEAN] = tile(self.ocean_temperature[i], Surface::Ocean, 1.0);
                 }
                 let mut skin = self.land_temperature[i];
                 if fraction > 0.0 {
                     let rough = Surface::Rough(self.params.land.roughness);
+                    let wetness = self.params.land.wetness(self.soil_water[i]);
                     if let Some(dt) = dt {
                         let absorbed = self.tile_radiation[i].shortwave[LAND]
                             + self.radiation[i].surface_down
@@ -800,6 +850,7 @@ impl<'a> ColumnPhysics<'a> {
                             let water = LATENT_HEAT * density * x.moisture * x.speed;
                             let qs = saturation_humidity(t, ps);
                             let dqs = qs * LATENT_HEAT / (VAPOUR_GAS_CONSTANT * t * t);
+                            let water = water * supplied(qs - q, wetness);
                             (heat * (t - air) + water * (qs - q), heat + water * dqs)
                         };
                         skin = solve_skin(
@@ -810,7 +861,7 @@ impl<'a> ColumnPhysics<'a> {
                             turbulent,
                         );
                     }
-                    tiles[LAND] = tile(skin, rough);
+                    tiles[LAND] = tile(skin, rough, wetness);
                 }
                 let mean = TileFlux::blend(tiles[OCEAN], tiles[LAND], fraction);
                 let (sensible, evaporation) = (mean.sensible, mean.evaporation);
@@ -1129,8 +1180,19 @@ impl Forcing for ColumnPhysics<'_> {
                 .for_each(|(i, t)| *t += dt * net(i, LAND) / land_capacity);
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
+        let (mut runoff, mut ocean_exchange) = (0.0, 0.0);
         for i in 0..areas.len() {
             let a = areas[i];
+            let (f, falling) = (land[i], moist[i].rain + moist[i].snow);
+            if f < 1.0 {
+                ocean_exchange += a * (1.0 - f) * (surface[i].tiles[OCEAN].evaporation - falling);
+            }
+            if f > 0.0 {
+                let gain = dt * (falling - surface[i].tiles[LAND].evaporation);
+                let (water, overflow) = self.params.land.fill(self.soil_water[i], gain);
+                self.soil_water[i] = water;
+                runoff += a * f * overflow;
+            }
             absorbed += a * radiation[i].absorbed;
             outgoing += a * radiation[i].outgoing;
             evaporated += a * surface[i].evaporation;
@@ -1140,6 +1202,8 @@ impl Forcing for ColumnPhysics<'_> {
         self.outgoing += dt * r2 * outgoing;
         self.evaporated += dt * r2 * evaporated;
         self.precipitated += dt * r2 * precipitated;
+        self.runoff += r2 * runoff;
+        self.ocean_exchange += dt * r2 * ocean_exchange;
         self.dissipated += dt * self.dissipation;
         self.time += dt;
         let solve = (!self.prescribed).then_some(dt);
@@ -1174,6 +1238,11 @@ impl Forcing for ColumnPhysics<'_> {
             evaporated: self.evaporated,
             precipitated: self.precipitated,
             dissipated: self.dissipated,
+            soil_water: (0..areas.len())
+                .map(|i| areas[i] * r2 * self.land_fraction[i] * self.soil_water[i])
+                .sum(),
+            runoff: self.runoff,
+            ocean_exchange: self.ocean_exchange,
         })
     }
 
@@ -1188,6 +1257,16 @@ impl Forcing for ColumnPhysics<'_> {
             values,
         };
         vec![
+            field(
+                "land.soil_water",
+                "Soil water, per unit area of the whole cell",
+                "kg m-2",
+                self.soil_water
+                    .iter()
+                    .zip(&self.land_fraction)
+                    .map(|(w, f)| w * f)
+                    .collect(),
+            ),
             field(
                 "rad.surface_temperature",
                 "Surface temperature",
@@ -1894,6 +1973,27 @@ mod tests {
             albedo: [0.08, 0.2],
             temperature: [290.0, 305.0],
         }
+    }
+
+    #[test]
+    fn soil_supplies_evaporation_in_proportion_to_its_water_below_the_critical_level() {
+        let land = LandParams::default();
+        let critical = land.critical_wetness * land.soil_water_capacity;
+        assert_eq!(land.wetness(0.0), 0.0);
+        assert_eq!(land.wetness(0.5 * critical), 0.5);
+        assert_eq!(land.wetness(critical), 1.0);
+        assert_eq!(land.wetness(land.soil_water_capacity), 1.0);
+    }
+
+    #[test]
+    fn the_bucket_overflows_only_what_it_cannot_hold() {
+        let land = LandParams::default();
+        let capacity = land.soil_water_capacity;
+        assert_eq!(land.fill(50.0, 10.0), (60.0, 0.0));
+        assert_eq!(land.fill(50.0, -10.0), (40.0, 0.0));
+        let (water, overflow) = land.fill(capacity - 1.0, 5.0);
+        assert_eq!(water, capacity);
+        assert!((overflow - 4.0).abs() < 1e-12);
     }
 
     #[test]

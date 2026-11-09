@@ -116,6 +116,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Moisture,
         ),
         (
+            "land.soil_water",
+            "Soil water (per unit of cell area)",
+            "kg m-2",
+            ColorScale::Moisture,
+        ),
+        (
             "rad.shortwave_cloud_effect",
             "Shortwave cloud radiative effect",
             "W m-2",
@@ -430,7 +436,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         let _ = writeln!(
             summary,
             "Final-year energy budget (W/m²): net in at the top of the atmosphere {:+.3} = atmosphere uptake {:+.3} \
-             (enthalpy and latent) + slab uptake {:+.3} + residual {:+.4}; friction dissipated {:.3} \
+             (enthalpy and latent) + surface uptake {:+.3} + residual {:+.4}; friction dissipated {:.3} \
              (returned as heat, net {:+.1e}), diffusion's net {:+.1e}",
             wm2(toa),
             wm2(atmosphere),
@@ -451,6 +457,18 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             filter,
             fixer,
             (w1 - w0) - exchanged - filter - fixer,
+        );
+        let (soil, runoff) = (b1.soil_water - b0.soil_water, b1.runoff - b0.runoff);
+        let ocean = b1.ocean_exchange - b0.ocean_exchange;
+        let _ = writeln!(
+            summary,
+            "Final-year land water (kg): soil change {:+.4e}, runoff {:.4e}; atmosphere, soil and runoff \
+             change {:+.4e} = ocean evaporation − precipitation {:+.4e} + filter and fixer, residual {:+.1e}",
+            soil,
+            runoff,
+            (w1 - w0) + soil + runoff,
+            ocean,
+            (w1 - w0) + soil + runoff - ocean - filter - fixer,
         );
     }
     let _ = writeln!(
