@@ -460,7 +460,11 @@ impl<'a> LayeredSemiImplicit<'a> {
     }
 
     fn to_modes(&self, m: &[Vec<f64>]) -> Vec<Vec<f64>> {
-        self.modes.v_inv.par_iter().map(|row| combine(row, m)).collect()
+        self.modes
+            .v_inv
+            .par_iter()
+            .map(|row| combine(row, m))
+            .collect()
     }
 
     /// Advance one step. Returns the solve report of each vertical mode

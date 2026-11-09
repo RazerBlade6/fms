@@ -91,8 +91,8 @@ pub struct Transport {
     q_min: Vec<Vec<f64>>,
     r_plus: Vec<Vec<f64>>,
     r_minus: Vec<Vec<f64>>,
-    edge_amount: Vec<f64>,
-    divergence: Vec<f64>,
+    edge_amount: Vec<Vec<f64>>,
+    divergence: Vec<Vec<f64>>,
     q: Vec<Vec<f64>>,
 }
 
@@ -114,8 +114,8 @@ impl Transport {
             q_min: cells(layers),
             r_plus: cells(layers),
             r_minus: cells(layers),
-            edge_amount: vec![0.0; n_edges],
-            divergence: vec![0.0; n_cells],
+            edge_amount: edges(),
+            divergence: cells(layers),
             q: cells(layers),
         }
     }
@@ -188,42 +188,51 @@ impl Transport {
         }
         for m in 0..substeps {
             let s = f64::from(m) / f64::from(substeps);
-            for k in 0..n {
-                let content = &self.content[k];
-                self.q[k]
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(i, q)| {
-                        let ps = input.ps_old[i] + s * (input.ps_new[i] - input.ps_old[i]);
-                        *q = content[i] / (ds[k] * ps);
-                    });
-            }
-            for k in 0..n {
-                let (q, flux) = (&self.q[k], input.flux[k]);
-                self.edge_amount
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(self.low_flux[k].par_iter_mut())
-                    .enumerate()
-                    .for_each(|(e, (x, total))| {
-                        let [a, b] = edges[e].cells;
-                        let upwind = if flux[e] >= 0.0 {
-                            q[a as usize]
-                        } else {
-                            q[b as usize]
-                        };
-                        *x = h * flux[e] * upwind;
-                        *total += *x;
-                    });
-                ops.divergence(&self.edge_amount, &mut self.divergence);
-                let (div, source) = (&self.divergence, input.source[k]);
-                self.content[k]
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(i, c)| *c += -div[i] + h * ds[k] * source[i]);
-            }
+            self.content
+                .par_iter_mut()
+                .zip(self.q.par_iter_mut())
+                .zip(self.low_flux.par_iter_mut())
+                .zip(self.edge_amount.par_iter_mut())
+                .zip(self.divergence.par_iter_mut())
+                .enumerate()
+                .for_each(
+                    |(k, ((((content, q), low_flux), edge_amount), divergence))| {
+                        {
+                            let content = &*content;
+                            q.par_iter_mut()
+                                .with_min_len(MIN_CHUNK)
+                                .enumerate()
+                                .for_each(|(i, q)| {
+                                    let ps =
+                                        input.ps_old[i] + s * (input.ps_new[i] - input.ps_old[i]);
+                                    *q = content[i] / (ds[k] * ps);
+                                });
+                        }
+                        let (q, flux) = (&*q, input.flux[k]);
+                        edge_amount
+                            .par_iter_mut()
+                            .with_min_len(MIN_CHUNK)
+                            .zip(low_flux.par_iter_mut())
+                            .enumerate()
+                            .for_each(|(e, (x, total))| {
+                                let [a, b] = edges[e].cells;
+                                let upwind = if flux[e] >= 0.0 {
+                                    q[a as usize]
+                                } else {
+                                    q[b as usize]
+                                };
+                                *x = h * flux[e] * upwind;
+                                *total += *x;
+                            });
+                        ops.divergence(edge_amount, divergence);
+                        let (div, source) = (&*divergence, input.source[k]);
+                        content
+                            .par_iter_mut()
+                            .with_min_len(MIN_CHUNK)
+                            .enumerate()
+                            .for_each(|(i, c)| *c += -div[i] + h * ds[k] * source[i]);
+                    },
+                );
             // Across each interface (downward positive: from layer j to j+1).
             for j in 0..n - 1 {
                 let (upper, lower) = self.content.split_at_mut(j + 1);
@@ -257,17 +266,19 @@ impl Transport {
         }
 
         // 2. Antidiffusive fluxes: centred at n minus upwind.
-        for k in 0..n {
-            let (q, flux, low) = (input.q_mid[k], input.flux[k], &self.low_flux[k]);
-            self.anti[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(e, a)| {
-                    let [i, j] = edges[e].cells;
-                    let centred = 0.5 * (q[i as usize] + q[j as usize]);
-                    *a = t * flux[e] * centred - low[e];
-                });
+        {
+            let low_flux = &self.low_flux;
+            self.anti.par_iter_mut().enumerate().for_each(|(k, anti)| {
+                let (q, flux, low) = (input.q_mid[k], input.flux[k], &low_flux[k]);
+                anti.par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .enumerate()
+                    .for_each(|(e, a)| {
+                        let [i, j] = edges[e].cells;
+                        let centred = 0.5 * (q[i as usize] + q[j as usize]);
+                        *a = t * flux[e] * centred - low[e];
+                    });
+            });
         }
         for j in 0..n - 1 {
             let (q, w, ratio) = (&input.q_mid, w[j], ratio[j]);
@@ -294,129 +305,142 @@ impl Transport {
                 .iter()
                 .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
         };
-        for k in 0..n {
-            let [q_min, q_max] = [&mut self.q_min[k], &mut self.q_max[k]];
-            q_min
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(q_max.par_iter_mut())
-                .enumerate()
-                .for_each(|(i, (lo, hi))| {
-                    let (mut a, mut b) = local(k, i);
-                    for l in [k.checked_sub(1), (k + 1 < n).then_some(k + 1)]
-                        .into_iter()
-                        .flatten()
-                    {
-                        let (c, d) = local(l, i);
-                        (a, b) = (a.min(c), b.max(d));
-                    }
-                    for &c in mesh.cell_neighbors(i as u32) {
-                        let (c, d) = local(k, c as usize);
-                        (a, b) = (a.min(c), b.max(d));
-                    }
-                    *lo = a.max(0.0);
-                    *hi = b;
-                });
-        }
+        self.q_min
+            .par_iter_mut()
+            .zip(self.q_max.par_iter_mut())
+            .enumerate()
+            .for_each(|(k, (q_min, q_max))| {
+                q_min
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(q_max.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(i, (lo, hi))| {
+                        let (mut a, mut b) = local(k, i);
+                        for l in [k.checked_sub(1), (k + 1 < n).then_some(k + 1)]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let (c, d) = local(l, i);
+                            (a, b) = (a.min(c), b.max(d));
+                        }
+                        for &c in mesh.cell_neighbors(i as u32) {
+                            let (c, d) = local(k, c as usize);
+                            (a, b) = (a.min(c), b.max(d));
+                        }
+                        *lo = a.max(0.0);
+                        *hi = b;
+                    });
+            });
 
         // Zalesak's ratios: the share of the incoming (outgoing)
         // antidiffusive water each cell can take (give) within its bounds.
-        for k in 0..n {
-            let (anti, anti_v) = (&self.anti[k], &self.anti_interface);
-            let (content, q_min, q_max) = (&self.content[k], &self.q_min[k], &self.q_max[k]);
-            let [r_plus, r_minus] = [&mut self.r_plus[k], &mut self.r_minus[k]];
-            r_plus
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(r_minus.par_iter_mut())
-                .enumerate()
-                .for_each(|(i, (rp, rm))| {
-                    let cid = i as u32;
-                    let scale = 1.0 / (g.cell_areas[i] * r);
-                    let (mut incoming, mut outgoing) = (0.0, 0.0);
-                    for (&e, &s) in mesh.cell_edges(cid).iter().zip(g.cell_edge_signs(cid)) {
-                        let x = s * anti[e as usize] * g.edge_lengths[e as usize] * scale;
-                        if x > 0.0 {
-                            outgoing += x;
-                        } else {
-                            incoming -= x;
+        let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
+        let (content_all, q_min_all, q_max_all) = (&self.content, &self.q_min, &self.q_max);
+        self.r_plus
+            .par_iter_mut()
+            .zip(self.r_minus.par_iter_mut())
+            .enumerate()
+            .for_each(|(k, (r_plus, r_minus))| {
+                let anti = &anti_all[k];
+                let (content, q_min, q_max) = (&content_all[k], &q_min_all[k], &q_max_all[k]);
+                r_plus
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .zip(r_minus.par_iter_mut())
+                    .enumerate()
+                    .for_each(|(i, (rp, rm))| {
+                        let cid = i as u32;
+                        let scale = 1.0 / (g.cell_areas[i] * r);
+                        let (mut incoming, mut outgoing) = (0.0, 0.0);
+                        for (&e, &s) in mesh.cell_edges(cid).iter().zip(g.cell_edge_signs(cid)) {
+                            let x = s * anti[e as usize] * g.edge_lengths[e as usize] * scale;
+                            if x > 0.0 {
+                                outgoing += x;
+                            } else {
+                                incoming -= x;
+                            }
                         }
-                    }
-                    // Downward positive: out through the bottom, in through
-                    // the top.
-                    let mut vertical = |v: f64| {
-                        if v > 0.0 {
-                            outgoing += v;
-                        } else {
-                            incoming -= v;
+                        // Downward positive: out through the bottom, in through
+                        // the top.
+                        let mut vertical = |v: f64| {
+                            if v > 0.0 {
+                                outgoing += v;
+                            } else {
+                                incoming -= v;
+                            }
+                        };
+                        if k + 1 < n {
+                            vertical(anti_v[k][i]);
                         }
-                    };
-                    if k + 1 < n {
-                        vertical(anti_v[k][i]);
-                    }
-                    if k > 0 {
-                        vertical(-anti_v[k - 1][i]);
-                    }
-                    let mass = ds[k] * input.ps_new[i];
-                    let room = mass * q_max[i] - content[i];
-                    let spare = content[i] - mass * q_min[i];
-                    *rp = if incoming > 0.0 {
-                        (room / incoming).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    *rm = if outgoing > 0.0 {
-                        (spare / outgoing).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                });
-        }
+                        if k > 0 {
+                            vertical(-anti_v[k - 1][i]);
+                        }
+                        let mass = ds[k] * input.ps_new[i];
+                        let room = mass * q_max[i] - content[i];
+                        let spare = content[i] - mass * q_min[i];
+                        *rp = if incoming > 0.0 {
+                            (room / incoming).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        *rm = if outgoing > 0.0 {
+                            (spare / outgoing).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                    });
+            });
 
         // Limit and apply.
-        for (k, out) in out.into_iter().enumerate() {
-            let (anti, rp, rm) = (&self.anti[k], &self.r_plus[k], &self.r_minus[k]);
-            self.edge_amount
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(e, x)| {
-                    let [a, b] = edges[e].cells;
-                    let (a, b) = (a as usize, b as usize);
-                    let c = if anti[e] >= 0.0 {
-                        rm[a].min(rp[b])
+        let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
+        let (content_all, r_plus, r_minus) = (&self.content, &self.r_plus, &self.r_minus);
+        out.into_par_iter()
+            .zip(self.edge_amount.par_iter_mut())
+            .zip(self.divergence.par_iter_mut())
+            .enumerate()
+            .for_each(|(k, ((out, edge_amount), divergence))| {
+                let (anti, rp, rm) = (&anti_all[k], &r_plus[k], &r_minus[k]);
+                edge_amount
+                    .par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .enumerate()
+                    .for_each(|(e, x)| {
+                        let [a, b] = edges[e].cells;
+                        let (a, b) = (a as usize, b as usize);
+                        let c = if anti[e] >= 0.0 {
+                            rm[a].min(rp[b])
+                        } else {
+                            rp[a].min(rm[b])
+                        };
+                        *x = c * anti[e];
+                    });
+                ops.divergence(edge_amount, divergence);
+                let (content, div) = (&content_all[k], &*divergence);
+                // The limited flux across interface j (downward positive).
+                let limited = |j: usize, i: usize| -> f64 {
+                    let a = anti_v[j][i];
+                    let c = if a >= 0.0 {
+                        r_minus[j][i].min(r_plus[j + 1][i])
                     } else {
-                        rp[a].min(rm[b])
+                        r_plus[j][i].min(r_minus[j + 1][i])
                     };
-                    *x = c * anti[e];
-                });
-            ops.divergence(&self.edge_amount, &mut self.divergence);
-            let (content, div) = (&self.content[k], &self.divergence);
-            let (anti_v, r_plus, r_minus) = (&self.anti_interface, &self.r_plus, &self.r_minus);
-            // The limited flux across interface j (downward positive).
-            let limited = |j: usize, i: usize| -> f64 {
-                let a = anti_v[j][i];
-                let c = if a >= 0.0 {
-                    r_minus[j][i].min(r_plus[j + 1][i])
-                } else {
-                    r_plus[j][i].min(r_minus[j + 1][i])
+                    c * a
                 };
-                c * a
-            };
-            out.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, q)| {
-                    let mut vertical = 0.0;
-                    if k > 0 {
-                        vertical += limited(k - 1, i);
-                    }
-                    if k + 1 < n {
-                        vertical -= limited(k, i);
-                    }
-                    *q = (content[i] - div[i] + vertical) / ds[k];
-                });
-        }
+                out.par_iter_mut()
+                    .with_min_len(MIN_CHUNK)
+                    .enumerate()
+                    .for_each(|(i, q)| {
+                        let mut vertical = 0.0;
+                        if k > 0 {
+                            vertical += limited(k - 1, i);
+                        }
+                        if k + 1 < n {
+                            vertical -= limited(k, i);
+                        }
+                        *q = (content[i] - div[i] + vertical) / ds[k];
+                    });
+            });
         TransportReport { substeps }
     }
 }

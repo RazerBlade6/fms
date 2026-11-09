@@ -15,7 +15,8 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 |---|---|---|---|---|
 | `f74cd1c` | `lift`: reuse the saturation humidity between steps; stop the convective reference once the parcel is below the stratosphere floor | 11.19 | 9.39 (1 thread: 35.5 -> 24.5) | unchanged |
 | `fb597f3` | Semi-implicit step: vertical modes solved in parallel, per-layer loops in parallel | 9.39 | 8.72 | unchanged |
-| (next) | Tendency, hyperdiffusion and energy rates: layers in parallel (per-layer scratch) | 8.72 | 7.47 | unchanged |
+| `d2d6cfe` | Tendency, hyperdiffusion and energy rates: layers in parallel (per-layer scratch) | 8.72 | 7.47 | unchanged |
+| (next) | Humidity transport: layers in parallel | 7.47 | 7.05 | unchanged |
 
 ## Tried and rejected
 
