@@ -76,7 +76,10 @@
 
 use crate::layered::Gas;
 use crate::levels::{Levels, MAX_LAYERS};
-use crate::radiation::{LayerSaturation, RadiationParams, layer_saturation, saturation_humidity};
+use crate::radiation::{
+    LayerSaturation, RadiationParams, layer_saturation, saturation_humidity, saturation_pressure,
+    specific_humidity,
+};
 
 /// Latent heat of vaporization (J kg⁻¹).
 pub const LATENT_HEAT: f64 = 2.5e6;
@@ -280,6 +283,66 @@ const GAUSS: [(f64, f64); 4] = [
     (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
 ];
 
+/// Intervals of [`SaturationTable`], their width (K) and where they start:
+/// 148.15 to 353.15 K, with 0 °C on a boundary, where the formula changes.
+const TABLE_INTERVALS: usize = 1640;
+const TABLE_STEP: f64 = 0.125;
+/// Intervals below 0 °C.
+const TABLE_ICE: usize = 1000;
+const TABLE_START: f64 = 273.15 - TABLE_ICE as f64 * TABLE_STEP;
+
+/// [`saturation_pressure`] tabulated for [`lift`], which spends most of its
+/// time there: per interval, the values and (scaled) slopes at its ends, for
+/// cubic Hermite interpolation. Agrees with the formula to a few parts in
+/// 10⁹ (at the cold end; closer when warmer).
+struct SaturationTable(Vec<[f64; 4]>);
+
+impl SaturationTable {
+    fn get() -> &'static Self {
+        static TABLE: std::sync::OnceLock<SaturationTable> = std::sync::OnceLock::new();
+        TABLE.get_or_init(|| {
+            // The Magnus forms of `saturation_pressure` and their slopes,
+            // each interval with the branch it lies in.
+            let end = |i: usize, ice: bool| -> (f64, f64) {
+                let c = TABLE_START + TABLE_STEP * i as f64 - 273.15;
+                let (e0, a, b) = if ice {
+                    (611.21, 22.587, 273.86)
+                } else {
+                    (610.94, 17.625, 243.04)
+                };
+                let e = e0 * fms_math::exp(a * c / (c + b));
+                (e, TABLE_STEP * e * a * b / ((c + b) * (c + b)))
+            };
+            Self(
+                (0..TABLE_INTERVALS)
+                    .map(|i| {
+                        let ice = i < TABLE_ICE;
+                        let ((f0, d0), (f1, d1)) = (end(i, ice), end(i + 1, ice));
+                        [f0, f1, d0, d1]
+                    })
+                    .collect(),
+            )
+        })
+    }
+
+    /// Saturation vapour pressure (Pa) at `t` (K); the formula itself
+    /// outside the table.
+    fn pressure(&self, t: f64) -> f64 {
+        let x = (t - TABLE_START) / TABLE_STEP;
+        if !(x >= 0.0 && x < TABLE_INTERVALS as f64) {
+            return saturation_pressure(t);
+        }
+        let i = x as usize;
+        let u = x - i as f64;
+        let [f0, f1, d0, d1] = self.0[i];
+        let (u2, u3) = (u * u, u * u * u);
+        f0 * (2.0 * u3 - 3.0 * u2 + 1.0)
+            + d0 * (u3 - 2.0 * u2 + u)
+            + f1 * (3.0 * u2 - 2.0 * u3)
+            + d1 * (u3 - u2)
+    }
+}
+
 /// Temperature of a parcel lifted from `(t, q)` at pressure `p` to pressure
 /// `p_to < p`: dry adiabat (q conserved) until saturated, then the
 /// pseudo-adiabat `dT/d ln p = (R T + L q*)/(c_p + L² q*/(R_v T²))`
@@ -310,6 +373,8 @@ fn lift_from(
     // Pressure falls by this factor every half step.
     let half = fms_math::exp(-0.5 * h);
     let steps = steps as u64;
+    let table = SaturationTable::get();
+    let saturation_humidity = |t: f64, p: f64| specific_humidity(table.pressure(t), p);
     let (mut t, mut q, mut p, mut known) = (t, q, p, known);
     let slope = |t: f64, qs: f64, q: f64| -> (f64, bool) {
         if q < qs {
@@ -799,6 +864,19 @@ mod tests {
         assert!((q - saturation_humidity(t, 5e4)).abs() < 1e-4 * q0);
         // Saturated at 300 K and 1000 hPa (θₑ ≈ 360 K): ~274 K at 500 hPa.
         assert!((270.0..280.0).contains(&t), "{t}");
+    }
+
+    #[test]
+    fn the_saturation_table_matches_the_formula() {
+        let table = SaturationTable::get();
+        let mut worst = 0.0f64;
+        for i in 0..=250_000 {
+            let t = 140.0 + 220.0 * f64::from(i) / 250_000.0;
+            let exact = saturation_pressure(t);
+            worst = worst.max(((table.pressure(t) - exact) / exact).abs());
+        }
+        assert!(worst < 1e-8, "{worst:e}");
+        assert_eq!(table.pressure(273.15), saturation_pressure(273.15));
     }
 
     #[test]

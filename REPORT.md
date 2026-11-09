@@ -22,7 +22,8 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 | `c482ee5` | Column physics split into chunks of 32 columns, not 256 (uneven column cost); its tendency assembly per layer in parallel | 5.91 | 5.63 | unchanged |
 | `c482ee5` | `LayeredModel::step_tendencies`: the forcing (column physics) runs beside the tendency and hyperdiffusion (`rayon::join`) | 5.63 | 5.06 (15 threads: 6.25 -> 5.28) | unchanged |
 | `2ad417a` | `LayeredSemiImplicit::step` runs on a pool thread (`rayon::scope`); `dot`'s chunk and the column chunk get their own constants (`DOT_CHUNK`, `MIN_COLUMNS`) | 5.06 | 4.87 (15 threads: 5.28 -> 4.94) | unchanged |
-| (next) | Humidity interface ratios computed beside the Helmholtz solves; longwave scratch allocated once per column | 4.87 | 4.63 | unchanged |
+| `127fd95` | Humidity interface ratios computed beside the Helmholtz solves; longwave scratch allocated once per column | 4.87 | 4.63 | unchanged |
+| (next) | `lift` reads saturation vapour pressure from a cubic-Hermite table (0.125 K, error < 1e-8 relative; formula outside 148-353 K). A second change to moist results, separate so it can be reverted alone | 4.63 | 4.30 (1 thread: 18.05 -> 15.9) | pinned hash did not move (see Observations), but convecting columns change at ~1e-9; climate: T_s 291.275 vs 291.194 K (+0.08), albedo 0.313 vs 0.315, P 3.761 vs 3.750 mm/day |
 
 ## Tried and rejected
 
@@ -40,6 +41,8 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 ## Unfinished / uncommitted
 
 ## Observations
+
+- The golden hash (`a_world_without_land_is_the_aquaplanet_bit_for_bit`, 5 days at 642 cells) does not see the values `lift` returns: adding 1 mK to every `lift` result leaves it unchanged, so convective adjustment's reference barely enters that run. It guards the dynamics, radiation and the in-layer profile, not convection. The exact `lift` change (`f74cd1c`) was therefore also checked bit for bit against the old code on 600,000 random columns (temporary test, not committed).
 
 - `KineticHeating::rate` (`crates/atmos/src/dissipation.rs`) sums with a parallel `.sum()`; above 4,096 edges its float result can depend on how rayon splits. It only feeds the `dissipation` diagnostic. Not touched.
 
