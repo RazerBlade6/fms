@@ -914,6 +914,9 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
     let mut edges = vec![(0.0, 0.0); n_layers];
     let mut tau = vec![0.0; slabs.len()];
     let mut clear = vec![0.0; slabs.len()];
+    let mut sheet_planck = vec![0.0; cloud_temperature.len()];
+    let mut layer_tau = vec![0.0; n_layers];
+    let mut above = vec![0.0; n_layers];
     let mut emit = vec![(0.0, 0.0); n];
     let mut rise = vec![0.0; n + 1];
     let mut fall = vec![0.0; n + 1];
@@ -934,10 +937,12 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
             *edge = (top, bottom);
             top = bottom;
         }
-        let sheet_planck: Vec<f64> = cloud_temperature.iter().map(|&t| planck(t)).collect();
+        for (s, &t) in sheet_planck.iter_mut().zip(&cloud_temperature) {
+            *s = planck(t);
+        }
         let u_planck = planck(ts);
         for &(share, scale) in terms {
-            let mut layer_tau = vec![0.0; n_layers];
+            layer_tau.fill(0.0);
             for (t, slab) in tau.iter_mut().zip(&slabs) {
                 *t = match kind {
                     Kind::Co2 => params.co2_opacity * (slab.bottom - slab.top),
@@ -955,7 +960,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
             // Emission of each element up (from its top) and down (from its
             // bottom). A slab's source is linear in optical depth across its
             // layer, so its edges' values are interpolated in τ.
-            let mut above = vec![0.0; n_layers];
+            above.fill(0.0);
             for (j, e) in elements.iter().enumerate() {
                 emit[j] = match *e {
                     Element::Slab(i) => {

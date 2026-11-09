@@ -21,7 +21,8 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 | `906ea95` | Moist physics (the one hash change): `lift` steps pressure by a ratio (no `exp(ln p)`) and carries saturation between calls; in-layer profile factors `(σ/σ̄ₖ)^β` memoized per `Levels` (no `pow` per node); `planck_tail` gets `e^{-nx}` by multiplication | 7.00 | 5.91 (1 thread: 23.8 -> 18.6) | updated to `0xe70e_3500_47bd_d6b0`; climate (642 cells, 4 years, last year): T_s 291.171 vs 291.194 K (-0.02), albedo 0.314 vs 0.315, OLR 233.4 vs 233.3, P 3.765 vs 3.750 mm/day |
 | `c482ee5` | Column physics split into chunks of 32 columns, not 256 (uneven column cost); its tendency assembly per layer in parallel | 5.91 | 5.63 | unchanged |
 | `c482ee5` | `LayeredModel::step_tendencies`: the forcing (column physics) runs beside the tendency and hyperdiffusion (`rayon::join`) | 5.63 | 5.06 (15 threads: 6.25 -> 5.28) | unchanged |
-| (next) | `LayeredSemiImplicit::step` runs on a pool thread (`rayon::scope`); `dot`'s chunk and the column chunk get their own constants (`DOT_CHUNK`, `MIN_COLUMNS`) | 5.06 | 4.87 (15 threads: 5.28 -> 4.94) | unchanged |
+| `2ad417a` | `LayeredSemiImplicit::step` runs on a pool thread (`rayon::scope`); `dot`'s chunk and the column chunk get their own constants (`DOT_CHUNK`, `MIN_COLUMNS`) | 5.06 | 4.87 (15 threads: 5.28 -> 4.94) | unchanged |
+| (next) | Humidity interface ratios computed beside the Helmholtz solves; longwave scratch allocated once per column | 4.87 | 4.63 | unchanged |
 
 ## Tried and rejected
 
@@ -31,6 +32,10 @@ T_s 291.194 K, planetary albedo 0.315, OLR 233.3, P 3.750 mm/day.
 
 - `MIN_CHUNK` 1024 with the step in the pool: 4.75 ms at 8 threads but 5.70 at
   15 (from 4.94). Kept 4096.
+
+- Stopping the convective lift where no layer above can be unstable (exact):
+  4.87 -> 4.80 only; nearly every column is tested up to the top layer, whose
+  reference is floored at the stratosphere temperature. Reverted.
 
 ## Unfinished / uncommitted
 

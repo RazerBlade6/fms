@@ -620,13 +620,21 @@ impl<'a> LayeredSemiImplicit<'a> {
 
         // N scalar Helmholtz problems in the vertical modes.
         let rhs_modal = self.to_modes(&self.rhs);
-        let reports: Vec<SolveReport> = self
-            .helmholtz
-            .par_iter_mut()
-            .zip(self.modal.par_iter_mut())
-            .zip(rhs_modal.par_iter())
-            .map(|((solver, x), b)| solver.solve(b, x))
-            .collect();
+        // Beside them, the humidity's interface ratios for the transport
+        // below (they need only the middle level).
+        let (helmholtz, modal, model) = (&mut self.helmholtz, &mut self.modal, &self.model);
+        let moist = self.transport.is_some();
+        let (reports, ratio): (Vec<SolveReport>, _) = rayon::join(
+            || {
+                helmholtz
+                    .par_iter_mut()
+                    .zip(modal.par_iter_mut())
+                    .zip(rhs_modal.par_iter())
+                    .map(|((solver, x), b)| solver.solve(b, x))
+                    .collect()
+            },
+            || moist.then(|| model.interface_ratios(&current)),
+        );
         {
             let (v, modal) = (&self.modes.v, &self.modal);
             self.m
@@ -734,7 +742,7 @@ impl<'a> LayeredSemiImplicit<'a> {
                 })
                 .collect();
             let q_mid: Vec<Vec<f64>> = (0..n).map(|k| current.humidity(k)).collect();
-            let ratio = self.model.interface_ratios(&current);
+            let ratio = ratio.expect("a moist state has interface ratios");
             let source: Vec<&[f64]> = if diffuse {
                 d.q_ps.iter().map(Vec::as_slice).collect()
             } else {
