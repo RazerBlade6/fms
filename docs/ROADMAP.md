@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.11.7.**
+**Next: M2.11.8.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -59,8 +59,7 @@ a visual check.
   - [x] 11.4. Snow on sea ice
   - [x] 11.5. Aquaplanet ice-albedo runs
   - [x] 11.6. Ice-sheet surface on land
-  - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and snow
-    insulation, one at a time (O-33).
+  - [x] 11.7. Antarctic experiments; freeze-dry low cloud adopted (O-33)
   - [ ] 11.8. **Earth run and close-out**: the accelerated run at 2.5k cells,
     monthly ice extent per hemisphere, budgets, O-30's coastal cells again, and
     the ocean-jump setting (O-37).

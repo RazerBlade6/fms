@@ -14,6 +14,7 @@ use fms_atmos::column_physics::{
     CLIMATE_LEVELS, LATENT_HEAT, LandParams, OceanSpinUp, initial_state,
     initial_surface_temperature_by_latitude,
 };
+use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
@@ -62,6 +63,9 @@ pub struct ClimateArgs {
     /// Keep the seasonal snow surface on land that stays snow-covered.
     #[arg(long)]
     no_ice_sheet: bool,
+    /// Specific humidity (kg/kg) below which low cloud thins; 0 for none.
+    #[arg(long, default_value_t = CloudParams::default().freeze_dry_humidity)]
+    freeze_dry_humidity: f64,
     /// Latitude bands for the zonal means (default: about one per grid
     /// spacing).
     #[arg(long)]
@@ -150,6 +154,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 LandParams::default().ice_sheet_years
             },
             ..LandParams::default()
+        },
+        moisture: MoistureParams {
+            clouds: CloudParams {
+                freeze_dry_humidity: args.freeze_dry_humidity,
+                ..CloudParams::default()
+            },
+            ..MoistureParams::default()
         },
         co2: planet_params.co2_ppm,
         spin_up: OceanSpinUp {
@@ -283,6 +294,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         "rad.surface_shortwave",
         "rad.surface_longwave",
         "rad.clear_surface_longwave",
+        "atm.surface_air_temperature",
     ];
     let names: Vec<&str> = maps.iter().map(|m| m.0).chain(extra).collect();
     // Monthly zonal means over the whole run, for the seasons and the drift.
@@ -295,6 +307,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         "atm.precipitation",
         "atm.cloud_cover",
         "ocean.snow_on_ice",
+        "atm.surface_air_temperature",
     ];
     let mut ids: Vec<FieldId<f64>> = Vec::new();
     for (name, description, units, color_scale) in maps {

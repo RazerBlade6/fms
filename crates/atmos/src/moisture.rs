@@ -111,7 +111,15 @@ pub struct CloudParams {
     pub convective: f64,
     /// Largest anvil cover.
     pub max_convective: f64,
+    /// Specific humidity (kg kg⁻¹) below which low cloud thins in proportion,
+    /// down to [`FREEZE_DRY_FLOOR`] of its cover; 0 for none. Vavrus &
+    /// Waliser (2008)'s "freeze-dry": cold, dry air can't hold an overcast of
+    /// thick cloud however near saturation it is.
+    pub freeze_dry_humidity: f64,
 }
+
+/// The least share of its cover that low cloud keeps in very dry air.
+pub const FREEZE_DRY_FLOOR: f64 = 0.15;
 
 impl Default for CloudParams {
     fn default() -> Self {
@@ -123,6 +131,7 @@ impl Default for CloudParams {
             overcast_humidity: [0.85, 1.0],
             convective: 0.15,
             max_convective: 0.6,
+            freeze_dry_humidity: 3.0e-3,
         }
     }
 }
@@ -452,6 +461,15 @@ pub fn stratiform_cover(rh: f64, rh_c: f64, rh_o: f64) -> f64 {
     ((rh - rh_c) / (rh_o - rh_c)).clamp(0.0, 1.0)
 }
 
+/// The share of its cover low cloud keeps at specific humidity `q`.
+fn freeze_dry_share(q: f64, freeze_dry_humidity: f64) -> f64 {
+    if freeze_dry_humidity > 0.0 {
+        (q / freeze_dry_humidity).clamp(FREEZE_DRY_FLOOR, 1.0)
+    } else {
+        1.0
+    }
+}
+
 /// The moist physics of one column.
 pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     let p = setting.params;
@@ -618,7 +636,8 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             c.overcast_humidity[sheet],
         )
     };
-    out.clouds = [1.0 - (1.0 - cover(0)) * (1.0 - anvil), cover(1)];
+    let low_share = freeze_dry_share(q[levels.layer_of(c.sigma[1])], c.freeze_dry_humidity);
+    out.clouds = [1.0 - (1.0 - cover(0)) * (1.0 - anvil), cover(1) * low_share];
     out
 }
 
@@ -886,5 +905,14 @@ mod tests {
         assert_eq!(cover(0.2), 0.0);
         assert!(cover(0.5) < cover(0.7) && cover(0.7) < 1.0);
         assert_eq!(cover(1.2), 1.0);
+    }
+
+    #[test]
+    fn low_cloud_thins_only_in_dry_air() {
+        // Off, whatever the humidity.
+        assert_eq!(freeze_dry_share(1e-5, 0.0), 1.0);
+        assert_eq!(freeze_dry_share(4e-3, 3e-3), 1.0);
+        assert!((freeze_dry_share(1.5e-3, 3e-3) - 0.5).abs() < 1e-12);
+        assert_eq!(freeze_dry_share(1e-5, 3e-3), FREEZE_DRY_FLOOR);
     }
 }

@@ -124,6 +124,10 @@ confirmed, the entry says so.
   multi-decadal experiments. *Clim. Dyn.* 20, 175–191.
   [doi:10.1007/s00382-002-0268-2](https://doi.org/10.1007/s00382-002-0268-2)
   — SPEEDY: clouds from relative humidity and convective rain.
+- **Vavrus, S. & Waliser, D. (2008).** An improved parameterization for
+  simulating Arctic cloud amount in the CCSM3 climate model. *J. Climate.*
+  [doi:10.1175/2008JCLI2299.1](https://doi.org/10.1175/2008JCLI2299.1)
+  — "freeze-dry": low cloud thins in air below 3 g/kg of water vapour.
 
 ## Surface and boundary layer
 

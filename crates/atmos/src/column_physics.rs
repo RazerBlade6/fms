@@ -763,6 +763,8 @@ struct SurfaceFlux {
     skin: f64,
     /// The ice tile's surface temperature they were computed at (K).
     ice_skin: f64,
+    /// The bottom layer's air brought dry-adiabatically to the surface (K).
+    air: f64,
     /// Sensible heat (W m⁻², upward).
     sensible: f64,
     /// Evaporation (kg m⁻² s⁻¹).
@@ -1331,6 +1333,7 @@ impl<'a> ColumnPhysics<'a> {
                     tiles,
                     skin,
                     ice_skin,
+                    air,
                     sensible,
                     evaporation,
                     drag: mean.drag + hill_drag,
@@ -2009,6 +2012,12 @@ impl Forcing for ColumnPhysics<'_> {
                     .iter()
                     .map(|m| m.convective_boundary * DAY)
                     .collect(),
+            ),
+            field(
+                "atm.surface_air_temperature",
+                "The bottom layer's air brought dry-adiabatically to the surface",
+                "K",
+                self.surface.iter().map(|s| s.air).collect(),
             ),
             field(
                 "atm.boundary_layer_export",

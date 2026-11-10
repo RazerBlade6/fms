@@ -136,8 +136,10 @@ the layer's mean humidity.
 - **Rain or snow** by surface air temperature, a ramp over 271.15–275.15 K.
 - **Clouds**: two sheets at σ 0.3 and 0.9, each from the relative humidity of the
   layer it lies in. Cover ramps linearly (0.45–0.85 high, 0.5–1.0 low); deep
-  convection adds anvils to the high sheet, `0.15 √(mm/day)` up to 0.6. Albedo
-  0.4 and 0.5; longwave emissivity 0.8 and 1.
+  convection adds anvils to the high sheet, `0.15 √(mm/day)` up to 0.6. Low
+  cloud thins in air below 3 g/kg, in proportion down to 0.15 of its cover
+  ("freeze-dry", Vavrus & Waliser 2008). Albedo 0.4 and 0.5; longwave
+  emissivity 0.8 and 1.
 
 ## Boundary layer (`surface_layer`)
 

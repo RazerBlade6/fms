@@ -191,11 +191,18 @@ more). Going from 2.5k to 10k cells doesn't fix it. Dry-soil surface air is also
 buoyant as if saturated, in `exchange`.
 
 ### O-33: The snow pack is simple
-*Watching; M2.11.7, M2.15, M4.* No heat capacity or insulation, frost lands as liquid in
-the bucket, rain passes through, and nothing limits the pack on ice sheets (1627 kg/m²
-mean after six years, 3013 at most). Antarctica south of 75° is 242.7 K, about 18 K
-above the ~224 K noted from memory. Untested causes: cloud, terrain ~800 m too low at
-2.5k cells, no surface inversion, no snow insulation.
+*Watching; M2.15, M4.* No heat capacity or insulation, frost lands as liquid in the
+bucket, rain passes through, and nothing limits the pack on ice sheets (1627 kg/m² mean
+after six years, 3013 at most). Antarctic land south of 75° is 236.9 K, still ~13 K above
+the ~224 K noted from memory. M2.11.7 tested one cause at a time, against twin-run noise
+of 0.01 K (annual), ~1 K (seasonal) and 1.6 K over Greenland:
+- clear skies over ice sheets, a bound: −11.9 K;
+- freeze-dry low cloud, adopted: −7.1 K from 244.0 K, and the 60–80°N winter −4.4 K;
+- stability across the whole bottom layer: +0.7 K, the planet +2.4 K. The 1.2 km layer
+  warms and radiates down; a shallow inversion needs more layers;
+- ice-sheet skin conductance 7 → 1 W/m²/K (insulation): +0.5 K.
+
+Untested: terrain ~800 m too low at 2.5k cells.
 
 ### O-34: More rain on the lee of a ridge than the windward side
 *Scheduled: M2.15.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
