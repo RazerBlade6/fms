@@ -151,7 +151,7 @@ The layers, diffusion and sea ice are built ([DESIGN.md](DESIGN.md)). Still to
 build (M2 step 12), all as fluxes across cell edges so the budget closes:
 
 - **Ekman transport** from the surface wind stress,
-  `M = (ετ + f k×τ)/(ε² + f²)`, blending into the Sverdrup transport of the
+  `M = (ετ − f k×τ)/(ε² + f²)`, blending into the Sverdrup transport of the
   wind-stress curl near the equator, with the deep layer's return flow and the
   vertical exchange it implies.
 - **Gent–McWilliams** eddy transport along the isotherm slope between layers.

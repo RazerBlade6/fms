@@ -1,0 +1,883 @@
+% fms-climate: the model's equations, for review.
+% Standard packages only; compiles with pdfLaTeX (for example on Overleaf).
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\pd}[2]{\frac{\partial #1}{\partial #2}}
+\newcommand{\dv}[2]{\frac{\dd #1}{\dd #2}}
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\kvec}{\hat{\vect{k}}}
+\newcommand{\clamp}{\operatorname{clamp}}
+\newcommand{\planned}{\textbf{Planned; not implemented.} }
+
+\title{\texttt{fms-climate}: Model Equations}
+\date{Model state at roadmap step M2.11.6}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\texttt{fms-climate} is a simplified general circulation model for theoretical
+planets. It solves the primitive equations on an icosahedral Voronoi grid and
+couples them to semi-grey radiation, prognostic moisture, a boundary layer, land,
+snow, a two-layer slab ocean and thermodynamic sea ice. This document states the
+equations as the code implements them. Section~\ref{sec:planned} lists equations
+for subsystems not yet built, and is marked as such. Numbers are the default
+values; those fitted rather than taken from first principles are collected in
+Appendix~\ref{app:calibrated}.
+\end{abstract}
+
+\tableofcontents
+
+\section{Notation and conventions}
+
+SI units throughout. Layers are numbered from the top, $k = 1,\dots,N$, so layer
+$N$ touches the surface. Interface $k+\tfrac12$ separates layers $k$ and $k+1$.
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Symbol & Meaning \\
+\midrule
+$a$, $g$, $\Omega$ & planet radius, gravity, rotation rate \\
+$f = 2\Omega\sin\varphi$ & Coriolis parameter at latitude $\varphi$ \\
+$p_s$, $\sigma = p/p_s$ & surface pressure, vertical coordinate \\
+$\delta\sigma_k$, $\delta p_k = \delta\sigma_k p_s$ & layer thickness \\
+$m_k = \delta\sigma_k p_s / g$ & layer mass per unit area \\
+$\theta_k$, $T_k$, $q_k$ & potential temperature, temperature, specific humidity \\
+$p_0 = 10^5$\,Pa & reference pressure \\
+$R = 287.04$, $c_p = 1004.64$, $\kappa = R/c_p$ & dry-air constants \\
+$\Pi(p) = (p/p_0)^\kappa$, $P_k$ & Exner function, layer-mean Exner function \\
+$L_v = 2.5\times10^6$, $L_f = 3.34\times10^5$ & latent heats (J\,kg$^{-1}$) \\
+$R_v = 461.5$, $\varepsilon_w = 0.622$ & vapour gas constant, molar mass ratio \\
+$\sigma_{\mathrm{SB}}$ & Stefan--Boltzmann constant \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Time $t = 0$ is the northern vernal equinox, at midnight at longitude
+$0$. The clamp function is
+$\clamp(x; a, b) = \min(\max(x, a), b)$.
+
+\section{Grid and discrete operators}
+
+\subsection{Mesh}
+Both grids are subdivided icosahedra with $10 f_g^2 + 2$ cells at frequency $f_g$,
+optimized into a spherical centroidal Voronoi tessellation by Lloyd iteration:
+\begin{equation}
+\vect{x}_i \leftarrow
+  \frac{\int_{V_i} \vect{x}\,\dd A}{\left\lVert\int_{V_i} \vect{x}\,\dd A\right\rVert},
+\end{equation}
+applied at successive refinement levels (multilevel Lloyd).
+
+\subsection{C-grid operators (TRiSK)}
+Scalars live at cells $i$, the normal velocity $u_e$ at edges $e$, and vorticity
+at vertices $v$. An edge has Voronoi length $l_e$, centre distance $d_e$, and
+rhombus area $A_e = l_e d_e/2$. Signs $n_{e,i}, t_{e,v} = \pm1$ orient edges
+relative to cells and vertices. Following Thuburn et al.\ (2009) and Ringler et
+al.\ (2010):
+\begin{align}
+(\nabla h)_e &= \frac{h_{c_2(e)} - h_{c_1(e)}}{d_e}, &
+(\nabla\cdot F)_i &= \frac{1}{A_i}\sum_{e\in i} n_{e,i}\, l_e F_e, \\
+\zeta_v &= \frac{1}{A_v}\sum_{e\in v} t_{e,v}\, d_e u_e, &
+K_i &= \frac{1}{A_i}\sum_{e\in i}\frac{A_e}{2}\,u_e^2, \\
+v_e &= \frac{1}{d_e}\sum_{e'} w_{e,e'}\, l_{e'} u_{e'}, &
+(qF^\perp)_e &= \frac{1}{d_e}\sum_{e'} w_{e,e'}\, l_{e'} F_{e'}\,
+    \frac{q_e + q_{e'}}{2},
+\end{align}
+with antisymmetric weights $w_{e,e'}$, so the potential-vorticity flux does no
+work. The operators keep these identities to round-off on any mesh:
+\begin{gather}
+\nabla\times\nabla h = 0, \qquad
+\sum_i A_i (\nabla\cdot F)_i = 0, \\
+\sum_e 2A_e (\nabla h)_e F_e = -\sum_i A_i h_i (\nabla\cdot F)_i, \qquad
+\sum_i A_i K_i = \sum_e A_e u_e^2 .
+\end{gather}
+Cell-centre vectors, used for diagnostics and the surface wind, come from Perot's
+reconstruction with $\vect{x}_e$ projected onto the tangent plane at $\vect{x}_i$:
+\begin{equation}
+\vect{u}_i = \frac{1}{A_i}\sum_{e\in i} n_{e,i}\, l_e u_e\,(\vect{x}_e - \vect{x}_i).
+\end{equation}
+
+\subsection{Two-level transfer}
+Each fine cell $c$ belongs wholly to the coarse cell $C$ containing its centre:
+\begin{equation}
+\bar h_C = \frac{\sum_{c\in C} A_c h_c}{\sum_{c\in C} A_c}
+\quad\text{(intensive)}, \qquad
+H_C = \sum_{c\in C} h_c \quad\text{(extensive)} .
+\end{equation}
+Coarse-to-fine transfer is barycentric interpolation on the coarse Delaunay
+triangle containing the fine cell.
+
+\subsection{Terrain}
+With $z = \max(\text{elevation}, 0)$, each climate cell has the area-weighted mean
+$\bar z$, the standard deviation $\sigma_z$, and the land fraction $\ell$. The
+atmosphere sees $\bar z$ after ten passes of a conservative diffusion:
+\begin{equation}
+\bar z_i \leftarrow \bar z_i + 0.08\,\frac{A_{\min}}{A_i}
+  \sum_{e\in i} \frac{l_e}{d_e}\,(\bar z_{j(e)} - \bar z_i).
+\end{equation}
+
+\section{Orbit and insolation}
+
+Kepler's equation is solved by Newton iteration from $E_0 = M + e\sin M$, with $M$
+increasing linearly from its value at the vernal equinox:
+\begin{equation}
+E - e\sin E = M, \qquad
+\nu = 2\operatorname{atan2}\!\left(\sqrt{1+e}\,\sin\tfrac{E}{2},\
+      \sqrt{1-e}\,\cos\tfrac{E}{2}\right), \qquad
+\frac{r}{a_o} = 1 - e\cos E .
+\end{equation}
+Solar longitude and declination follow from the perihelion longitude $\lambda_p$
+and obliquity $\varepsilon_o$:
+\begin{equation}
+\lambda_s = \nu + \lambda_p, \qquad
+\sin\delta = \sin\varepsilon_o \sin\lambda_s .
+\end{equation}
+The rotation rate is set by the solar day $T_{\mathrm{sol}}$ and orbital period
+$T_{\mathrm{orb}}$. Stellar flux follows the inverse-square law:
+\begin{equation}
+\Omega = 2\pi\left(\frac{1}{T_{\mathrm{sol}}} + \frac{1}{T_{\mathrm{orb}}}\right), \qquad
+S_0 = 1361\,\frac{L}{a_o^2}\quad\text{(W\,m$^{-2}$; $L$ in $L_\odot$, $a_o$ in AU)} .
+\end{equation}
+Instantaneous and daily-mean insolation, with the Sun at mean solar time (the
+equation of time is ignored):
+\begin{align}
+Q &= S_0\left(\frac{a_o}{r}\right)^{2}\max(\hat{\vect{x}}\cdot\hat{\vect{s}},\,0), \\
+\bar Q &= \frac{S_0}{\pi}\left(\frac{a_o}{r}\right)^{2}
+  \left(h_0\sin\varphi\sin\delta + \cos\varphi\cos\delta\sin h_0\right), \qquad
+\cos h_0 = \clamp(-\tan\varphi\tan\delta;\,-1,1).
+\end{align}
+
+\section{Dynamical core}
+
+\subsection{Continuous form}
+The model solves the hydrostatic primitive equations in vector-invariant form on
+$\sigma$ surfaces, for a dry ideal gas carrying passive water vapour:
+\begin{align}
+\pd{\vect{u}}{t} &= -(\zeta + f)\,\kvec\times\vect{u}
+  - \nabla(K + \Phi) - c_p\theta\nabla\Pi
+  - \dot\sigma\pd{\vect{u}}{\sigma} + \vect{F}_u, \\
+\pd{p_s}{t} &= -\int_0^1 \nabla\cdot(p_s\vect{u})\,\dd\sigma, \\
+\pd{(p_s\theta)}{t} &= -\nabla\cdot(p_s\vect{u}\theta)
+  - \pd{(p_s\dot\sigma\theta)}{\sigma} + \frac{p_s Q_\theta}{c_p\Pi}, \\
+\pd{(p_s q)}{t} &= -\nabla\cdot(p_s\vect{u}q)
+  - \pd{(p_s\dot\sigma q)}{\sigma} + p_s S_q, \\
+\pd{\Phi}{\Pi} &= -c_p\theta .
+\end{align}
+
+\subsection{Layered discretization}
+The prognostic variables are $p_s$ at cells, $u_{k}$ at edges, and the
+mass-weighted $\Theta_k = p_s\theta_k$ and $Q_k = p_s q_k$ at cells. Writing
+$F_k = \delta p_{k,e}\,u_k$, with $\delta p_{k,e}$ the two-cell mean at the edge,
+and $D_k = \nabla\cdot F_k$:
+\begin{align}
+\pd{p_s}{t} &= -\sum_k D_k, \\
+W_{k+\frac12} &= \sigma_{k+\frac12}\sum_{l>k} D_l
+   - \bigl(1-\sigma_{k+\frac12}\bigr)\sum_{l\le k} D_l , \\
+\delta\sigma_k\pd{\Theta_k}{t} &= -\nabla\cdot(F_k\theta_{k,e})
+   + W_{k-\frac12}\hat\theta_{k-\frac12} - W_{k+\frac12}\hat\theta_{k+\frac12}, \\
+\delta\sigma_k\pd{Q_k}{t} &= -\nabla\cdot(F_k q_{k,e})
+   + W_{k-\frac12}\hat q_{k-\frac12} - W_{k+\frac12}\hat q_{k+\frac12}, \\
+\pd{u_k}{t} &= (\eta_k F_k^\perp)_e - \nabla(K_k + \Phi_k)
+   - c_p\theta_{k,e}\nabla P_k + V_k, \\
+V_k &= -\frac{W_{k+\frac12,e}(u_{k+1}-u_k) + W_{k-\frac12,e}(u_k-u_{k-1})}
+   {2\,\delta p_{k,e}},
+\end{align}
+where $W_{k+\frac12} = p_s\dot\sigma$ is positive downward and vanishes at the
+top and the surface. The potential vorticity is
+$\eta_k = (\zeta_k + f)/\delta p_k$, and $\hat\theta_{k+\frac12} =
+\tfrac12(\theta_k + \theta_{k+1})$.
+
+Vertical differencing follows Arakawa \& Suarez (1983). The layer Exner function
+is the mass-weighted mean of $\Pi$:
+\begin{equation}
+P_k = \frac{p_{k+\frac12}\Pi_{k+\frac12} - p_{k-\frac12}\Pi_{k-\frac12}}
+   {(1+\kappa)\,\delta p_k}.
+\end{equation}
+The hydrostatic relation uses the same interface $\hat\theta$ as vertical
+advection, and the mean geopotential follows from integrating $\Phi\,\dd p$ by
+parts:
+\begin{equation}
+\Phi_k - \Phi_{k+1} = c_p\hat\theta_{k+\frac12}(P_{k+1} - P_k), \qquad
+\sum_k\delta\sigma_k\Phi_k = \Phi_s + c_p\kappa\sum_k\delta\sigma_k\theta_k P_k .
+\end{equation}
+This conserves total energy exactly in the spatial discretization,
+\begin{equation}
+\mathcal{E} = \sum_i A_i\left[\sum_k\frac{\delta p_k}{g}
+   \bigl(K_k + c_p\theta_k P_k\bigr) + \frac{p_s\Phi_s}{g}\right],
+\end{equation}
+and keeps an isentropic atmosphere at rest over terrain exactly at rest.
+
+The climate uses interior interfaces $\sigma = 0.25, 0.5, 0.85$.
+
+\subsection{Semi-implicit time stepping}
+About a resting reference ($\bar p$, $\bar\theta_k$), the gravity-wave terms are
+linear in $y = (p_s, \theta_1^L,\dots,\theta_N^L)$, with
+$\theta_k^L = (\Theta_k - \bar\theta_k p_s)/\bar p$, and the divergences
+$\delta_k = \nabla\cdot u_k$:
+\begin{equation}
+\pd{y}{t} = \mathsf{B}\delta, \qquad \pd{u_k}{t} = -\nabla M_k, \qquad M = \mathsf{J}y .
+\end{equation}
+The reference is isothermal at $\max(300\,\mathrm{K}, \text{warmest starting layer})$,
+with $\bar p$ the global-mean surface pressure (Simmons, Hoskins \& Burridge 1978).
+Linear terms $L$ are averaged over the outer levels and the remainder $N$ is
+explicit at the middle level; damping and forcing $D$ are lagged:
+\begin{equation}
+x^{n+1} = x^{n-1} + 2\Delta t\,N(x^n) + 2\Delta t\,D(x^{n-1})
+   + \Delta t\,L(x^{n+1} + x^{n-1}).
+\end{equation}
+Let $Y = y^{n-1} + 2\Delta t N_y + \Delta t\mathsf{B}\delta^{n-1}$ and
+$U_k = u_k^{n-1} + 2\Delta t N_u - \Delta t\nabla M_k(y^{n-1})$. Eliminating the
+new winds gives, with $\mathsf{A} = \mathsf{JB}$,
+\begin{equation}
+\left(\mathsf{I} + \Delta t^2\mathsf{A}\nabla^2\right)M^{n+1}
+   = \mathsf{J}Y + \Delta t\mathsf{A}\nabla\cdot U .
+\end{equation}
+$\mathsf{A}$ has eigenvalues $-c_m^2$, one external and $N-1$ internal gravity
+modes. For $N>2$ it is non-normal, so the general eigendecomposition is used. Each
+mode gives a Helmholtz problem, solved by Jacobi-preconditioned conjugate gradient
+to a relative residual of $10^{-8}$:
+\begin{equation}
+\left(\mathsf{I} - \Delta t^2 c_m^2\nabla^2\right)\tilde M_m = \tilde r_m .
+\end{equation}
+Then $u^{n+1} = U - \Delta t\nabla M^{n+1}$ and
+$y^{n+1} = Y + \Delta t\mathsf{B}\nabla\cdot u^{n+1}$.
+
+The RAW filter (Williams 2009), with $\nu_f = 0.05$ and $\alpha_f = 0.53$, is
+\begin{equation}
+d = \frac{\nu_f}{2}\left(x^{n-1} - 2x^n + x^{n+1}\right), \qquad
+x^n \mathrel{+}= \alpha_f d, \qquad x^{n+1} \mathrel{-}= (1-\alpha_f)\,d .
+\end{equation}
+The first step uses RK4 substeps. The step length is
+\begin{equation}
+\Delta t = C\min\!\left(\frac{d_{\min}}{U_{\max}},\ \frac{1}{|f|_{\max}}\right),
+\end{equation}
+with $C = 0.6$ and design wind $U_{\max} = 120$\,m\,s$^{-1}$ in the climate run,
+then shortened so that a whole number of steps fits in $86\,400$\,s.
+
+\subsection{Hyperdiffusion}
+With $L_c = \nabla\cdot\nabla$ on cells, $L_v = -\nabla\times\nabla^\perp$ on
+vertices, and $\nabla^\perp$ the tangential gradient of a vertex field, order $2n$ diffusion (default $n=2$) is
+\begin{align}
+\pd{u_k}{t} &= (-1)^{n+1}\nu\left[\nabla\bigl(L_c^{n-1}\delta_k\bigr)
+   - \nabla^\perp\bigl(L_v^{n-1}\zeta_k\bigr)\right], \\
+\pd{\Theta_k}{t} &= (-1)^{n+1}\nu\,\nabla\cdot\left[\hat p_s\nabla\bigl(L_c^{n-1}\theta_k\bigr)\right],
+\end{align}
+with $\hat p_s$ the surface pressure at edges. Surface pressure is not diffused.
+The climate run uses the strongest coefficient the lagged leapfrog allows with a
+factor-two margin, where $\lambda_c, \lambda_v$ are the largest eigenvalues of
+$-L_c$ and $-L_v$:
+\begin{equation}
+\Delta t\,\nu\max(\lambda_c,\lambda_v)^n = \tfrac12 .
+\end{equation}
+
+\subsection{Dissipative heating}
+A wind tendency $\delta u_e$ in layer $k$ changes kinetic energy at the rate
+$A_e\,\delta\sigma_k(p_a + p_b)\,u_e\,\delta u_e/g$, where $a, b$ are the edge's
+cells. That energy returns as heat, split equally between the two cells, so
+enthalpy gain cancels kinetic-energy loss exactly. Drag and entrainment heat the
+bottom layer.
+
+\subsection{Humidity transport}
+Humidity uses flux-corrected transport (Zalesak 1979) around the leapfrog step,
+from $n-1$ to $n+1$:
+\begin{enumerate}
+\item The low-order solution is upwind, from level $n-1$, in as many forward
+  substeps as keep each cell's outflow below 90\% of its water per substep.
+\item The high-order flux is centred at level $n$.
+\item Each antidiffusive flux (high minus low) is scaled by a factor in $[0,1]$, so
+  every cell stays within the range of $q$ at $n-1$, $n$ and the low-order solution,
+  over itself, its neighbours and adjacent layers.
+\end{enumerate}
+The mass fluxes are those the step used,
+\begin{equation}
+\bar F_k = F_k^n + \frac{\bar p\,\delta\sigma_k}{2}
+   \left(u_k^{n-1} + u_k^{n+1} - 2u_k^n\right),
+\end{equation}
+so a uniform $q$ stays uniform. Across interfaces, humidity is carried at
+$r_k q_k$, with $r_k$ the ratio of the layer's profile value at the interface to
+its mean (Section~\ref{sec:humidity-profile}): the upwind layer's value in the
+low-order flux and the mean of the two in the high-order flux.
+
+\section{Radiation}
+
+Radiation runs every 3\,h, with sunlight averaged over the coming interval. Layer
+heating $H_k$ (W\,m$^{-2}$) enters as
+\begin{equation}
+\pd{\Theta_k}{t} = \frac{g H_k}{c_p\,\delta\sigma_k P_k}.
+\end{equation}
+
+\subsection{Thermodynamic profiles}\label{sec:humidity-profile}
+Saturation vapour pressure uses Magnus forms over water ($T_c \ge 0$) and ice
+($T_c < 0$), with $T_c$ in $^\circ$C:
+\begin{equation}
+e^*(T) = \begin{cases}
+610.94\exp\!\left(\dfrac{17.625\,T_c}{T_c + 243.04}\right), & T_c \ge 0,\\[2ex]
+611.21\exp\!\left(\dfrac{22.587\,T_c}{T_c + 273.86}\right), & T_c < 0,
+\end{cases}
+\qquad
+q^*(T,p) = \frac{\varepsilon_w e}{p - (1-\varepsilon_w)e}, \quad e = \min(e^*, p/4).
+\end{equation}
+Within layer $k$, temperature follows a lapse rate $\Gamma = 6.5$\,K\,km$^{-1}$
+through the layer mean, and water follows the Manabe--Wetherald shape $s$ scaled so
+the layer holds $q_k$:
+\begin{equation}
+T(\sigma) = T_k\left(\frac{\sigma}{\bar\sigma_k}\right)^{\beta}, \quad
+\beta = \frac{R\Gamma}{g}, \quad
+\bar\sigma_k^{\,\kappa} = P_k\big|_{p_s = p_0}, \qquad
+s(\sigma) = \max\!\left(0, \frac{\sigma - 0.02}{0.98}\right),
+\end{equation}
+\begin{equation}
+q(\sigma) = A_k\,s(\sigma)\,q^*\bigl(T(\sigma), \sigma p_s\bigr), \qquad
+A_k = \frac{q_k}{\tilde q_k}, \qquad
+\tilde q_k = \frac{1}{\delta\sigma_k}\int_k s\,q^*\,\dd\sigma .
+\end{equation}
+Layer means use four-point Gauss--Legendre quadrature. The layer's relative
+humidity is $\mathrm{RH}_k = q_k/\bar q^*_k$, where
+$\bar q^*_k = \delta\sigma_k^{-1}\int_k q^*\,\dd\sigma$.
+
+\subsection{Longwave}
+The spectrum in wavenumber $\tilde\nu$ (cm$^{-1}$) is split into grey intervals.
+The CO$_2$ band overrides the others where they overlap:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Interval & Range (cm$^{-1}$) & Slab optical depth \\
+\midrule
+CO$_2$ band & $667 \pm W/2$ & $\tau = 50\,\delta\sigma$ \\
+Window & $800$--$1200$ & $\tau = 0.03\int q\,(e/1\,\mathrm{kPa})\,\dd p/g$ \\
+Water cores & $<550$, $>1400$ & $\tau_m = 60\,b_m\int q\,(p/p_0)\,\dd p/g$ \\
+Water edges & $550$--$800$, $1200$--$1400$ & $\tau_m = 0.02\times60\,b_m\int q\,(p/p_0)\,\dd p/g$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The water intervals use a four-term $k$-distribution with equal shares
+$\tfrac14$ and $b_m = 10, 1, 0.1, 0.01$. The band width, with
+$u = (C/C_0)(p_s/p_0)^2(g_0/g)$, $g_0 = 9.81$\,m\,s$^{-2}$, $C_0 = 400$\,ppm, $W_0 = 160$\,cm$^{-1}$ and
+$l = 30$\,cm$^{-1}$, is
+\begin{equation}
+W = 2l\ln\!\left[1 + \left(e^{W_0/2l} - 1\right)u\right],
+\end{equation}
+which tends to the band-wing law $W_0 + 2l\ln u$ for a thick band and is linear in
+$u$ for traces. The Planck emission of interval $[\tilde\nu_a, \tilde\nu_b]$ is
+exact, from series for the integral, with $c_2 = hc/k_B$:
+\begin{equation}
+B(T) = \sigma_{\mathrm{SB}}T^4\,\frac{15}{\pi^4}
+   \left[G\!\left(\frac{c_2\tilde\nu_a}{T}\right)
+       - G\!\left(\frac{c_2\tilde\nu_b}{T}\right)\right], \qquad
+G(x) = \int_x^\infty\frac{t^3}{e^t - 1}\,\dd t .
+\end{equation}
+The source is linear in optical depth across each layer. An interface takes the
+temperature of the layer below along its profile, the bottom edge of layer $N$ is
+that profile at $\sigma = 1$, and the top of layer 1 is at $T_1$. A slab with
+transmissivity $t = e^{-\tau}$ and edge values $B_{\mathrm{t}}, B_{\mathrm{b}}$
+emits
+\begin{equation}
+E^\uparrow = (1-t)B_{\mathrm{t}} + \mathcal{S}(B_{\mathrm{b}} - B_{\mathrm{t}}), \qquad
+E^\downarrow = (1-t)B_{\mathrm{b}} - \mathcal{S}(B_{\mathrm{b}} - B_{\mathrm{t}}), \qquad
+\mathcal{S} = \frac{1 - e^{-\tau}(1+\tau)}{\tau}.
+\end{equation}
+A cloud sheet of emissivity $\epsilon$ has $t = 1-\epsilon$ and
+$E^\uparrow = E^\downarrow = \epsilon B(T_c)$. With elements numbered from the top
+and a black surface:
+\begin{equation}
+F^\uparrow_{j} = t_j F^\uparrow_{j+1} + E^\uparrow_j, \qquad
+F^\downarrow_{j+1} = t_j F^\downarrow_j + E^\downarrow_j, \qquad
+F^\downarrow_0 = 0, \quad F^\uparrow_{\mathrm{sfc}} = B(T_s).
+\end{equation}
+
+\subsection{Shortwave}
+Two bands are solved by the adding method: visible (65\% of sunlight; ozone in the
+top slab only) and near-infrared (35\%; water vapour). Along $m$ air masses, with
+$m = 1/\mu = 2$ for the direct beam and $m = 1.66$ for diffuse light,
+\begin{equation}
+t^{\mathrm{vis}}_{1} = e^{-0.046\,m}, \qquad
+t^{\mathrm{nir}}_j = \exp\!\left[-0.062\left(\sqrt{m\mathcal{W}_{j+1}}
+   - \sqrt{m\mathcal{W}_j}\right)\right],
+\end{equation}
+with $\mathcal{W}_j$ the cumulative water path from the top (kg\,m$^{-2}$), so
+column absorption does not depend on the layering. Sheets (clouds, and a Rayleigh
+sheet $r = 0.06$ at $\sigma = \tfrac12$) reflect $r$ and transmit $1-r$ without
+absorbing. For direct beam $D_j$ (with $D_{j+1} = t^{\mathrm{dir}}_j D_j$), and
+surface albedo $\alpha$, the upward recursion is
+\begin{equation}
+\mathcal{R}_{J} = \alpha, \quad \mathcal{U}_{J} = \alpha D_{J}; \qquad
+\mathcal{R}_j = r_j + \frac{t_j^2\mathcal{R}_{j+1}}{1 - r_j\mathcal{R}_{j+1}}, \quad
+\mathcal{U}_j = \frac{t_j\mathcal{U}_{j+1}}{1 - r_j\mathcal{R}_{j+1}} + r_j D_j,
+\end{equation}
+and the downward recursion is
+\begin{equation}
+F^\downarrow_{j+1} = \frac{t_j F^\downarrow_j + r_j\mathcal{U}_{j+1}}{1 - r_j\mathcal{R}_{j+1}},
+\qquad F^\uparrow_j = \mathcal{R}_j F^\downarrow_j + \mathcal{U}_j .
+\end{equation}
+A slab absorbs $(D_j - D_{j+1}) + (1-t_j)(F^\downarrow_j + F^\uparrow_{j+1})$, and
+the surface absorbs $(1-\alpha)(F^\downarrow_J + D_J)$.
+
+\section{Moisture and clouds}
+
+\subsection{Convection (Betts--Miller)}
+A parcel leaves the surface with $T_a = \theta_N\Pi(p_s)$ and
+$q_a = \clamp(q_N; 0, q^*(T_a,p_s))$. It rises with midpoint steps of at most 0.05
+in $\ln p$:
+\begin{equation}
+\dv{T}{\ln p} = \begin{cases}
+\kappa T, & q < q^*,\\[1ex]
+\dfrac{RT + L_v q^*}{c_p + L_v^2 q^*/(R_v T^2)}, & q \ge q^* .
+\end{cases}
+\end{equation}
+Its layer-mean temperature is the reference $T^{\mathrm{r}}_k$. In layer 1 it is
+bounded below by $T_{\mathrm{str}} = (\mathrm{OLR}/2\sigma_{\mathrm{SB}})^{1/4}$. If
+$T^{\mathrm{r}}_k > T_k$ for some $k < N$, let $k_t$ be the smallest such $k$. For
+$k \ge k_t$, with $\tau_{\mathrm{c}} = 2$\,h and $\mathrm{RH}_{\mathrm{c}} = 0.7$:
+\begin{equation}
+\dot T_k = \begin{cases}(T^{\mathrm{r}}_k - T_k)/\tau_{\mathrm{c}}, & k < N,\\ 0, & k = N,\end{cases}
+\qquad
+\dot q_k = \frac{\mathrm{RH}_{\mathrm{c}}\,\tilde q^{\mathrm{r}}_k - q_k}{\tau_{\mathrm{c}}},
+\qquad
+P_{\mathrm{c}} = -\sum_{k\ge k_t} m_k\dot q_k .
+\end{equation}
+If $P_{\mathrm{c}} > 0$ (deep), it rains and the cloud layers ($k_t \le k < N$) shift
+uniformly, so that heating equals the latent heat released:
+\begin{equation}
+\dot T_k \mathrel{+}= \frac{L_v P_{\mathrm{c}} - c_p\sum_{l\ge k_t} m_l\dot T_l}
+   {c_p\sum_{k_t\le l<N} m_l}.
+\end{equation}
+Otherwise (shallow), enthalpy and water are conserved. Moistening tendencies are
+scaled by the drying they can draw on, and heating is redistributed over the
+cloud layers $k_t \le k < N$:
+\begin{equation}
+\dot q_k \mathrel{\times}= \frac{\sum_{\dot q<0}m_l|\dot q_l|}{\sum_{\dot q>0}m_l\dot q_l}
+   \quad(\dot q_k > 0), \qquad
+\dot T_k \mathrel{+}= -\frac{\sum_{l\ge k_t}m_l\dot T_l}{\sum_{k_t\le l<N}m_l}.
+\end{equation}
+
+\subsection{Large-scale condensation and re-evaporation}
+With threshold $\mathrm{RH}^{\mathrm{t}}_k$ linear in layer-centre $\sigma$ through
+$(0.25, 0.45)$, $(0.75, 0.7)$ and $(0.925, 0.9)$, and $\tau_{\mathrm{ls}} = 4$\,h,
+\begin{equation}
+\dot q_k = -\frac{1}{\tau_{\mathrm{ls}}}\,
+  \frac{\max\bigl(q_k - \mathrm{RH}^{\mathrm{t}}_k\bar q^*_k,\ 0\bigr)}
+       {1 + \mathrm{RH}^{\mathrm{t}}_k\dfrac{L_v}{c_p}\dv{\bar q^*}{T}}, \qquad
+\dot T_k = -\frac{L_v}{c_p}\dot q_k, \qquad
+\dv{\bar q^*}{T} = \frac{L_v\bar q^*}{R_v T_k^2}.
+\end{equation}
+Stratiform rain falling into layer $k$ at rate $R_k$ re-evaporates at
+\begin{equation}
+E^{\mathrm{r}}_k = \min\!\left[0.5\,\clamp(1-\mathrm{RH}_k; 0,1)\,R_k,\
+  \max\!\left(\frac{(\mathrm{RH}^{\mathrm{t}}_k\bar q^*_k - q_k)\,m_k}{\tau_{\mathrm{ls}}},\ 0\right)\right].
+\end{equation}
+
+\subsection{Rain or snow}
+Precipitation reaching the ground is snow in the share
+$\clamp\bigl((275.15 - T_a)/4;\,0,1\bigr)$. Snow releases its fusion heat in layer
+$N$: $\dot T_N \mathrel{+}= L_f P_{\mathrm{snow}}/(c_p m_N)$.
+
+\subsection{Clouds}
+Two sheets, $b \in \{\text{high}, \text{low}\}$, at $\sigma = 0.3$ and $0.9$. Cover
+comes from the relative humidity of the layer the sheet lies in. Deep convection
+adds anvils to the high sheet, with $P_{\mathrm{c}}$ in mm\,day$^{-1}$:
+\begin{equation}
+c_b = \clamp\!\left(\frac{\mathrm{RH} - \mathrm{RH}_{b,1}}{\mathrm{RH}_{b,2} - \mathrm{RH}_{b,1}};\,0,1\right),
+\qquad
+c_{\mathrm{a}} = \min\bigl(0.15\sqrt{P_{\mathrm{c}}},\ 0.6\bigr),
+\qquad
+c_{\mathrm{high}} \leftarrow 1 - (1-c_{\mathrm{high}})(1-c_{\mathrm{a}}) .
+\end{equation}
+Reflectance is $c_b\alpha_b$ and emissivity is $c_b\epsilon_b$, with
+$(\mathrm{RH}_{b,1}, \mathrm{RH}_{b,2}, \alpha_b, \epsilon_b)$ equal to
+$(0.45, 0.85, 0.4, 0.8)$ for the high sheet and $(0.5, 1.0, 0.5, 1.0)$ for the low
+sheet.
+
+\section{Surface layer and boundary layer}
+
+\subsection{Exchange coefficients}
+Layer $N$ is well mixed, so surface air is $T_a = \theta_N\Pi(p_s)$ with
+density $\rho = p_s/(RT_a)$. With $z = 10$\,m, $k_v = 0.4$ and layer height
+$z_b$ (at least $2z$), the 10\,m wind and effective speed are
+\begin{equation}
+V_{10} = \frac{\ln(z/z_0)}{\ln(z_b/z_0)}\,|\vect{v}_N|, \qquad
+V = \sqrt{V_{10}^2 + (1.2\,w_*)^2 + 1},
+\end{equation}
+and the neutral coefficient, for roughness lengths $z_x$ and $z_y$, is
+$C_n(z_x,z_y) = k_v^2/[\ln(z/z_x)\ln(z/z_y)]$. Over open water, four fixed-point
+passes on $u_* = \sqrt{C_D}\,V$ give, with $\nu_a = 1.5\times10^{-5}$\,m$^2$\,s$^{-1}$
+and $\alpha_c = 0.018$ (and $u_*$ floored at $10^{-3}$),
+\begin{equation}
+z_0 = \alpha_c\frac{u_*^2}{g} + 0.11\frac{\nu_a}{u_*}, \qquad
+z_{0h} = 0.40\frac{\nu_a}{u_*}, \qquad z_{0q} = 0.62\frac{\nu_a}{u_*}.
+\end{equation}
+Over land and ice, $z_{0h} = z_{0q} = 0.1\,z_0$. Stability uses the bulk Richardson
+number with virtual potential temperatures $\theta_v$:
+\begin{equation}
+\mathrm{Ri} = \frac{gz(\theta_{v,a} - \theta_{v,s})}{\tfrac12(\theta_{v,a} + \theta_{v,s})V^2},
+\end{equation}
+\begin{equation}
+(f_m, f_h) = \begin{cases}
+\left(\dfrac{1}{1 + 10\,\mathrm{Ri}},\ \dfrac{1}{1 + 10\,\mathrm{Ri}}\right), & \mathrm{Ri} \ge 0,\\[2.5ex]
+\left(1 - \dfrac{10\,\mathrm{Ri}}{1+c},\ 1 - \dfrac{15\,\mathrm{Ri}}{1+c}\right), &
+\mathrm{Ri} < 0,\quad c = 75\,C_n(z_0,z_0)\sqrt{-\mathrm{Ri}\,z/z_0},
+\end{cases}
+\end{equation}
+so $C_D = C_n(z_0,z_0)f_m$, $C_H = C_n(z_0,z_{0h})f_h$ and $C_E = C_n(z_0,z_{0q})f_h$.
+
+\subsection{Bulk fluxes}
+\begin{gather}
+\tau = \rho C_D V V_{10}, \qquad
+H = \rho c_p C_H V (T_s - T_a), \\
+E = \rho C_E V \bigl(q^*(T_s,p_s) - q_N\bigr)\,\beta_w,
+\end{gather}
+with $\beta_w$ the surface's water supply (1 over water and ice, and for dew).
+
+\subsection{Boundary-layer top}
+With layer depth $h$, the convective velocity includes cloud-top longwave cooling
+$C_t \ge 0$ (the all-sky minus clear-sky cooling of layer $N$):
+\begin{equation}
+w_*^3 = \max\!\left\{0,\ \frac{gh}{\theta_N}\left[\frac{H + C_t}{\rho c_p}
+   + 0.608\,\frac{\theta_N E}{\rho}\right]\right\}.
+\end{equation}
+Entrainment (Lilly 1968; Deardorff 1979), with $A = 0.2$ and a cap of
+0.05\,m\,s$^{-1}$, is
+\begin{equation}
+w_e = \min\!\left(\frac{A w_*^3}{h\,\Delta b},\ 0.05\right), \qquad
+\Delta b = \frac{g\max(\Delta\theta_v, 0)}{\theta_{v,N}},
+\end{equation}
+where $\Delta\theta_v$ is the jump in virtual potential temperature at the layer's
+top, with the layer above extrapolated down along $\Gamma$. If a surface parcel
+lifted to the top is saturated and still buoyant, shallow cumulus add a mass flux
+$M_c = 0.03\,\rho_t w_*$ (Grant 2001). With $\mathcal{M} = \rho_t w_e + M_c$, $a$
+the layer above $N$, and $\Pi_t$ the Exner function at the layer's top:
+\begin{align}
+H_N &\mathrel{+}= H + \rho_t w_e c_p\Pi_t(\theta_a - \theta_N), &
+H_a &\mathrel{-}= \rho_t w_e c_p\Pi_t(\theta_a - \theta_N), \\
+\pd{Q_N}{t} &\mathrel{+}= \frac{g}{\delta\sigma_N}\bigl[E + \mathcal{M}(q_a - q_N)\bigr], &
+\pd{Q_a}{t} &\mathrel{-}= \frac{g\mathcal{M}(q_a - q_N)}{\delta\sigma_a}, \\
+\pd{u_N}{t} &\mathrel{+}= -\mathcal{D}u_N + \frac{g\mathcal{M}}{p_s\,\delta\sigma_N}(u_a - u_N), &
+\pd{u_a}{t} &\mathrel{-}= \frac{g\mathcal{M}}{p_s\,\delta\sigma_a}(u_a - u_N),
+\end{align}
+where the drag rate is $\mathcal{D} = g\rho C_D V r_{10}/(p_s\,\delta\sigma_N)$ plus
+the hill drag of Section~\ref{sec:hills}, and $r_{10} = V_{10}/|\vect{v}_N|$.
+
+\section{Surface tiles and land}
+
+\subsection{Tiles}
+Each cell has ocean, land and ice tiles with weights
+$w_O = (1-\ell)(1-f_i)$, $w_L = \ell$ and $w_I = (1-\ell)f_i$. Radiation sees
+$\bar\alpha_b = \sum_t w_t\alpha_{t,b}$ and $T_{\mathrm{rad}}^4 = \sum_t w_tT_t^4$, and
+divides its fluxes conservatively among the tiles:
+\begin{equation}
+S_t = \sum_{b}S_b\,\frac{1-\alpha_{t,b}}{1-\bar\alpha_b}, \qquad
+F^\uparrow_t = F^\uparrow\,\frac{T_t^4}{T_{\mathrm{rad}}^4}.
+\end{equation}
+Radiation is refreshed less often than skin temperatures change. Land and ice emit
+at their current skin temperature, and layer $N$ receives
+$w_L(\sigma_{\mathrm{SB}}T_L^4 - F^\uparrow_L) + w_I(\sigma_{\mathrm{SB}}T_I^4 - F^\uparrow_I)$.
+
+\subsection{Land energy}
+A skin with no heat capacity lies over a soil store of capacity
+$C_g = 2.5\times10^6$\,J\,m$^{-3}$\,K$^{-1}\times 1$\,m, with conductance
+$\Lambda = 7$\,W\,m$^{-2}$\,K$^{-1}$. The soil's warming during the step is included
+through $\tilde\Lambda = \Lambda/(1 + \Lambda\Delta t/C_g)$. A bracketed secant
+iteration solves for the skin:
+\begin{equation}
+S_L + F^\downarrow - \sigma_{\mathrm{SB}}T^4 - H(T) - L\,E(T) - \tilde\Lambda(T - T_g) = 0,
+\end{equation}
+with $L = L_v + L_f$ when snow is present and $L_v$ otherwise, and $T$ capped at
+$T_m = 273.15$\,K under snow. The soil then takes exactly the net flux the atmosphere
+was given:
+\begin{equation}
+C_g\frac{\Delta T_g}{\Delta t} = S_L + F^\downarrow - \sigma_{\mathrm{SB}}T^4 - H - L_vE
+   - L_f E_s - L_f M .
+\end{equation}
+
+\subsection{Soil water and snow}
+Evaporation is limited by a Manabe bucket, $W_{\max} = 150$\,mm:
+\begin{equation}
+\beta_w = \min\!\left(\frac{W + S}{0.75\,W_{\max}},\ 1\right)
+\quad\text{(1 for dew)}.
+\end{equation}
+Sublimation takes snow first, $E_s = \clamp(E; 0, (S + \Delta t P_s)/\Delta t)$. A skin
+held at $T_m$ melts snow with the energy left after conduction, $\mathcal{G}$
+being the net surface flux after $L_f E_s$:
+\begin{equation}
+M = \min\!\left(\frac{\max\bigl(\mathcal{G} - \tilde\Lambda(T_m - T_g),\ 0\bigr)}{L_f},\
+   \frac{S + \Delta tP_s}{\Delta t} - E_s\right),
+\end{equation}
+\begin{equation}
+\dv{S}{t} = P_s - E_s - M, \qquad
+\dv{W}{t} = P_r - E + E_s + M - \mathcal{R},
+\end{equation}
+with runoff $\mathcal{R}$ the overflow above $W_{\max}$, which leaves the planet's
+water until rivers exist. Land albedo in both bands, with
+$\alpha_g = 0.2$, is
+\begin{equation}
+\alpha_L = \begin{cases}
+0.82, & \text{ice sheet},\\
+\alpha_g + \min(S/10,\ 1)\,(0.65 - \alpha_g), & \text{otherwise}.
+\end{cases}
+\end{equation}
+Land is an ice sheet ($z_0 = 1$\,mm, else $0.1$\,m) once fully covered ($S \ge
+10$\,kg\,m$^{-2}$) for a year; losing full cover restarts the clock. Land starting
+below 267\,K starts as a sheet under $S = 1000$\,kg\,m$^{-2}$.
+
+\subsection{Sub-grid hills}\label{sec:hills}
+Upslope ascent, with $\sigma_z$ the sub-grid height spread, rains out of layer $N$
+(Smith 1979):
+\begin{gather}
+w_o = 0.5\,\min\!\left(\frac{\sigma_z}{500\,\mathrm{m}},\ 1\right)
+   \max(\vect{v}_N\cdot\nabla\bar z,\ 0), \\
+\dot q_N = -q_N\,\clamp\!\left(\frac{\mathrm{RH}_N - 0.5}{0.5};\,0,1\right)
+   \min\!\left(\frac{\rho w_o}{m_N},\ \frac{1}{\tau_{\mathrm{ls}}}\right),
+\qquad \dot T_N = -\frac{L_v}{c_p}\dot q_N .
+\end{gather}
+The spread also adds a drag on layer $N$ (a simplified Lott \& Miller 1997), whose
+kinetic energy heats the boundary layer:
+\begin{equation}
+\mathcal{D}_h = \min\!\left(\frac{g\rho\,\sigma_z|\vect{v}_N|}{s\,p_s\,\delta\sigma_N},\
+   \frac{1}{3\,\mathrm{h}}\right), \qquad s = 100\,\mathrm{km}.
+\end{equation}
+
+\section{Ocean}
+
+Each cell with ocean has a mixed layer ($h_m = 50$\,m, temperature $T_m$) over a deep
+layer ($h_d = 150$\,m, $T_d$), with $\rho_w = 1026$, $c_w = 3994$, and capacities
+$C_m = \rho_wc_wh_m$ and $C_d = \rho_wc_wh_d$. Open water takes the net surface flux:
+\begin{equation}
+C_m\pd{T_m}{t} = (1-f_i)\bigl[S_O + F^\downarrow - F^\uparrow_O - H - L_vE - L_fP_s\bigr].
+\end{equation}
+Both layers diffuse with $\kappa_h = 2000$\,m$^2$\,s$^{-1}$. Across edges where both
+cells have ocean, the opening is the smaller ocean fraction, and $\mathcal{A}_i =
+(1-\ell_i)A_i$ is the ocean area:
+\begin{equation}
+\pd{T_i}{t} = \frac{\kappa_h}{\mathcal{A}_i}\sum_{e\in i}
+   \min(1-\ell_i,\ 1-\ell_j)\,\frac{l_e}{d_e}\,(T_j - T_i).
+\end{equation}
+Substeps keep the explicit diffusion number at or below 0.5. If $T_d > T_m$, both
+layers take their mass-weighted mean, $(h_mT_m + h_dT_d)/(h_m + h_d)$. The deep layer
+starts no warmer than $277.15$\,K.
+
+\section{Sea ice}
+
+Each cell has an ice fraction $f_i$, mean thickness $h$, surface temperature $T_{\mathrm{s}}$,
+interface temperature $T_{\mathrm{i}}$ and snow $s$ (kg per m$^2$ of ice), with profiles
+linear between boundary temperatures and $T_f = 271.35$\,K at the base. Constants:
+$\rho_i = 917$, $c_i = 2067$, $k_i = 2.17$, $\rho_s = 300$, $k_s = 0.31$.
+
+\subsection{Temperature}
+\begin{equation}
+G_i = \frac{k_i}{h}, \qquad G_s = \frac{k_s\rho_s}{s}, \qquad C_h = \tfrac12\rho_ic_ih .
+\end{equation}
+Above $s_c = 15$\,kg\,m$^{-2}$ snow is a separate layer, with $C_{\mathrm{i}} = C_h +
+\tfrac12c_is$ and $C_{\mathrm{s}} = \tfrac12c_is$. The interface responds linearly to the
+surface over a step:
+\begin{equation}
+T_{\mathrm{i}}^{+} = a + bT_{\mathrm{s}}^{+}, \qquad
+a = \frac{(C_{\mathrm{i}}/\Delta t)T_{\mathrm{i}} + G_iT_f}{C_{\mathrm{i}}/\Delta t + G_i + G_s}, \qquad
+b = \frac{G_s}{C_{\mathrm{i}}/\Delta t + G_i + G_s},
+\end{equation}
+and the surface solves its balance implicitly, in the same way as land, against
+\begin{equation}
+G = \frac{C_{\mathrm{s}}}{\Delta t} + G_s(1-b), \qquad
+T_{\mathrm{pull}} = \frac{(C_{\mathrm{s}}/\Delta t)T_{\mathrm{s}} + G_s a}{G}.
+\end{equation}
+Below $s_c$ the two temperatures are one, with $C_{\mathrm{i}} = C_h + c_is$, $G =
+C_{\mathrm{i}}/\Delta t + G_i$ and $T_{\mathrm{pull}} = [(C_{\mathrm{i}}/\Delta t)T + G_iT_f]/G$.
+Temperatures above $T_m$ are capped and the excess is stored for surface melt.
+
+\subsection{Ocean-to-ice heat}
+Heat reaches the ice from above freezing only:
+\begin{equation}
+F_o = \clamp\!\left(0.0057\,\rho_wc_wu_{*w}(T_m - T_f);\ 0,\ \frac{C_m(T_m-T_f)}{\Delta t}\right),
+\qquad
+u_{*w} = \max\!\left(\sqrt{\frac{(1-f_i)\tau}{\rho_w}},\ 5\times10^{-4}\right).
+\end{equation}
+
+\subsection{Growth and melt}
+Area and thickness change only at radiation calls. Using the melting energy of ice
+per unit volume, and the basal heat accumulated since the last call,
+\begin{equation}
+e = \rho_i\left[L_f + \tfrac12c_i(T_f - T_{\mathrm{i}})\right], \qquad
+B = \int\left[F_o - G_i(T_f - T_{\mathrm{i}})\right]\dd t,
+\end{equation}
+the volume per unit ocean area is $v = |B|f_i/e$. With $h_{\mathrm{th}} = 0.15$\,m,
+$h_{\mathrm{tk}} = 1.5$\,m and $h_{\max} = 10$\,m:
+\begin{itemize}
+\item \textbf{Growth} ($B<0$): $v$ first thickens ice up to $h_{\mathrm{tk}}$. Of the
+  rest, the share $\clamp\bigl((h-h_{\mathrm{tk}})/(h_{\max}-h_{\mathrm{tk}}); 0,1\bigr)$
+  spreads area, and the remainder thickens, up to $h_{\max}$.
+\item \textbf{Basal melt} ($B>0$): $v$ first thins ice down to $h_{\mathrm{tk}}$. Of the
+  rest, the share $\clamp\bigl((h-h_{\mathrm{th}})/(h_{\mathrm{tk}}-h_{\mathrm{th}}); 0,1\bigr)$
+  thins ice and the remainder removes area. Any heat left warms the ocean.
+\item \textbf{Surface melt}: heat takes snow at energy
+  $L_f + c_i(T_f - \tfrac12(T_{\mathrm{s}}+T_{\mathrm{i}}))$ per kg, then ice, thinning
+  first and then removing area, then warms the ocean.
+\item \textbf{New ice}: open water below $T_f$ forms $v = C_m(T_f - T_m)/e$ at
+  thickness $n = \max\bigl(0.15, \min(1, h)\bigr)$, so $\Delta f_i = v/n$ (bounded
+  by the limits on cover), and $T_m$ returns to $T_f$.
+\item \textbf{Flooding}: snow loading the ice below the waterline freezes into it,
+  with $\ell_o = s + \rho_ih - \rho_wh > 0$ and
+  $\Delta h = \ell_o/(\rho_w - \rho_i + \rho_s)$.
+\item \textbf{Snowfall}: the share $0.4(1-f_i)$ blows into the water and melts there.
+\end{itemize}
+
+\subsection{Albedo}
+For band $b$, with limits $\alpha_{\infty} = (0.57, 0.31)$ (visible, near-infrared)
+and open-water albedo $\alpha_w = 0.08$:
+\begin{equation}
+\alpha_{I,b} = c_s\,0.65 + (1-c_s)\left[\alpha_{\infty,b}
+   - (\alpha_{\infty,b} - \alpha_w)e^{-h/0.3}\right], \qquad
+c_s = \clamp(s/s_c;\,0,1).
+\end{equation}
+
+\section{Budgets and spin-up}
+
+\subsection{Energy and water}
+The atmosphere and the tiles use the same stored fluxes, so the following close up
+to the time-stepping residual:
+\begin{gather}
+\dv{}{t}\left[\mathcal{E}_{\mathrm{atm}} + L_v\mathcal{W}_{\mathrm{atm}} + \mathcal{H}_{\mathrm{ocean}}
+   + \sum_{\mathrm{land}}\ell(C_gT_g - L_fS)\right] = \mathrm{ASR} - \mathrm{OLR}, \\
+\dv{}{t}\left[\mathcal{W}_{\mathrm{atm}} + \sum_{\mathrm{land}}\ell(W+S)\right]
+   + \mathcal{R} = E_{\mathrm{ocean}} - P_{\mathrm{ocean}},
+\end{gather}
+with $\mathcal{H}_{\mathrm{ocean}} = C_mT_m + C_dT_d$ plus the ice's heat measured
+from water at $T_f$. Leapfrog advances two interleaved levels, and the water budget
+closes on their mean.
+
+\subsection{Ocean spin-up}
+The surface starts warmer where annual-mean sunlight $\bar Q$ exceeds its global
+mean, $T \leftarrow T + 40(\bar Q/\langle\bar Q\rangle - 1)$. By default, the
+ends of years 2 to 4 extrapolate each layer's change over the past year, with
+$Y = 3$\,yr and $\mathcal{L} = 3$\,K:
+\begin{equation}
+T \leftarrow \max\bigl(T + \clamp(Y(T - T_{\mathrm{prev}});\,-\mathcal{L},\mathcal{L}),\ T_f\bigr).
+\end{equation}
+Convective adjustment follows. A jump does not conserve heat, by design.
+
+\section{Test problems}
+
+\paragraph{Shallow water (Williamson et al.\ 1992, cases 2, 5, 6).}
+\begin{equation}
+\pd{h}{t} = -\nabla\cdot(h\vect{u}), \qquad
+\pd{\vect{u}}{t} = -(\zeta + f)\kvec\times\vect{u} - \nabla\bigl(g(h+b) + K\bigr).
+\end{equation}
+
+\paragraph{Held \& Suarez (1994).} Averaged over each layer's $\sigma$ range, with
+$\sigma_b = 0.7$, $k_f = 1$\,day$^{-1}$, $k_a = 1/40$\,day$^{-1}$, $k_s = 1/4$\,day$^{-1}$:
+\begin{gather}
+\pd{T}{t} = -k_T(T - T_{\mathrm{eq}}), \qquad \pd{\vect{u}}{t} = -k_v\vect{u}, \\
+T_{\mathrm{eq}} = \max\!\left\{200,\ \left[315 - 60\sin^2\varphi
+   - 10\ln\!\left(\frac{p}{p_0}\right)\cos^2\varphi\right]\left(\frac{p}{p_0}\right)^{\kappa}\right\}, \\
+k_T = k_a + (k_s-k_a)\,b(\sigma)\cos^4\varphi, \qquad k_v = k_f\,b(\sigma), \qquad
+b(\sigma) = \max\!\left(0, \frac{\sigma-\sigma_b}{1-\sigma_b}\right).
+\end{gather}
+
+\paragraph{Aqua-Planet Experiment SST.} For $|\varphi| < 60^\circ$, and $0\,^\circ$C poleward:
+\begin{equation}
+T_{\mathrm{CONTROL}} = 27\left(1 - \sin^2\tfrac{3\varphi}{2}\right)\,^\circ\mathrm{C}, \qquad
+T_{\mathrm{QOBS}} = 27\left[1 - \tfrac12\left(\sin^2\tfrac{3\varphi}{2}
+   + \sin^4\tfrac{3\varphi}{2}\right)\right]\,^\circ\mathrm{C}.
+\end{equation}
+
+\paragraph{Baroclinic growth (Phillips 1954).} Growth rates are compared with two-level
+quasi-geostrophic theory on the local $\beta$-plane.
+
+\paragraph{Stefan growth.} Sea-ice growth is tested against
+$h^2 = h_0^2 + 2k_i(T_f - T_s)t/(\rho_iL_f)$.
+
+\paragraph{Single-column cases.} BOMEX (Siebesma et al.\ 2003) and DYCOMS-II RF01
+(Stevens et al.\ 2005), with the column physics forced by each case's prescribed
+large-scale tendencies.
+
+\section{Planned subsystems}\label{sec:planned}
+
+\planned Everything in this section is design intent. Forms may change when built.
+
+\subsection{Ocean heat transport (roadmap M2 step 12)}
+After Codron (2012) and Bhatnagar et al.\ (2026). The wind-driven mass flux in the
+mixed layer, with friction $\epsilon = 10^{-5}$\,s$^{-1}$, is
+\begin{equation}
+\vect{M}_{\mathrm{Ek}} = \frac{\epsilon\vect{\tau} - f\,\kvec\times\vect{\tau}}{\epsilon^2 + f^2},
+\quad\text{that is}\quad
+M_x = \frac{\epsilon\tau_x + f\tau_y}{\epsilon^2+f^2}, \quad
+M_y = \frac{\epsilon\tau_y - f\tau_x}{\epsilon^2+f^2}.
+\end{equation}
+Near the equator it blends into the Sverdrup transport with weight
+$\exp(-f^2/\epsilon^2)$:
+\begin{equation}
+M_{\mathrm{Sv}} = \frac{1}{\beta}\,\kvec\cdot(\nabla\times\vect{\tau}) .
+\end{equation}
+Eddy transport is Gent--McWilliams, with isotherm slope $s_{\mathrm{iso}}$ (limited to
+0.002) and $\kappa_{\mathrm{GM}} = 2000$\,m$^2$\,s$^{-1}$:
+\begin{equation}
+M_{\mathrm{GM}} = \rho_w\kappa_{\mathrm{GM}}s_{\mathrm{iso}} .
+\end{equation}
+Equal and opposite fluxes apply in the deep layer. Their divergence gives vertical
+exchange, with upstream temperatures at interfaces:
+\begin{equation}
+\rho_w h_m \mathcal{A}\pd{T_m}{t} = M_1T_{m,1} - M_2T_{m,2} + (M_2 - M_1)T_v,
+\end{equation}
+with $T_v = T_d$ for upwelling and $T_m$ for downwelling. Gyres take a barotropic
+Stommel--Munk streamfunction over each basin,
+\begin{equation}
+\beta\pd{\psi}{x} = \frac{1}{\rho_w H}\kvec\cdot(\nabla\times\vect{\tau})
+   - r\nabla^2\psi + A_H\nabla^4\psi .
+\end{equation}
+
+\subsection{Hydrology and climate statistics (roadmap M3)}
+\begin{itemize}
+\item Runoff routes along steepest descent; depressions fill by priority-flood (Barnes
+  et al.\ 2014). Flow accumulates as
+  $A_i^{\mathrm{f}} = R_iA_i + \sum_{j\to i}A_j^{\mathrm{f}}$.
+\item A filled basin becomes a lake when inflow exceeds evaporation,
+  $\dd V/\dd t = I + (P-E)A_{\mathrm{lake}}$.
+\item Downscaling applies a lapse-rate correction, $T_{\mathrm{f}} = T_{\mathrm{c}} -
+  \Gamma(z_{\mathrm{f}} - z_{\mathrm{c}})$.
+\item Rolling statistics use Welford's recurrence,
+  $\mu_n = \mu_{n-1} + (x_n-\mu_{n-1})/n$ and
+  $S_n = S_{n-1} + (x_n-\mu_{n-1})(x_n-\mu_n)$.
+\item Classification uses the K\"oppen--Geiger criteria of Peel et al.\ (2007), with
+  potential evapotranspiration (Thornthwaite or Priestley--Taylor) for aridity.
+\end{itemize}
+
+\appendix
+
+\section{Calibrated parameters}\label{app:calibrated}
+
+These are effective values, set so the model matches Earth's global-mean column or
+an aquaplanet's clouds, rather than derived.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Parameter & Value & Note \\
+\midrule
+CO$_2$ band growth $l$ & 30\,cm$^{-1}$ & spectroscopic value is about 10 \\
+CO$_2$ band width $W_0$ & 160\,cm$^{-1}$ & at 400\,ppm \\
+Water opacity & 60\,m$^2$\,kg$^{-1}$ & edges 0.02 of the cores \\
+Window continuum & 0.03\,m$^2$\,kg$^{-1}$ per kPa & \\
+In-layer lapse rate $\Gamma$ & 6.5\,K\,km$^{-1}$ & \\
+Ozone, water shortwave & 0.046, 0.062 & \\
+Rayleigh sheet & 0.06 & does not scale with column mass \\
+Condensation thresholds & 0.45, 0.7, 0.9 & \\
+Cloud humidity bounds & 0.45--0.85, 0.5--1.0 & \\
+Cloud albedos, emissivities & 0.4, 0.5; 0.8, 1.0 & \\
+Land albedo, roughness & 0.2, 0.1\,m & mean Earth-like land \\
+Snow, ice-sheet albedo & 0.65, 0.82 & \\
+Skin conductance $\Lambda$ & 7\,W\,m$^{-2}$\,K$^{-1}$ & \\
+Ice-sheet start temperature & 267\,K & chosen on Earth \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{References}
+
+Full citations and DOIs are in \texttt{REFERENCES.md} in the repository.
+
+\end{document}

@@ -41,6 +41,7 @@ through optimized-out code).
 | `docs/ROADMAP.md` | Milestones, steps and substeps: what's done and what's next |
 | `docs/DESIGN.md` | How each built subsystem works now |
 | `docs/OBSERVATIONS.md` | Known limitations and ideas we've chosen not to act on yet |
+| `docs/EQUATIONS.tex` | The model's equations as implemented, for outside review |
 | `docs/FMSMAP.md` | The `.fmsmap` file every `fms` module exchanges |
 | `docs/CLI.md` | The `fms-climate` command-line runner |
 | `docs/BENCHMARKS.md` | How to run benchmarks; baseline numbers |

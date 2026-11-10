@@ -18,6 +18,7 @@ cargo run -p fms-viewer                            # viewer (placeholder)
 - [Plan](docs/PLAN.md): the `fms` family, goals and key decisions
 - [Roadmap](docs/ROADMAP.md): milestones and progress
 - [Design](docs/DESIGN.md): how each subsystem works
+- [Equations](docs/EQUATIONS.tex): the model's equations in LaTeX, for review
 - [`.fmsmap`](docs/FMSMAP.md): the file every module exchanges
 - [CLI](docs/CLI.md): the headless `fms-climate` runner and its image output
 - [Benchmarks](docs/BENCHMARKS.md): how to run them, and baseline numbers
