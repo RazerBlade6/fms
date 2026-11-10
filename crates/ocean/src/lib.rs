@@ -1,5 +1,6 @@
 //! The ocean: a two-layer slab after Codron (2012) and Bhatnagar et al.
-//! (2026), with sea ice and wind-driven transport to come (M2 steps 11–12).
+//! (2026) with sea ice ([`IceParams`]), and wind-driven transport to come
+//! (M2 step 12).
 //!
 //! Each cell with any ocean has a mixed layer, which exchanges heat with the
 //! atmosphere, over a deep layer, which exchanges heat only with the mixed
@@ -20,8 +21,12 @@
 //! The crate knows nothing about the atmosphere: fluxes come in as numbers and
 //! temperatures go out.
 
+mod ice;
+
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
+pub use ice::{IceForcing, IceParams};
+use ice::{SeaIce, Water};
 use rayon::prelude::*;
 
 /// The ocean's layers and how heat moves through them. [`Default`] is the
@@ -44,6 +49,8 @@ pub struct OceanParams {
     /// than this (K). Without upwelling (M2 step 12) the deep layer can only
     /// lose heat, so a warmer start would come back as a false warm spell.
     pub deep_start_limit: f64,
+    /// Sea ice; `None` lets the water cool past freezing.
+    pub ice: Option<IceParams>,
 }
 
 impl Default for OceanParams {
@@ -56,6 +63,7 @@ impl Default for OceanParams {
             diffusivity: 2000.0,
             convective_adjustment: true,
             deep_start_limit: 277.15,
+            ice: Some(IceParams::default()),
         }
     }
 }
@@ -73,6 +81,7 @@ impl OceanParams {
             diffusivity: 0.0,
             convective_adjustment: false,
             deep_start_limit: f64::INFINITY,
+            ice: None,
         }
     }
 
@@ -123,6 +132,7 @@ pub struct Ocean {
     largest_rate: f64,
     /// Heat convergence per cell, reused between steps.
     convergence: Vec<f64>,
+    ice: Option<SeaIce>,
 }
 
 impl Ocean {
@@ -176,9 +186,10 @@ impl Ocean {
             .filter(|(_, a)| **a > 0.0)
             .map(|(s, a)| s / a)
             .fold(0.0, f64::max);
+        let floor = params.ice.map_or(f64::NEG_INFINITY, |p| p.freezing);
         let deep = surface
             .iter()
-            .map(|t| t.min(params.deep_start_limit))
+            .map(|t| t.min(params.deep_start_limit).max(floor))
             .collect();
         Self {
             params,
@@ -188,6 +199,7 @@ impl Ocean {
             links,
             largest_rate,
             convergence: vec![0.0; n],
+            ice: params.ice.map(|p| SeaIce::new(p, n)),
         }
     }
 
@@ -210,20 +222,26 @@ impl Ocean {
 
     /// Heat held in cell `i`'s two layers (J per m² of its ocean).
     pub fn heat(&self, i: usize) -> f64 {
-        self.params.mixed_capacity() * self.mixed[i] + self.params.deep_capacity() * self.deep[i]
+        let water = self.params.mixed_capacity() * self.mixed[i]
+            + self.params.deep_capacity() * self.deep[i];
+        self.ice.as_ref().map_or(water, |ice| water + ice.heat(i))
     }
 
     /// Heat the mixed layers gain over `dt` seconds from `flux(i)`, the net
-    /// flux into cell `i`'s ocean (W per m² of it).
+    /// flux into cell `i`'s open water (W per m² of it).
     pub fn add_surface_heat(&mut self, dt: f64, flux: impl Fn(usize) -> f64 + Sync) {
         let capacity = self.params.mixed_capacity();
         let area = &self.area;
+        let ice = self.ice.as_ref();
         self.mixed
             .par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .enumerate()
             .filter(|(i, _)| area[*i] > 0.0)
-            .for_each(|(i, t)| *t += dt * flux(i) / capacity);
+            .for_each(|(i, t)| {
+                let open = 1.0 - ice.map_or(0.0, |ice| ice.fraction[i]);
+                *t += dt * (open * flux(i)) / capacity;
+            });
     }
 
     /// Move heat for `dt` seconds: diffusion in both layers, then convective
@@ -265,6 +283,85 @@ impl Ocean {
         );
     }
 
+    /// The sea-ice parameters, if the ocean has ice.
+    pub fn ice_params(&self) -> Option<&IceParams> {
+        self.params.ice.as_ref()
+    }
+
+    /// Share of cell `i`'s ocean under ice.
+    pub fn ice_fraction(&self, i: usize) -> f64 {
+        self.ice.as_ref().map_or(0.0, |ice| ice.fraction[i])
+    }
+
+    /// Mean thickness of cell `i`'s ice (m).
+    pub fn ice_thickness(&self, i: usize) -> f64 {
+        self.ice.as_ref().map_or(0.0, |ice| ice.thickness[i])
+    }
+
+    /// Surface temperature of cell `i`'s ice (K); the freezing point where
+    /// it has none.
+    pub fn ice_temperature(&self, i: usize) -> f64 {
+        self.ice.as_ref().map_or(0.0, |ice| ice.temperature[i])
+    }
+
+    /// Heat the limit on thickness has removed from cell `i` so far (J per
+    /// m² of its ocean); [`heat`](Self::heat) still counts it.
+    pub fn ice_limit_heat(&self, i: usize) -> f64 {
+        self.ice.as_ref().map_or(0.0, |ice| ice.limited[i])
+    }
+
+    /// Albedo of cell `i`'s ice in each band, rising with thickness from
+    /// `open_water`'s towards its limit.
+    pub fn ice_albedo(&self, i: usize, open_water: [f64; 2]) -> [f64; 2] {
+        let Some(ice) = &self.ice else {
+            return open_water;
+        };
+        let p = ice.params;
+        let thin = fms_math::exp(-ice.thickness[i] / p.albedo_depth);
+        std::array::from_fn(|b| p.albedo_limit[b] - (p.albedo_limit[b] - open_water[b]) * thin)
+    }
+
+    /// What the surface of cell `i`'s ice exchanges with its interior over
+    /// `dt` seconds: a conductance (W m⁻² K⁻¹) and the temperature it pulls
+    /// towards (K).
+    pub fn ice_balance(&self, i: usize, dt: f64) -> (f64, f64) {
+        let ice = self.ice.as_ref().expect("this ocean has no ice");
+        let p = ice.params;
+        let h = ice.thickness[i];
+        let storage = p.capacity(h) / dt;
+        let conduction = p.conductivity / h;
+        let conductance = storage + conduction;
+        (
+            conductance,
+            (storage * ice.temperature[i] + conduction * p.freezing) / conductance,
+        )
+    }
+
+    /// Advance the ice's temperature `dt` seconds under `forcing(i)`, and
+    /// take the heat the ocean gives it. Does nothing without ice.
+    pub fn step_ice(&mut self, dt: f64, forcing: impl Fn(usize) -> IceForcing) {
+        if let Some(ice) = &mut self.ice {
+            let mut water = Water {
+                mixed: &mut self.mixed,
+                area: &self.area,
+                capacity: self.params.mixed_capacity(),
+                density: self.params.density,
+                specific_heat: self.params.specific_heat,
+            };
+            ice.step(dt, &mut water, forcing);
+        }
+    }
+
+    /// Grow, melt and spread the ice with the heat recorded since the last
+    /// call, and freeze open water below the freezing point. Ice areas
+    /// change only here. Does nothing without ice.
+    pub fn rearrange_ice(&mut self) {
+        let capacity = self.params.mixed_capacity();
+        if let Some(ice) = &mut self.ice {
+            ice.rearrange(&mut self.mixed, &self.area, capacity);
+        }
+    }
+
     /// The temperatures now, for a later [`jump`](Self::jump).
     pub fn snapshot(&self) -> OceanSnapshot {
         OceanSnapshot {
@@ -278,10 +375,12 @@ impl Ocean {
     /// then overturn what that left unstable. Taken over a whole year, the
     /// change has no seasonal part. It doesn't conserve heat, by design.
     pub fn jump(&mut self, from: &OceanSnapshot, periods: f64, limit: f64) {
+        // No ice comes of a jump.
+        let floor = self.params.ice.map_or(f64::NEG_INFINITY, |p| p.freezing);
         let extrapolate = |now: &mut [f64], then: &[f64]| {
             for ((t, t0), a) in now.iter_mut().zip(then).zip(&self.area) {
                 if *a > 0.0 {
-                    *t += (periods * (*t - t0)).clamp(-limit, limit);
+                    *t = (*t + (periods * (*t - t0)).clamp(-limit, limit)).max(floor);
                 }
             }
         };
@@ -413,7 +512,11 @@ mod tests {
         let grid = Grid::new(8);
         let start = grid.each(|z| 288.0 - 20.0 * z * z);
         let land = vec![0.0; grid.n()];
-        let ocean = Ocean::new(OceanParams::default(), &grid.ops(), &land, start.clone());
+        let params = OceanParams {
+            ice: None,
+            ..OceanParams::default()
+        };
+        let ocean = Ocean::new(params, &grid.ops(), &land, start.clone());
         for (d, s) in ocean.deep_temperature().iter().zip(&start) {
             assert_eq!(*d, s.min(277.15));
         }
@@ -500,6 +603,7 @@ mod tests {
         let params = OceanParams {
             convective_adjustment: false,
             deep_start_limit: f64::INFINITY,
+            ice: None,
             ..OceanParams::default()
         };
         let start: Vec<f64> = p2.iter().map(|x| 20.0 * x).collect();
@@ -582,6 +686,219 @@ mod tests {
             }
         }
         assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+    }
+
+    /// An ocean starting `cold` K below freezing, already turned into ice.
+    fn iced(grid: &Grid, cold: f64) -> (Ocean, OceanParams) {
+        let params = OceanParams {
+            diffusivity: 0.0,
+            ..OceanParams::default()
+        };
+        let freezing = params.ice.unwrap().freezing;
+        let land = vec![0.0; grid.n()];
+        let start = vec![freezing - cold; grid.n()];
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start);
+        ocean.rearrange_ice();
+        (ocean, params)
+    }
+
+    #[test]
+    fn open_water_below_freezing_turns_into_ice_and_keeps_its_heat() {
+        let grid = Grid::new(4);
+        let params = OceanParams {
+            diffusivity: 0.0,
+            ..OceanParams::default()
+        };
+        let p = params.ice.unwrap();
+        let land = vec![0.0; grid.n()];
+        let start = vec![p.freezing - 0.1; grid.n()];
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start);
+        assert_eq!(
+            ocean.deep_temperature()[0],
+            p.freezing,
+            "the deep stays liquid"
+        );
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+        assert_eq!(ocean.mixed_temperature()[0], p.freezing);
+        let volume = 0.1 * params.mixed_capacity() / p.melting_energy(p.freezing);
+        assert!((ocean.ice_thickness(0) - p.thin).abs() < 1e-12);
+        assert!((ocean.ice_fraction(0) - volume / p.thin).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ice_grows_from_below_by_stefans_law() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.1);
+        let p = params.ice.unwrap();
+        // A surface held 18.2 K below freezing, losing what it conducts.
+        let skin = p.freezing - 18.2;
+        ocean.ice.as_mut().unwrap().temperature.fill(skin);
+        let (h0, f0) = (ocean.ice_thickness(0), ocean.ice_fraction(0));
+        let dt = 900.0;
+        let steps = 8 * 30 * 12;
+        for n in 0..steps {
+            let h = ocean.ice_thickness(0);
+            let net = p.conductivity * (skin - p.freezing) / h;
+            ocean.step_ice(dt, |_| IceForcing {
+                net,
+                skin,
+                ..IceForcing::default()
+            });
+            if n % 12 == 11 {
+                ocean.rearrange_ice();
+            }
+        }
+        let time = dt * steps as f64;
+        let per_volume = p.melting_energy(skin);
+        let analytic = (h0 * h0 + 2.0 * p.conductivity * 18.2 * time / per_volume).sqrt();
+        let h = ocean.ice_thickness(0);
+        assert!(
+            ((h - analytic) / analytic).abs() < 0.01,
+            "{h} vs {analytic}"
+        );
+        assert!(h > 0.5 && h < p.thick, "{h}");
+        assert_eq!(
+            ocean.ice_fraction(0),
+            f0,
+            "below h_thick, only thickness grows"
+        );
+    }
+
+    #[test]
+    fn heat_is_conserved_through_freezing_and_melting() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.4);
+        let dt = 300.0;
+        let n = grid.n();
+        let (mut melted, mut formed) = (0, 0);
+        // Each cell swings between strong heating and cooling.
+        for step in 0..12_000 {
+            let phase = step as f64 / 2000.0 * std::f64::consts::TAU;
+            let open: Vec<f64> = (0..n)
+                .map(|i| 400.0 * fms_math::sin(phase + 6.0 * scatter(i, 1)))
+                .collect();
+            let net: Vec<f64> = (0..n)
+                .map(|i| {
+                    let swing = 400.0 * fms_math::sin(phase + 6.0 * scatter(i, 2));
+                    swing - 30.0 * (ocean.ice_temperature(i) - 272.0)
+                })
+                .collect();
+            let frac: Vec<f64> = (0..n).map(|i| ocean.ice_fraction(i)).collect();
+            let before = total(&ocean);
+            ocean.add_surface_heat(dt, |i| open[i]);
+            ocean.step_ice(dt, |i| IceForcing {
+                net: net[i],
+                skin: 271.35 + (net[i] / 40.0).clamp(-15.0, 1.8),
+                stress: 0.1,
+                sublimation: 0.0,
+            });
+            ocean.transport(dt);
+            let gained: f64 = (0..n)
+                .map(|i| ocean.area[i] * dt * ((1.0 - frac[i]) * open[i] + frac[i] * net[i]))
+                .sum();
+            let error = (total(&ocean) - before - gained).abs();
+            assert!(error < 1e-11 * before, "step {step}: {error}");
+            if step % 12 == 11 {
+                let before = total(&ocean);
+                let had: Vec<bool> = (0..n).map(|i| ocean.ice_fraction(i) > 0.0).collect();
+                ocean.rearrange_ice();
+                assert!(((total(&ocean) - before) / before).abs() < 1e-12);
+                for (i, had) in had.iter().enumerate() {
+                    match (*had, ocean.ice_fraction(i) > 0.0) {
+                        (true, false) => melted += 1,
+                        (false, true) => formed += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(melted > 0 && formed > 0, "{melted} melted, {formed} formed");
+        let p = params.ice.unwrap();
+        for i in 0..n {
+            assert!(ocean.ice_fraction(i) <= p.max_fraction);
+            assert!(ocean.ice_thickness(i) <= p.max_thickness);
+        }
+    }
+
+    #[test]
+    fn melting_from_below_takes_area_then_warms_the_ocean() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.2);
+        let p = params.ice.unwrap();
+        let (f, h) = (ocean.ice_fraction(0), ocean.ice_thickness(0));
+        let e = p.melting_energy(ocean.ice_temperature(0));
+        // Three times what it takes to melt all of it, through the base.
+        ocean.ice.as_mut().unwrap().bottom.fill(3.0 * e * h);
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert_eq!(ocean.ice_fraction(0), 0.0);
+        let warmed = 2.0 * e * h * f / params.mixed_capacity();
+        assert!((ocean.mixed_temperature()[0] - (p.freezing + warmed)).abs() < 1e-9);
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+    }
+
+    #[test]
+    fn the_ocean_gives_the_ice_heat_only_from_above_freezing() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.2);
+        let p = params.ice.unwrap();
+        let hold = IceForcing {
+            skin: p.freezing,
+            ..IceForcing::default()
+        };
+        ocean.step_ice(1800.0, |_| hold);
+        assert_eq!(ocean.mixed_temperature()[0], p.freezing);
+        // Warm the water; a long step takes at most what is above freezing.
+        ocean.mixed.fill(p.freezing + 0.5);
+        ocean.step_ice(1e9, |_| hold);
+        let t = ocean.mixed_temperature()[0];
+        assert!(t >= p.freezing && t < p.freezing + 0.5, "{t}");
+    }
+
+    #[test]
+    fn thickness_stops_at_the_limit_and_the_heat_stays_on_record() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.2);
+        let p = params.ice.unwrap();
+        let e = p.melting_energy(ocean.ice_temperature(0));
+        let ice = ocean.ice.as_mut().unwrap();
+        ice.fraction.fill(0.5);
+        ice.thickness.fill(p.max_thickness - 0.01);
+        ice.bottom.fill(-20.0 * e);
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert!(ocean.ice_thickness(0) <= p.max_thickness);
+        assert!(ocean.ice_limit_heat(0) > 0.0);
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+    }
+
+    #[test]
+    fn ice_albedo_rises_with_thickness_from_the_waters_in_each_band() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.2);
+        let p = params.ice.unwrap();
+        let open = [0.08, 0.08];
+        ocean.ice.as_mut().unwrap().thickness.fill(0.0);
+        let bare = ocean.ice_albedo(0, open);
+        assert!((bare[0] - open[0]).abs() < 1e-12 && (bare[1] - open[1]).abs() < 1e-12);
+        ocean.ice.as_mut().unwrap().thickness.fill(100.0);
+        let thick = ocean.ice_albedo(0, open);
+        assert!((thick[0] - p.albedo_limit[0]).abs() < 1e-12);
+        assert!((thick[1] - p.albedo_limit[1]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_jump_makes_no_ice() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.2);
+        let p = params.ice.unwrap();
+        let start = ocean.snapshot();
+        ocean.mixed.fill(p.freezing);
+        ocean.add_surface_heat(1.0, |_| -params.mixed_capacity());
+        ocean.jump(&start, 5.0, 10.0);
+        assert_eq!(ocean.mixed_temperature()[0], p.freezing);
     }
 
     #[test]

@@ -252,8 +252,8 @@ orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 world's terrain (`--continent`, `--heightmap`), lightly smoothed
 ([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Each cell has an ocean tile, a
 50 m mixed layer over a 150 m deep layer, with heat moving by horizontal
-diffusion and convective adjustment (sea ice and currents arrive in M2 steps
-11–12), and in proportion to its land fraction a land tile, so a skin over a
+diffusion and convective adjustment, and sea ice (currents arrive in M2 step
+12), and in proportion to its land fraction a land tile, so a skin over a
 1 m soil heat store with a 150 mm bucket of soil water and a snow pack. A
 world with no land is an ice-free aquaplanet (O-23; see also O-22, O-24,
 O-25). The run starts at rest from a single-column radiative–convective

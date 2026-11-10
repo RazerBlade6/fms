@@ -6,10 +6,11 @@
 //!
 //! # Pieces (3-D)
 //!
-//! - **Surface**: each cell has an ocean and a land tile, weighted by its
-//!   land fraction, each with its own temperature, albedo, roughness and
-//!   fluxes. The ocean tile is the mixed layer of [`fms_ocean::Ocean`], which
-//!   moves heat sideways and down; the land tile is a skin with no heat
+//! - **Surface**: each cell has an ocean, a sea-ice and a land tile, weighted
+//!   by its land fraction and ice cover, each with its own temperature,
+//!   albedo, roughness and fluxes. The ocean tile is the mixed layer of
+//!   [`fms_ocean::Ocean`], which moves heat sideways and down, and the ice
+//!   tile is its ice; the land tile is a skin with no heat
 //!   capacity over a soil heat store, with a bucket of soil water and a pack
 //!   of snow. Each absorbs sunlight and longwave, emits as a black
 //!   body, and pays the latent heat of what evaporates; the ocean also pays
@@ -68,7 +69,7 @@
 use fms_grid::Operators;
 use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use fms_grid::zonal::east_north;
-use fms_ocean::{Ocean, OceanParams, OceanSnapshot};
+use fms_ocean::{IceForcing, Ocean, OceanParams, OceanSnapshot};
 use fms_planet::Planet;
 use glam::DVec3;
 use rayon::prelude::*;
@@ -103,6 +104,8 @@ pub const CLIMATE_LEVELS: [f64; 3] = [0.25, 0.5, 0.85];
 const OCEAN: usize = 0;
 /// Index of each cell's land tile.
 const LAND: usize = 1;
+/// Index of each cell's sea-ice tile.
+const ICE: usize = 2;
 /// The temperature snow melts at (K).
 const MELTING_POINT: f64 = 273.15;
 
@@ -524,40 +527,60 @@ fn solve_skin(
 /// longwave emitted, per unit area of each tile.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct TileRadiation {
-    shortwave: [f64; 2],
-    longwave_up: [f64; 2],
+    shortwave: [f64; 3],
+    longwave_up: [f64; 3],
 }
 
-/// What the radiation sees of a cell's two tiles.
+/// What the radiation sees of a cell's tiles.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TiledSurface {
     /// Land fraction.
     fraction: f64,
+    /// Share of the rest under sea ice.
+    ice: f64,
     /// Each tile's albedo in each band of sunlight.
-    albedo: [[f64; 2]; 2],
+    albedo: [[f64; 2]; 3],
     /// Each tile's temperature (K).
-    temperature: [f64; 2],
+    temperature: [f64; 3],
 }
 
 impl TiledSurface {
+    /// Each tile's share of the cell.
+    fn weights(&self) -> [f64; 3] {
+        let sea = 1.0 - self.fraction;
+        let mut w = [0.0; 3];
+        w[OCEAN] = sea * (1.0 - self.ice);
+        w[LAND] = self.fraction;
+        w[ICE] = sea * self.ice;
+        w
+    }
+
     /// Area-weighted albedo in each band.
     fn mean_albedo(&self) -> [f64; 2] {
+        let w = self.weights();
         std::array::from_fn(|b| {
-            (1.0 - self.fraction) * self.albedo[OCEAN][b] + self.fraction * self.albedo[LAND][b]
+            w[OCEAN] * self.albedo[OCEAN][b]
+                + w[LAND] * self.albedo[LAND][b]
+                + w[ICE] * self.albedo[ICE][b]
         })
     }
 
     /// `T⁴` of each tile, and their area-weighted mean.
-    fn fourth_powers(&self) -> ([f64; 2], f64) {
-        let [a, b] = self.temperature.map(|t| t * t * t * t);
-        ([a, b], (1.0 - self.fraction) * a + self.fraction * b)
+    fn fourth_powers(&self) -> ([f64; 3], f64) {
+        let fourth = self.temperature.map(|t| t * t * t * t);
+        let w = self.weights();
+        (
+            fourth,
+            w[OCEAN] * fourth[OCEAN] + w[LAND] * fourth[LAND] + w[ICE] * fourth[ICE],
+        )
     }
 
     /// The single temperature whose black-body emission is the tiles' mean.
     fn radiating_temperature(&self) -> f64 {
-        if self.fraction == 0.0 {
+        let w = self.weights();
+        if w[OCEAN] == 1.0 {
             self.temperature[OCEAN]
-        } else if self.fraction == 1.0 {
+        } else if w[LAND] == 1.0 {
             self.temperature[LAND]
         } else {
             self.fourth_powers().1.sqrt().sqrt()
@@ -687,9 +710,11 @@ pub(crate) fn boundary_layer_top(c: &BoundaryColumn, sl: &SurfaceLayerParams) ->
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct SurfaceFlux {
     /// Each tile's flux; unset for a tile with no area.
-    tiles: [TileFlux; 2],
+    tiles: [TileFlux; 3],
     /// The land tile's skin temperature these fluxes were computed at (K).
     skin: f64,
+    /// The ice tile's surface temperature they were computed at (K).
+    ice_skin: f64,
     /// Sensible heat (W m⁻², upward).
     sensible: f64,
     /// Evaporation (kg m⁻² s⁻¹).
@@ -873,6 +898,8 @@ impl<'a> ColumnPhysics<'a> {
             runoff: 0.0,
             ocean_exchange: 0.0,
         };
+        // Water that starts below freezing is ice from the start.
+        physics.ocean.rearrange_ice();
         // Clouds for the first radiation call; radiation (clear sky) for the
         // first convection's stratosphere temperature.
         physics.radiate(state);
@@ -948,10 +975,17 @@ impl<'a> ColumnPhysics<'a> {
     /// Area-weighted mean surface temperature per cell (K).
     pub fn surface_temperature(&self) -> Vec<f64> {
         (0..self.land_fraction.len())
-            .map(|i| match self.land_fraction[i] {
-                0.0 => self.ocean.mixed_temperature()[i],
-                1.0 => self.land_temperature[i],
-                f => (1.0 - f) * self.ocean.mixed_temperature()[i] + f * self.land_temperature[i],
+            .map(|i| {
+                let water = self.ocean.mixed_temperature()[i];
+                let sea = match self.ocean.ice_fraction(i) {
+                    0.0 => water,
+                    ice => (1.0 - ice) * water + ice * self.ocean.ice_temperature(i),
+                };
+                match self.land_fraction[i] {
+                    0.0 => sea,
+                    1.0 => self.land_temperature[i],
+                    f => (1.0 - f) * sea + f * self.land_temperature[i],
+                }
             })
             .collect()
     }
@@ -984,11 +1018,17 @@ impl<'a> ColumnPhysics<'a> {
     fn tiled_surface(&self, i: usize) -> TiledSurface {
         TiledSurface {
             fraction: self.land_fraction[i],
+            ice: self.ocean.ice_fraction(i),
             albedo: [
                 self.params.radiation.albedo,
                 [self.params.land.albedo_under(self.snow[i]); 2],
+                self.ocean.ice_albedo(i, self.params.radiation.albedo),
             ],
-            temperature: [self.ocean.mixed_temperature()[i], self.land_temperature[i]],
+            temperature: [
+                self.ocean.mixed_temperature()[i],
+                self.land_temperature[i],
+                self.ocean.ice_temperature(i),
+            ],
         }
     }
 
@@ -1116,8 +1156,19 @@ impl<'a> ColumnPhysics<'a> {
                         stress_north: -momentum * x.wind_ratio * nn,
                     }
                 };
+                // A surface's turbulent heat loss at `t`, and its slope.
+                // Exchange coefficients are frozen in the slope only.
+                let losses = |t: f64, surface: Surface, wetness: f64, latent: f64| {
+                    let x = exchange(sl, surface, &air_over(t));
+                    let heat = density * cp * x.heat * x.speed;
+                    let water = latent * density * x.moisture * x.speed;
+                    let qs = saturation_humidity(t, ps);
+                    let dqs = qs * LATENT_HEAT / (VAPOUR_GAS_CONSTANT * t * t);
+                    let water = water * supplied(qs - q, wetness);
+                    (heat * (t - air) + water * (qs - q), heat + water * dqs)
+                };
                 let fraction = self.land_fraction[i];
-                let mut tiles = [TileFlux::default(); 2];
+                let mut tiles = [TileFlux::default(); 3];
                 if fraction < 1.0 {
                     tiles[OCEAN] = tile(self.ocean.mixed_temperature()[i], Surface::Ocean, 1.0);
                 }
@@ -1131,22 +1182,12 @@ impl<'a> ColumnPhysics<'a> {
                             self.tile_radiation[i].shortwave[LAND] + self.radiation[i].surface_down;
                         // Evaporating snow also pays for its melting.
                         let latent = LATENT_HEAT + if snow > 0.0 { FUSION_HEAT } else { 0.0 };
-                        // Exchange coefficients are frozen in the slope only.
-                        let turbulent = |t: f64| {
-                            let x = exchange(sl, rough, &air_over(t));
-                            let heat = density * cp * x.heat * x.speed;
-                            let water = latent * density * x.moisture * x.speed;
-                            let qs = saturation_humidity(t, ps);
-                            let dqs = qs * LATENT_HEAT / (VAPOUR_GAS_CONSTANT * t * t);
-                            let water = water * supplied(qs - q, wetness);
-                            (heat * (t - air) + water * (qs - q), heat + water * dqs)
-                        };
                         skin = solve_skin(
                             skin,
                             absorbed,
                             self.soil_temperature[i],
                             self.params.land.step_conductance(dt),
-                            turbulent,
+                            |t| losses(t, rough, wetness, latent),
                         );
                         if snow > 0.0 {
                             skin = skin.min(MELTING_POINT);
@@ -1154,7 +1195,25 @@ impl<'a> ColumnPhysics<'a> {
                     }
                     tiles[LAND] = tile(skin, rough, wetness);
                 }
-                let mean = TileFlux::blend(tiles[OCEAN], tiles[LAND], fraction);
+                let ice = self.ocean.ice_fraction(i);
+                let mut ice_skin = self.ocean.ice_temperature(i);
+                if ice > 0.0 {
+                    let p = self.ocean.ice_params().expect("ice needs parameters");
+                    let rough = Surface::Rough(p.roughness);
+                    if let Some(dt) = dt {
+                        let (conductance, interior) = self.ocean.ice_balance(i, dt);
+                        let absorbed =
+                            self.tile_radiation[i].shortwave[ICE] + self.radiation[i].surface_down;
+                        let latent = LATENT_HEAT + FUSION_HEAT;
+                        ice_skin = solve_skin(ice_skin, absorbed, interior, conductance, |t| {
+                            losses(t, rough, 1.0, latent)
+                        })
+                        .min(p.melting);
+                    }
+                    tiles[ICE] = tile(ice_skin, rough, 1.0);
+                }
+                let sea = TileFlux::blend(tiles[OCEAN], tiles[ICE], ice);
+                let mean = TileFlux::blend(sea, tiles[LAND], fraction);
                 let hills = &self.params.orography;
                 let hill_drag = (g * density * hills.drag * self.relief[i] / hills.hill_spacing
                     * wind
@@ -1197,6 +1256,7 @@ impl<'a> ColumnPhysics<'a> {
                 SurfaceFlux {
                     tiles,
                     skin,
+                    ice_skin,
                     sensible,
                     evaporation,
                     drag: mean.drag + hill_drag,
@@ -1335,6 +1395,7 @@ impl Forcing for ColumnPhysics<'_> {
             &self.land_fraction,
             &self.land_temperature,
         );
+        let ocean = &self.ocean;
         let above = lowest - 1;
         let cp = gas.heat_capacity;
         let top = levels.interfaces()[lowest];
@@ -1372,6 +1433,11 @@ impl Forcing for ColumnPhysics<'_> {
                                 if land[i] > 0.0 {
                                     heating += land[i]
                                         * (black_body(skin[i]) - tiles[i].longwave_up[LAND]);
+                                }
+                                let ice = (1.0 - land[i]) * ocean.ice_fraction(i);
+                                if ice > 0.0 {
+                                    heating +=
+                                        ice * (black_body(s.ice_skin) - tiles[i].longwave_up[ICE]);
                                 }
                                 water += gravity * s.evaporation / ds[k] + moisture / ds[k];
                             } else {
@@ -1449,16 +1515,18 @@ impl Forcing for ColumnPhysics<'_> {
         let skin = &self.land_temperature;
         let net = |i: usize, tile: usize| {
             let flux = surface[i].tiles[tile];
-            let emitted = if tile == LAND {
-                black_body(skin[i])
-            } else {
-                tiles[i].longwave_up[tile]
+            let emitted = match tile {
+                LAND => black_body(skin[i]),
+                ICE => black_body(surface[i].ice_skin),
+                _ => tiles[i].longwave_up[tile],
             };
-            // Snow landing on the ocean melts at once; on land it's a pack.
-            let fusion = if tile == OCEAN {
-                FUSION_HEAT * moist[i].snow
-            } else {
-                0.0
+            // Snow landing on the sea melts at once, for now even on the
+            // ice; on land it's a pack. Ice that evaporates pays for its
+            // thawing first.
+            let fusion = match tile {
+                OCEAN => FUSION_HEAT * moist[i].snow,
+                ICE => FUSION_HEAT * (moist[i].snow + flux.evaporation.max(0.0)),
+                _ => 0.0,
             };
             tiles[i].shortwave[tile] + radiation[i].surface_down
                 - emitted
@@ -1471,6 +1539,12 @@ impl Forcing for ColumnPhysics<'_> {
             self.uptake += dt * r2 * uptake;
         } else {
             self.ocean.add_surface_heat(dt, |i| net(i, OCEAN));
+            self.ocean.step_ice(dt, |i| IceForcing {
+                net: net(i, ICE),
+                skin: surface[i].ice_skin,
+                stress: surface[i].tiles[OCEAN].stress,
+                sublimation: FUSION_HEAT * surface[i].tiles[ICE].evaporation.max(0.0),
+            });
             self.ocean.transport(dt);
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
@@ -1479,7 +1553,14 @@ impl Forcing for ColumnPhysics<'_> {
             let a = areas[i];
             let (f, falling) = (land[i], moist[i].rain + moist[i].snow);
             if f < 1.0 {
-                ocean_exchange += a * (1.0 - f) * (surface[i].tiles[OCEAN].evaporation - falling);
+                let ice = self.ocean.ice_fraction(i);
+                let evaporation = if ice > 0.0 {
+                    (1.0 - ice) * surface[i].tiles[OCEAN].evaporation
+                        + ice * surface[i].tiles[ICE].evaporation
+                } else {
+                    surface[i].tiles[OCEAN].evaporation
+                };
+                ocean_exchange += a * (1.0 - f) * (evaporation - falling);
             }
             if f > 0.0 {
                 let evaporation = surface[i].tiles[LAND].evaporation;
@@ -1524,9 +1605,15 @@ impl Forcing for ColumnPhysics<'_> {
             self.next_year += self.planet.year_seconds();
             self.end_spin_up_year();
         }
+        let radiating = self.time >= self.next_radiation - 1e-6;
+        if radiating && !self.prescribed {
+            // Before the fluxes, so they and the next sunlight see the same
+            // ice.
+            self.ocean.rearrange_ice();
+        }
         let solve = (!self.prescribed).then_some(dt);
         self.update_surface_fluxes(state, solve);
-        if self.time >= self.next_radiation - 1e-6 {
+        if radiating {
             self.radiate(state);
         }
     }
@@ -1601,6 +1688,30 @@ impl Forcing for ColumnPhysics<'_> {
                 "Mixed-layer temperature (its start where a cell has no ocean)",
                 "K",
                 self.ocean.mixed_temperature().to_vec(),
+            ),
+            field(
+                "ocean.ice_fraction",
+                "Share of the ocean under sea ice",
+                "1",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.ice_fraction(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.ice_thickness",
+                "Mean thickness of the sea ice where there is any",
+                "m",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.ice_thickness(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.ice_temperature",
+                "Surface temperature of the sea ice (freezing where there is none)",
+                "K",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.ice_temperature(i))
+                    .collect(),
             ),
             field(
                 "ocean.deep_temperature",
@@ -2355,8 +2466,9 @@ mod tests {
     fn mixed_surface() -> TiledSurface {
         TiledSurface {
             fraction: 0.3,
-            albedo: [[0.08; 2], [0.2; 2]],
-            temperature: [290.0, 305.0],
+            ice: 0.0,
+            albedo: [[0.08; 2], [0.2; 2], [0.5; 2]],
+            temperature: [290.0, 305.0, 260.0],
         }
     }
 
@@ -2464,7 +2576,7 @@ mod tests {
     fn splitting_radiation_between_tiles_conserves_it() {
         let s = mixed_surface();
         let t = s.split(180.0, 110.0, 400.0);
-        let mean = |x: [f64; 2]| (1.0 - s.fraction) * x[OCEAN] + s.fraction * x[LAND];
+        let mean = |x: [f64; 3]| (1.0 - s.fraction) * x[OCEAN] + s.fraction * x[LAND];
         assert!((mean(t.shortwave) - 180.0).abs() < 1e-10);
         assert!((mean(t.longwave_up) - 400.0).abs() < 1e-10);
         // The brighter tile absorbs less, the warmer tile emits more.
@@ -2496,7 +2608,7 @@ mod tests {
     #[test]
     fn tiles_split_sunlight_band_by_band() {
         let s = TiledSurface {
-            albedo: [[0.06, 0.1], [0.5, 0.3]],
+            albedo: [[0.06, 0.1], [0.5, 0.3], [0.5, 0.3]],
             ..mixed_surface()
         };
         let (visible, infrared) = (110.0, 70.0);
@@ -2510,6 +2622,23 @@ mod tests {
         }
         let total = (1.0 - s.fraction) * t.shortwave[OCEAN] + s.fraction * t.shortwave[LAND];
         assert!((total - 180.0).abs() < 1e-12, "{total}");
+    }
+
+    #[test]
+    fn an_ice_tile_shares_the_cells_radiation_conservatively() {
+        let s = TiledSurface {
+            ice: 0.4,
+            albedo: [[0.06, 0.1], [0.5, 0.3], [0.57, 0.31]],
+            temperature: [272.0, 280.0, 255.0],
+            ..mixed_surface()
+        };
+        let w = s.weights();
+        assert!((w[OCEAN] + w[LAND] + w[ICE] - 1.0).abs() < 1e-15);
+        let t = s.split(180.0, 110.0, 300.0);
+        let mean = |x: [f64; 3]| w[OCEAN] * x[OCEAN] + w[LAND] * x[LAND] + w[ICE] * x[ICE];
+        assert!((mean(t.shortwave) - 180.0).abs() < 1e-10);
+        assert!((mean(t.longwave_up) - 300.0).abs() < 1e-10);
+        assert!(t.shortwave[ICE] < t.shortwave[OCEAN]);
     }
 
     #[test]

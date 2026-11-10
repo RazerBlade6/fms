@@ -157,6 +157,18 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Moisture,
         ),
         (
+            "ocean.ice_fraction",
+            "Sea-ice cover of the ocean",
+            "1",
+            ColorScale::Sequential,
+        ),
+        (
+            "ocean.ice_thickness",
+            "Mean sea-ice thickness",
+            "m",
+            ColorScale::Sequential,
+        ),
+        (
             "ocean.deep_temperature",
             "Deep-ocean temperature",
             "K",

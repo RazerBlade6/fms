@@ -279,72 +279,166 @@ fn budgets_close(
 
 #[test]
 fn an_ocean_jump_moves_the_sea_and_stays_out_of_the_energy_budget() {
-    let (with, largest, when) = jump_run(1);
-    let (without, ..) = jump_run(0);
-    eprintln!("residual {with:+.5} W/m², without the jump {without:+.5}");
-    assert!(largest > 0.2, "largest step change {largest} K");
-    assert!((40.0..40.1).contains(&when), "at day {when}");
-    // The jump adds tens of W/m² of heat over this run; none of it may show.
-    assert!((with - without).abs() < 0.03, "{with} against {without}");
-}
-
-/// Energy-budget residual (W/m²) of 45 days at 642 cells with a 20-day year,
-/// so a jump comes at the end of day 40; and the sea's largest change in one
-/// step (K) and the day of it.
-fn jump_run(jumps: u32) -> (f64, f64, f64) {
     let (planet, _) = Planet::new(PlanetParams {
         year_days: 20.0,
         ..PlanetParams::earth()
     });
-    let params = PhysicsParams {
+    let params = |jumps| PhysicsParams {
         spin_up: OceanSpinUp {
             jumps,
             ..OceanSpinUp::default()
         },
         ..PhysicsParams::default()
     };
+    // A 20-day year, so the jump comes at the end of day 40.
+    let with = budget_run(&planet, params(1), 45.0);
+    let without = budget_run(&planet, params(0), 45.0);
+    eprintln!(
+        "residual {:+.5} W/m², without the jump {:+.5}",
+        with.energy, without.energy
+    );
+    assert!(
+        with.largest_change > 0.2,
+        "largest step change {} K",
+        with.largest_change
+    );
+    assert!(
+        (40.0..40.1).contains(&with.largest_day),
+        "at day {}",
+        with.largest_day
+    );
+    // The jump adds tens of W/m² of heat over this run; none of it may show.
+    assert!(
+        (with.energy - without.energy).abs() < 0.03,
+        "{} against {}",
+        with.energy,
+        without.energy
+    );
+}
+
+#[test]
+fn energy_and_water_close_through_freezing_and_melting() {
+    // A dim planet with fast seasons and a shallow sea, so that it freezes
+    // and thaws within the run.
+    let (planet, _) = Planet::new(PlanetParams {
+        year_days: 40.0,
+        luminosity: 0.9,
+        ..PlanetParams::earth()
+    });
+    let params = PhysicsParams {
+        ocean: OceanParams {
+            mixed_depth: 5.0,
+            deep_depth: 0.0,
+            ..OceanParams::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let run = budget_run(&planet, params, 90.0);
+    eprintln!(
+        "energy residual {:+.5} W/m², water residual {:+.1e}, ice cover {:.3} to {:.3} of the planet",
+        run.energy, run.water, run.least_ice, run.most_ice
+    );
+    assert!(
+        run.energy.abs() < 0.1,
+        "energy residual {} W/m²",
+        run.energy
+    );
+    assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
+    assert!(run.most_ice > 0.05, "ice cover {}", run.most_ice);
+    assert!(
+        run.most_ice > run.least_ice + 0.005,
+        "the ice never changed"
+    );
+}
+
+/// The budgets of a run on [`CLIMATE_LEVELS`] at 642 cells.
+struct BudgetRun {
+    /// Energy residual (W/m²).
+    energy: f64,
+    /// Water residual, as a share of the atmosphere's water.
+    water: f64,
+    /// The sea's largest change in one step (K), and its day.
+    largest_change: f64,
+    largest_day: f64,
+    /// The least and most of the planet under ice (after the first day).
+    least_ice: f64,
+    most_ice: f64,
+}
+
+fn budget_run(planet: &Planet, params: PhysicsParams, days: f64) -> BudgetRun {
     let mut first = None;
     let mut last = None;
     let (mut previous, mut largest, mut when): (Option<Vec<f64>>, f64, f64) = (None, 0.0, 0.0);
+    let (mut least_ice, mut most_ice) = (f64::INFINITY, 0.0f64);
     let levels = Levels::new(&CLIMATE_LEVELS);
     let land = |_| 0.0;
-    run_on(&planet, params, 8, 45.0, levels, land, FLAT, |si, _, dt| {
-        let forcing = si.model().forcing().unwrap();
-        let row = (
-            si.model().diagnostics(si.state()),
-            si.energy_budget(),
-            forcing.budget().unwrap(),
-            si.steps() as f64 * dt,
-            si.water(),
-        );
-        first.get_or_insert(row);
-        last = Some(row);
-        let fields = forcing.cell_fields();
-        let sea = &fields
-            .iter()
-            .find(|f| f.name == "ocean.mixed_temperature")
-            .unwrap()
-            .values;
-        if let Some(before) = &previous {
-            let change = sea
-                .iter()
-                .zip(before)
-                .map(|(a, b): (&f64, &f64)| (a - b).abs())
-                .fold(0.0, f64::max);
-            if change > largest {
-                (largest, when) = (change, row.3 / DAY);
+    run_on(
+        planet,
+        params,
+        8,
+        days,
+        levels,
+        land,
+        FLAT,
+        |si, geometry, dt| {
+            let forcing = si.model().forcing().unwrap();
+            let row = (
+                si.model().diagnostics(si.state()),
+                si.energy_budget(),
+                forcing.budget().unwrap(),
+                si.steps() as f64 * dt,
+                si.water(),
+                si.water_budget(),
+            );
+            first.get_or_insert(row);
+            last = Some(row);
+            let fields = forcing.cell_fields();
+            let field = |name: &str| &fields.iter().find(|f| f.name == name).unwrap().values;
+            let sea = field("ocean.mixed_temperature");
+            if let Some(before) = &previous {
+                let change = sea
+                    .iter()
+                    .zip(before)
+                    .map(|(a, b): (&f64, &f64)| (a - b).abs())
+                    .fold(0.0, f64::max);
+                if change > largest {
+                    (largest, when) = (change, row.3 / DAY);
+                }
             }
-        }
-        previous = Some(sea.clone());
-    });
-    let ((d0, e0, b0, t0, w0), (d1, e1, b1, t1, w1)) = (first.unwrap(), last.unwrap());
+            previous = Some(sea.clone());
+            if row.3 > DAY {
+                let ice = field("ocean.ice_fraction")
+                    .iter()
+                    .zip(&geometry.cell_areas)
+                    .map(|(f, a)| f * a)
+                    .sum::<f64>()
+                    / (4.0 * std::f64::consts::PI);
+                least_ice = least_ice.min(ice);
+                most_ice = most_ice.max(ice);
+            }
+        },
+    );
+    let ((d0, e0, b0, t0, w0, wb0), (d1, e1, b1, t1, w1, wb1)) = (first.unwrap(), last.unwrap());
     let area = 4.0 * std::f64::consts::PI * RADIUS * RADIUS;
     let toa = (b1.absorbed - b0.absorbed) - (b1.outgoing - b0.outgoing);
     let uptake = (d1.energy - d0.energy) + (b1.stored - b0.stored) + LATENT_HEAT * (w1 - w0);
     let removed = (e1.forcing.kinetic - e0.forcing.kinetic)
         + (b1.dissipated - b0.dissipated)
         + (e1.diffusion.total() - e0.diffusion.total());
-    ((toa - uptake + removed) / (t1 - t0) / area, largest, when)
+    let water = (w1 - w0) - (b1.ocean_exchange - b0.ocean_exchange)
+        + (b1.soil_water - b0.soil_water)
+        + (b1.snow - b0.snow)
+        + (b1.runoff - b0.runoff)
+        - (wb1.filter - wb0.filter)
+        - (wb1.fixer - wb0.fixer);
+    BudgetRun {
+        energy: (toa - uptake + removed) / (t1 - t0) / area,
+        water: water / w1,
+        largest_change: largest,
+        largest_day: when,
+        least_ice,
+        most_ice,
+    }
 }
 
 #[test]

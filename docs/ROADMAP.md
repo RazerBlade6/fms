@@ -306,10 +306,17 @@ Added after the M1 review: tooling the GCM work depends on.
       Done: each band reflects off its own albedo and tiles split sunlight
       band by band. Ocean and land keep one value in both bands, so the pinned
       hash is unchanged; ice brings the first real difference (11.3).
-    - [ ] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
+    - [x] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
       temperature, the authors' growth and melt rules, and the ocean-to-ice
       flux. Tests: growth against Stefan's law; energy and water close through
       freezing and melting.
+      Done: `fms-ocean`'s third tile, with the authors' growth and melt rules.
+      Area and thickness change only at radiation calls, so stored sunlight
+      still balances. The 10 m slab has no ice and keeps its hash. Growth is
+      within 1% of Stefan's law, and a freezing and thawing planet closes
+      energy to −0.025 W/m² and water to 1e-14. Earth at 642 cells, 6 years:
+      289.4 K, albedo 0.318; ice cover 0.50 near 73°N and 0.31 near 84°S, not
+      yet settled. Snow melts on landing for now (11.4).
     - [ ] 11.4. **Snow on sea ice**: its own temperature and heat capacity,
       melting snow, then ice, then warming the ocean. Tests: budgets close;
       conduction against an analytic case.
