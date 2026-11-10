@@ -13,7 +13,7 @@
 //!   tile is its ice; the land tile is a skin with no heat
 //!   capacity over a soil heat store, with a bucket of soil water and a pack
 //!   of snow. Each absorbs sunlight and longwave, emits as a black
-//!   body, and pays the latent heat of what evaporates; the ocean also pays
+//!   body, and pays the latent heat of what evaporates; open water also pays
 //!   the fusion of the snow that falls on it and melts. The radiation sees one surface per
 //!   cell, with the tiles' mean albedo and mean σT⁴, and splits its fluxes
 //!   between them so nothing is lost.
@@ -1520,12 +1520,11 @@ impl Forcing for ColumnPhysics<'_> {
                 ICE => black_body(surface[i].ice_skin),
                 _ => tiles[i].longwave_up[tile],
             };
-            // Snow landing on the sea melts at once, for now even on the
-            // ice; on land it's a pack. Ice that evaporates pays for its
-            // thawing first.
+            // Snow landing on open water melts at once; on land and ice
+            // it's a pack. Ice that evaporates pays for its thawing first.
             let fusion = match tile {
                 OCEAN => FUSION_HEAT * moist[i].snow,
-                ICE => FUSION_HEAT * (moist[i].snow + flux.evaporation.max(0.0)),
+                ICE => FUSION_HEAT * flux.evaporation.max(0.0),
                 _ => 0.0,
             };
             tiles[i].shortwave[tile] + radiation[i].surface_down
@@ -1544,6 +1543,7 @@ impl Forcing for ColumnPhysics<'_> {
                 skin: surface[i].ice_skin,
                 stress: surface[i].tiles[OCEAN].stress,
                 sublimation: FUSION_HEAT * surface[i].tiles[ICE].evaporation.max(0.0),
+                snowfall: moist[i].snow,
             });
             self.ocean.transport(dt);
         }
@@ -1706,8 +1706,16 @@ impl Forcing for ColumnPhysics<'_> {
                     .collect(),
             ),
             field(
+                "ocean.snow_on_ice",
+                "Snow on the sea ice, per unit area of ice",
+                "kg m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.snow_on_ice(i))
+                    .collect(),
+            ),
+            field(
                 "ocean.ice_temperature",
-                "Surface temperature of the sea ice (freezing where there is none)",
+                "Surface temperature of the sea ice or its snow (freezing where there is none)",
                 "K",
                 (0..self.land_fraction.len())
                     .map(|i| self.ocean.ice_temperature(i))

@@ -304,6 +304,16 @@ impl Ocean {
         self.ice.as_ref().map_or(0.0, |ice| ice.temperature[i])
     }
 
+    /// Temperature of the top of cell `i`'s ice, under any snow (K).
+    pub fn ice_interface_temperature(&self, i: usize) -> f64 {
+        self.ice.as_ref().map_or(0.0, |ice| ice.interface[i])
+    }
+
+    /// Snow on cell `i`'s ice (kg per m² of ice).
+    pub fn snow_on_ice(&self, i: usize) -> f64 {
+        self.ice.as_ref().map_or(0.0, |ice| ice.snow[i])
+    }
+
     /// Heat the limit on thickness has removed from cell `i` so far (J per
     /// m² of its ocean); [`heat`](Self::heat) still counts it.
     pub fn ice_limit_heat(&self, i: usize) -> f64 {
@@ -318,23 +328,21 @@ impl Ocean {
         };
         let p = ice.params;
         let thin = fms_math::exp(-ice.thickness[i] / p.albedo_depth);
-        std::array::from_fn(|b| p.albedo_limit[b] - (p.albedo_limit[b] - open_water[b]) * thin)
+        let cover = (ice.snow[i] / p.snow_critical).clamp(0.0, 1.0);
+        std::array::from_fn(|b| {
+            let bare = p.albedo_limit[b] - (p.albedo_limit[b] - open_water[b]) * thin;
+            cover * p.snow_albedo + (1.0 - cover) * bare
+        })
     }
 
     /// What the surface of cell `i`'s ice exchanges with its interior over
     /// `dt` seconds: a conductance (W m⁻² K⁻¹) and the temperature it pulls
     /// towards (K).
     pub fn ice_balance(&self, i: usize, dt: f64) -> (f64, f64) {
-        let ice = self.ice.as_ref().expect("this ocean has no ice");
-        let p = ice.params;
-        let h = ice.thickness[i];
-        let storage = p.capacity(h) / dt;
-        let conduction = p.conductivity / h;
-        let conductance = storage + conduction;
-        (
-            conductance,
-            (storage * ice.temperature[i] + conduction * p.freezing) / conductance,
-        )
+        self.ice
+            .as_ref()
+            .expect("this ocean has no ice")
+            .balance(i, dt)
     }
 
     /// Advance the ice's temperature `dt` seconds under `forcing(i)`, and
@@ -734,7 +742,9 @@ mod tests {
         let p = params.ice.unwrap();
         // A surface held 18.2 K below freezing, losing what it conducts.
         let skin = p.freezing - 18.2;
-        ocean.ice.as_mut().unwrap().temperature.fill(skin);
+        let ice = ocean.ice.as_mut().unwrap();
+        ice.temperature.fill(skin);
+        ice.interface.fill(skin);
         let (h0, f0) = (ocean.ice_thickness(0), ocean.ice_fraction(0));
         let dt = 900.0;
         let steps = 8 * 30 * 12;
@@ -793,11 +803,18 @@ mod tests {
                 skin: 271.35 + (net[i] / 40.0).clamp(-15.0, 1.8),
                 stress: 0.1,
                 sublimation: 0.0,
+                snowfall: 2e-5 * (1.0 + fms_math::sin(phase + 6.0 * scatter(i, 3))),
             });
             ocean.transport(dt);
             let gained: f64 = (0..n)
                 .map(|i| ocean.area[i] * dt * ((1.0 - frac[i]) * open[i] + frac[i] * net[i]))
-                .sum();
+                .sum::<f64>()
+                - (0..n)
+                    .map(|i| {
+                        let snowfall = 2e-5 * (1.0 + fms_math::sin(phase + 6.0 * scatter(i, 3)));
+                        ocean.area[i] * dt * frac[i] * snowfall * params.ice.unwrap().fusion
+                    })
+                    .sum::<f64>();
             let error = (total(&ocean) - before - gained).abs();
             assert!(error < 1e-11 * before, "step {step}: {error}");
             if step % 12 == 11 {
@@ -887,6 +904,154 @@ mod tests {
         let thick = ocean.ice_albedo(0, open);
         assert!((thick[0] - p.albedo_limit[0]).abs() < 1e-12);
         assert!((thick[1] - p.albedo_limit[1]).abs() < 1e-12);
+    }
+
+    /// An ice-covered ocean with 0.5 m of ice and `depth` metres of snow, at
+    /// surface and interface temperatures of `t` K.
+    fn snowy(grid: &Grid, depth: f64, t: f64) -> (Ocean, IceParams, OceanParams) {
+        let (mut ocean, params) = iced(grid, 0.2);
+        let p = params.ice.unwrap();
+        let ice = ocean.ice.as_mut().unwrap();
+        ice.fraction.fill(0.9);
+        ice.thickness.fill(0.5);
+        ice.snow.fill(depth * p.snow_density);
+        ice.temperature.fill(t);
+        ice.interface.fill(t);
+        (ocean, p, params)
+    }
+
+    #[test]
+    fn heat_conducts_through_snow_and_ice_in_series() {
+        let grid = Grid::new(4);
+        let (mut ocean, p, _) = snowy(&grid, 0.2, 260.0);
+        let (h, d) = (0.5, 0.2);
+        let skin = 250.0;
+        let (ri, rs) = (h / p.conductivity, d / p.snow_conductivity);
+        // A surface held at `skin`: it loses what conducts up to it.
+        for _ in 0..20_000 {
+            let net = (skin - ocean.ice_interface_temperature(0)) / rs;
+            ocean.step_ice(1800.0, |_| IceForcing {
+                net,
+                skin,
+                ..IceForcing::default()
+            });
+        }
+        let expected = p.freezing - (p.freezing - skin) * ri / (ri + rs);
+        let interface = ocean.ice_interface_temperature(0);
+        assert!(
+            (interface - expected).abs() < 1e-6,
+            "{interface} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn melting_takes_the_snow_then_the_ice_then_warms_the_ocean() {
+        let grid = Grid::new(4);
+        let (mut ocean, p, params) = snowy(&grid, 0.1, 272.0);
+        let (s, f, h) = (0.1 * p.snow_density, 0.9, 0.5);
+        let snow = p.snow_melting_energy(272.0);
+        let ice = p.melting_energy(272.0);
+        // Half the snow.
+        ocean.ice.as_mut().unwrap().top.fill(0.5 * s * snow);
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+        assert!((ocean.snow_on_ice(0) - 0.5 * s).abs() < 1e-9);
+        assert_eq!(ocean.ice_thickness(0), h);
+        // The rest of it and 0.1 m of ice.
+        let extra = 0.5 * s * snow + 0.1 * ice;
+        ocean.ice.as_mut().unwrap().top.fill(extra);
+        ocean.rearrange_ice();
+        assert_eq!(ocean.snow_on_ice(0), 0.0);
+        assert!((ocean.ice_thickness(0) - (h - 0.1)).abs() < 1e-9);
+        assert_eq!(ocean.mixed_temperature()[0], p.freezing);
+        // All the ice and more: a tenth of a metre's energy warms the water.
+        let top = (h - 0.1) * ice + 0.1 * ice;
+        ocean.ice.as_mut().unwrap().top.fill(top);
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert_eq!(ocean.ice_fraction(0), 0.0);
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+        let warmed = f * 0.1 * ice / params.mixed_capacity();
+        let t = ocean.mixed_temperature()[0];
+        assert!((t - p.freezing - warmed).abs() < 1e-3 * warmed, "{t}");
+    }
+
+    #[test]
+    fn snow_lands_with_its_heat_and_part_blows_into_the_water() {
+        let grid = Grid::new(4);
+        let (mut ocean, p, params) = snowy(&grid, 0.0, 260.0);
+        let rate = 1e-4;
+        let dt = 3600.0;
+        let start = ocean.mixed_temperature()[0];
+        let before = total(&ocean);
+        ocean.step_ice(dt, |_| IceForcing {
+            skin: 260.0,
+            net: p.conductivity * (260.0 - p.freezing) / 0.5,
+            snowfall: rate,
+            ..IceForcing::default()
+        });
+        let blown = p.snow_blown * 0.1;
+        let cooled = dt * 0.9 * blown * rate * p.fusion / params.mixed_capacity();
+        assert!((start - ocean.mixed_temperature()[0] - cooled).abs() < 1e-12);
+        let expected_heat = -0.9 * dt * rate * p.fusion;
+        let change: f64 = total(&ocean) - before;
+        let net = 0.9 * dt * p.conductivity * (260.0 - p.freezing) / 0.5;
+        let area: f64 = ocean.area.iter().sum();
+        assert!(
+            (change / area - expected_heat - net).abs() < 1e-3,
+            "{change}"
+        );
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+        let laid = ocean.ice_fraction(0) * ocean.snow_on_ice(0);
+        assert!(
+            (laid - 0.9 * dt * rate * (1.0 - blown)).abs() < 1e-9,
+            "{laid}"
+        );
+    }
+
+    #[test]
+    fn snow_below_the_waterline_floods_into_ice_and_keeps_the_heat() {
+        let grid = Grid::new(4);
+        // 0.5 m of ice bears 54.5 kg/m² of snow; this is 1 m of snow.
+        let (mut ocean, p, _) = snowy(&grid, 1.0, 265.0);
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+        let (h, s) = (ocean.ice_thickness(0), ocean.snow_on_ice(0));
+        assert!(h > 0.5 && s < p.snow_density, "{h} {s}");
+        let freeboard = s + p.density * h - p.sea_density * h;
+        assert!(freeboard.abs() < 1e-9, "{freeboard}");
+        assert!(
+            ocean.ice_interface_temperature(0) > 265.0,
+            "freezing warms it"
+        );
+    }
+
+    #[test]
+    fn a_thin_snow_layer_merges_with_the_ice_and_keeps_the_heat() {
+        let grid = Grid::new(4);
+        let (mut ocean, p, _) = snowy(&grid, 0.1, 265.0);
+        ocean.ice.as_mut().unwrap().temperature.fill(255.0);
+        // Melt most of the snow, leaving it below the critical amount.
+        let melted = (0.1 * p.snow_density - 5.0) * p.snow_melting_energy(260.0);
+        ocean.ice.as_mut().unwrap().top.fill(melted);
+        let before = total(&ocean);
+        ocean.rearrange_ice();
+        assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+        assert_eq!(ocean.ice_temperature(0), ocean.ice_interface_temperature(0));
+        let t = ocean.ice_temperature(0);
+        assert!(t > 255.0 && t < 265.0, "{t}");
+    }
+
+    #[test]
+    fn snow_hides_the_ices_albedo() {
+        let grid = Grid::new(4);
+        let (ocean, p, _) = snowy(&grid, 0.2, 260.0);
+        let covered = ocean.ice_albedo(0, [0.08; 2]);
+        assert_eq!(covered, [p.snow_albedo; 2]);
     }
 
     #[test]

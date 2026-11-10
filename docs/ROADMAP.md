@@ -317,9 +317,16 @@ Added after the M1 review: tooling the GCM work depends on.
       energy to −0.025 W/m² and water to 1e-14. Earth at 642 cells, 6 years:
       289.4 K, albedo 0.318; ice cover 0.50 near 73°N and 0.31 near 84°S, not
       yet settled. Snow melts on landing for now (11.4).
-    - [ ] 11.4. **Snow on sea ice**: its own temperature and heat capacity,
+    - [x] 11.4. **Snow on sea ice**: its own temperature and heat capacity,
       melting snow, then ice, then warming the ocean. Tests: budgets close;
       conduction against an analytic case.
+      Done: snow above 15 kg/m² is its own layer, solved together with the
+      interface temperature so thin ice stays stable. Wind blows part of the
+      snow into the water, and snow below the waterline floods into ice, as
+      in the authors' code. Heat through snow and ice in series matches the
+      analytic interface temperature to 1e-6 K, and a freezing and thawing
+      planet closes energy to −0.028 W/m². Earth at 642 cells, 6 years:
+      289.3 K, albedo 0.318, ice cover 0.53 near 73°N, 0.31 near 84°S.
     - [ ] 11.5. **Aquaplanet ice-albedo runs**: accelerated six-year runs at
       2.5k cells, with one 20-year true-time run to check the jump against
       ice-albedo feedback; with and without tilt and with the feedback off,

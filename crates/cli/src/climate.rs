@@ -163,6 +163,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Sequential,
         ),
         (
+            "ocean.snow_on_ice",
+            "Snow on sea ice, per unit area of ice",
+            "kg m-2",
+            ColorScale::Sequential,
+        ),
+        (
             "ocean.ice_thickness",
             "Mean sea-ice thickness",
             "m",
