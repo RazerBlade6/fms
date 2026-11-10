@@ -13,6 +13,7 @@ fms-atmos.workspace = true
 fms-fields.workspace = true
 fms-grid.workspace = true
 fms-math.workspace = true
+fms-ocean.workspace = true
 fms-planet.workspace = true
 gif.workspace = true
 glam.workspace = true

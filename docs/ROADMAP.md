@@ -327,12 +327,19 @@ Added after the M1 review: tooling the GCM work depends on.
       analytic interface temperature to 1e-6 K, and a freezing and thawing
       planet closes energy to −0.028 W/m². Earth at 642 cells, 6 years:
       289.3 K, albedo 0.318, ice cover 0.53 near 73°N, 0.31 near 84°S.
-    - [ ] 11.5. **Aquaplanet ice-albedo runs**: accelerated six-year runs at
+    - [x] 11.5. **Aquaplanet ice-albedo runs**: accelerated six-year runs at
       2.5k cells, with one 20-year true-time run to check the jump against
       ice-albedo feedback; with and without tilt and with the feedback off,
       unattended at the end of the step, against the paper's
       no-transport and diffusion-only cases; ice edge, seasons and hemispheric
       symmetry (O-20, O-36).
+      Done: all runs stable, energy residual under 0.014 W/m². True time at
+      20 years: 291.07 K with tilt, ice 4 million km² per hemisphere and
+      ice-free summers; 287.43 K without, ice to 60°, still thickening
+      (O-38). Feedback off warms the poles 5–13 K and the planet 0.9–2.2 K.
+      Diffusion moves the no-tilt ice edge 7° poleward and warms the sea
+      2–4 K at 42–53° (the paper: 5–6 K). No hemispheric lock-in. The
+      default jump barely speeds the ice (O-37).
     - [ ] 11.6. **Ice-sheet surface** (below). Test: Antarctica's interior
       cools by about 10 K with no change to snow-free land.
     - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and

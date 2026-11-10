@@ -117,6 +117,12 @@ struct WorldArgs {
     /// Surface pressure (bar, 0.1–10). Default: Earth's 1.013.
     #[arg(long)]
     surface_pressure: Option<f64>,
+    /// Axial tilt (degrees). Default: Earth's 23.44.
+    #[arg(long)]
+    obliquity: Option<f64>,
+    /// Orbital eccentricity. Default: Earth's 0.0167.
+    #[arg(long)]
+    eccentricity: Option<f64>,
 }
 
 #[derive(Args)]
@@ -270,6 +276,12 @@ fn build_world(args: &WorldArgs) -> Result<World, String> {
     }
     if let Some(bar) = args.surface_pressure {
         config.planet.surface_pressure = bar * 1.0e5;
+    }
+    if let Some(degrees) = args.obliquity {
+        config.planet.obliquity_deg = degrees;
+    }
+    if let Some(eccentricity) = args.eccentricity {
+        config.planet.eccentricity = eccentricity;
     }
     let mut world = World::new(config);
     eprintln!(

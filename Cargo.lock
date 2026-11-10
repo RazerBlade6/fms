@@ -337,6 +337,7 @@ dependencies = [
  "fms-fields",
  "fms-grid",
  "fms-math",
+ "fms-ocean",
  "fms-planet",
  "fms-sim",
  "gif",

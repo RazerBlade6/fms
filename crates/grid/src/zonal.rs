@@ -58,6 +58,11 @@ impl LatitudeBands {
         self.areas.is_empty()
     }
 
+    /// Cell area in each band (unit sphere), south to north.
+    pub fn areas(&self) -> &[f64] {
+        &self.areas
+    }
+
     /// Latitude (radians) of each band's centre, south to north.
     pub fn latitudes(&self) -> Vec<f64> {
         let width = std::f64::consts::PI / self.len() as f64;

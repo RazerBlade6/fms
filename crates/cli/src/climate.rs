@@ -6,6 +6,7 @@
 //! in `output/climate/`.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 
 use clap::Args;
 use fms_atmos::column_physics::{
@@ -15,6 +16,7 @@ use fms_atmos::column_physics::{
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
+use fms_ocean::{IceParams, OceanParams};
 
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
@@ -45,6 +47,16 @@ pub struct ClimateArgs {
     /// Most any ocean temperature may change in one jump (K).
     #[arg(long, default_value_t = OceanSpinUp::default().limit)]
     jump_limit: f64,
+    /// Horizontal heat diffusivity of the ocean (m²/s); 0 for none.
+    #[arg(long, default_value_t = OceanParams::default().diffusivity)]
+    ocean_diffusivity: f64,
+    /// Let a mixed layer colder than the deep layer stay on top.
+    #[arg(long)]
+    no_ocean_convection: bool,
+    /// Give sea ice and its snow the albedo of open water, which turns off
+    /// the ice-albedo feedback.
+    #[arg(long)]
+    no_ice_albedo: bool,
     /// Latitude bands for the zonal means (default: about one per grid
     /// spacing).
     #[arg(long)]
@@ -78,7 +90,25 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let planet_params = *world.planet.params();
+    let radiation = PhysicsParams::default().radiation;
+    let ocean = OceanParams {
+        diffusivity: args.ocean_diffusivity,
+        convective_adjustment: !args.no_ocean_convection,
+        ice: OceanParams::default().ice.map(|ice| {
+            if args.no_ice_albedo {
+                IceParams {
+                    albedo_limit: radiation.albedo,
+                    snow_albedo: radiation.albedo[0],
+                    ..ice
+                }
+            } else {
+                ice
+            }
+        }),
+        ..OceanParams::default()
+    };
     let params = PhysicsParams {
+        ocean,
         co2: planet_params.co2_ppm,
         spin_up: OceanSpinUp {
             jumps: args.ocean_jumps,
@@ -207,6 +237,17 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         "rad.clear_surface_longwave",
     ];
     let names: Vec<&str> = maps.iter().map(|m| m.0).chain(extra).collect();
+    // Monthly zonal means over the whole run, for the seasons and the drift.
+    let monthly = [
+        "rad.surface_temperature",
+        "ocean.mixed_temperature",
+        "ocean.deep_temperature",
+        "rad.absorbed_shortwave",
+        "rad.outgoing_longwave",
+        "atm.precipitation",
+        "atm.cloud_cover",
+        "ocean.snow_on_ice",
+    ];
     let mut ids: Vec<FieldId<f64>> = Vec::new();
     for (name, description, units, color_scale) in maps {
         let spec = FieldSpec {
@@ -273,6 +314,22 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 .ok_or_else(|| format!("the physics has no field {n}"))
         })
         .collect::<Result<_, _>>()?;
+    let monthly_index: Vec<usize> = monthly
+        .iter()
+        .map(|n| {
+            fields_now
+                .iter()
+                .position(|f| f.name == *n)
+                .ok_or_else(|| format!("the physics has no field {n}"))
+        })
+        .collect::<Result<_, _>>()?;
+    let ice_index = ["ocean.ice_fraction", "ocean.ice_thickness"].map(|n| {
+        fields_now
+            .iter()
+            .position(|f| f.name == n)
+            .expect("the physics reports its ice")
+    });
+    let land = world.fields.read(world.core.terrain.land_fraction).to_vec();
     let model = model.with_forcing(Box::new(physics));
     let bands = args
         .bands
@@ -312,8 +369,76 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let mut sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; names.len()];
     let mut samples = 0.0;
     let mut start = None;
+    std::fs::create_dir_all(&out.dir)
+        .map_err(|e| format!("cannot create {}: {e}", out.dir.display()))?;
+    let path = out.dir.join("monthly_zonal.csv");
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    let mut monthly_file = std::io::BufWriter::new(file);
+    let mut monthly_result = writeln!(
+        monthly_file,
+        "year,month,latitude_deg,area_share,ice_cover,ice_volume_m,{}",
+        monthly.join(",")
+    );
+    let band_latitudes = lat_bands.latitudes();
+    let band_shares: Vec<f64> = {
+        let total: f64 = lat_bands.areas().iter().sum();
+        lat_bands.areas().iter().map(|a| a / total).collect()
+    };
+    let mut month_sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; monthly.len() + 2];
+    let mut month_samples = 0.0;
+    let mut month_done = 0_u64;
+    let steps_in_month = |month: u64| (month as f64 * per_year as f64 / 12.0).round() as u64;
     integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
         let forcing = si.model().forcing().expect("climate has forcing");
+        {
+            let fields = forcing.cell_fields();
+            let (cover, thickness) = (&fields[ice_index[0]].values, &fields[ice_index[1]].values);
+            for (i, land) in land.iter().enumerate() {
+                let c = cover[i] * (1.0 - land);
+                month_sums[0][i] += c;
+                month_sums[1][i] += c * thickness[i];
+            }
+            for (sum, &f) in month_sums[2..].iter_mut().zip(&monthly_index) {
+                for (s, v) in sum.iter_mut().zip(&fields[f].values) {
+                    *s += v;
+                }
+            }
+            month_samples += 1.0;
+        }
+        if si.steps() >= steps_in_month(month_done + 1) {
+            let zonal: Vec<Vec<f64>> = month_sums
+                .iter()
+                .map(|m| {
+                    let mean: Vec<f64> = m.iter().map(|v| v / month_samples).collect();
+                    lat_bands.mean(geometry, &mean)
+                })
+                .collect();
+            let (year, month) = (month_done / 12 + 1, month_done % 12 + 1);
+            let mut rows = String::new();
+            for b in 0..band_latitudes.len() {
+                let _ = write!(
+                    rows,
+                    "{year},{month},{:.3},{:.6}",
+                    band_latitudes[b].to_degrees(),
+                    band_shares[b],
+                );
+                for z in &zonal {
+                    let _ = write!(rows, ",{:.6}", z[b]);
+                }
+                rows.push('\n');
+            }
+            if monthly_result.is_ok() {
+                monthly_result = monthly_file
+                    .write_all(rows.as_bytes())
+                    .and_then(|()| monthly_file.flush());
+            }
+            for m in &mut month_sums {
+                m.fill(0.0);
+            }
+            month_samples = 0.0;
+            month_done += 1;
+        }
         if start.is_none() && si.steps() >= stats_from {
             start = Some((
                 si.model().diagnostics(si.state()),
@@ -334,6 +459,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             samples += 1.0;
         }
     })?;
+    monthly_result.map_err(|e| format!("cannot write the monthly means: {e}"))?;
     let means: Vec<Vec<f64>> = sums
         .iter()
         .map(|s| s.iter().map(|v| v / samples).collect())

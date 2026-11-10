@@ -41,6 +41,8 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-29 | [The layered core is ~12% slower than the two-layer one](#o-29-the-layered-core-is-12-slower-than-the-two-layer-one) | Performance | Scheduled: M2 step 16 |
 | O-30 | [Terrain is smoothed, and spreads over coastal ocean](#o-30-terrain-is-smoothed-and-spreads-over-coastal-ocean) | Terrain | Watching |
 | O-36 | [Too much sea ice is expected until M2 step 12](#o-36-too-much-sea-ice-is-expected-until-m2-step-12) | Ocean | Scheduled: M2 step 12 |
+| O-37 | [The ocean jump barely speeds up the ice](#o-37-the-ocean-jump-barely-speeds-up-the-ice) | Ocean | Open: jump setting to choose before M2.11.8 |
+| O-38 | [Perennial ice has no equilibrium in 20 years](#o-38-perennial-ice-has-no-equilibrium-in-20-years) | Ocean | Watching |
 
 ---
 
@@ -431,6 +433,10 @@ replaces the fixed deck; steps 10–11 add snow and sea ice with their albedo.
 humidity and convection and act on both sunlight and longwave (O-25). Snow
 falls (and is reported) but doesn't yet lie anywhere; ice and snow cover
 remain for steps 10–11.
+
+**Update (M2.11.5):** sea-ice albedo is done. On an aquaplanet at 2.5k cells,
+giving ice and its snow the albedo of open water warms the planet by 0.9 K
+with tilt and 2.2 K without, and the poles by 5–7 K and 10–13 K.
 
 ### O-21: Dissipated kinetic energy leaks out of the planet
 
@@ -901,3 +907,51 @@ diffusion-only aquaplanet case (Case 2) ran this way.
 
 **Revisit when:** step 12's transport is on. The ice edge is then compared with
 the paper's full-transport cases, and this entry is resolved or updated.
+
+**Update (M2.11.5):** on aquaplanets at 2.5k cells the paper's comparison
+holds in sign and rough size. Without tilt, diffusion takes the ice edge from
+54° to 61° and warms the sea 1.9, 3.2 and 4.3 K at 42°, 48° and 53°; the paper's
+Case 2 gives 5–6 K at mid-to-high latitudes (its ten-year means are settled;
+ours are six accelerated years, and the case with no transport is still gaining
+ice). There was no hemispheric lock-in: with tilt and no transport, year one's
+ice of 14 million km² in the north and 34 in the south became 8.8 and 9.4 by
+year 6. The paper's figures could not be read here, only its text.
+
+### O-37: The ocean jump barely speeds up the ice
+
+**Seen (M2.11.5):** against year 20 of a true-time aquaplanet with tilt at 2.5k
+cells, the default of three jumps of three years leaves the planet 0.33 K too
+cold, an RMS zonal error of 0.70 K, and annual-mean ice of 6.0 and 7.7 million
+km² in the north and south against 4.2 and 4.0. True time at year 6 has 6.0 and
+8.4, so the ice gains almost nothing. Most of the true-time ice loss after year
+6 is slow retreat from year one's excess in the south.
+
+Same cost, three jumps of six years: −0.05 K, RMS 0.32 K, ice 4.7 and 5.3. Five
+jumps of three years over 8 years: −0.14 K, RMS 0.44 K, ice 5.2 and 6.5. For
+comparison, a true-time run reaches −0.20 K, RMS 0.38 K, ice 4.4 and 6.2 at year
+10.
+
+Without tilt no schedule helps (+0.46 K for the default, +0.63 K with jumps of
+six years), but its target is itself still moving (O-38).
+
+**Why it's open:** `--jump-years 6` looks better for a planet with seasons, but
+the default was validated without ice, at 642 cells, against a 30-year Earth
+run. It needs an Earth check at M2.11.8 before the default changes.
+
+### O-38: Perennial ice has no equilibrium in 20 years
+
+**Seen (M2.11.5):** on a no-tilt aquaplanet the poles never melt. The latitude
+shaped start is far below freezing there, so the first ice is already at the
+10 m limit. Snow then piles up, to 1700 kg/m² after 20 years, and floods into
+ice, reaching 15 m. Flooding passes the 10 m limit in the authors' code too
+(`ocean_slab_mod.F90`). Net radiation at the top stays near −1 W/m² for 15
+years, about half going into thickening ice and half into a cooling deep layer.
+
+**Why it's acceptable for now:** energy still closes (residual +0.010 W/m²),
+and the ice edge at about 60° is set by the much thinner ice near it. A planet
+with tilt melts its ice every summer and does settle, within 0.2 W/m² by year
+11.
+
+**Revisit when:** step 12 adds upwelling to the deep layer. A world with
+perennial ice would need a limit on snow, or a start that doesn't begin at the
+thickness limit.

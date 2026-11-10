@@ -82,6 +82,8 @@ and land ramps, with sea level as a hard boundary. Non-finite values are magenta
 |---|---|---|
 | `--co2 PPM` | 420 | Atmospheric CO₂, 0–100,000 ppm |
 | `--surface-pressure BAR` | 1.013 | Surface pressure, 0.1–10 bar |
+| `--obliquity DEG` | 23.44 | Axial tilt |
+| `--eccentricity E` | 0.0167 | Orbital eccentricity |
 
 Values outside the ranges are clamped with a warning (PLAN §4.1).
 
@@ -255,8 +257,7 @@ world's terrain (`--continent`, `--heightmap`), lightly smoothed
 diffusion and convective adjustment, and sea ice (currents arrive in M2 step
 12), and in proportion to its land fraction a land tile, so a skin over a
 1 m soil heat store with a 150 mm bucket of soil water and a snow pack. A
-world with no land is an ice-free aquaplanet (O-23; see also O-22, O-24,
-O-25). The run starts at rest from a single-column radiative–convective
+world with no land is an aquaplanet (see also O-22, O-24, O-25). The run starts at rest from a single-column radiative–convective
 equilibrium with its humidity, in hydrostatic balance with the terrain, and
 averages the final year. An ocean this deep takes a couple of decades to
 settle, so by default its temperatures start shaped by the year's sunlight and
@@ -270,6 +271,9 @@ of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check i
 | `--ocean-jumps N` | 3 | Years, from the second on, that end with an ocean jump; 0 for true time. `--years` must be at least N + 3 |
 | `--jump-years Y` | 3 | Years of the ocean's change added by each jump |
 | `--jump-limit K` | 3 | Most any ocean temperature may change in one jump (K) |
+| `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean, m²/s; 0 for none |
+| `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
+| `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
@@ -291,6 +295,9 @@ Outputs in `output/climate/`:
   `rad.absorbed_shortwave`, `atm.water_vapour`, `atm.precipitation`,
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,
   `rad.shortwave_cloud_effect`, `rad.longwave_cloud_effect`;
+- `monthly_zonal.csv`: monthly zonal means over the whole run, with each
+  band's share of the planet; ice cover and volume are per unit of the band's
+  whole area;
 - `diagnostics.csv`, the surface-pressure GIF, maps of the final state, and
   the blow-up dump, as for `fms-climate baroclinic`.
 
