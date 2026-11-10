@@ -259,12 +259,17 @@ world with no land is an ice-free aquaplanet (O-23; see also O-22, O-24,
 O-25). The run starts at rest from a single-column radiative–convective
 equilibrium with its humidity, in hydrostatic balance with the terrain, and
 averages the final year. An ocean this deep takes a couple of decades to
-settle, so the default four years show a climate still warming up: use
-`--years 20` or more for an equilibrium.
+settle, so by default its temperatures start shaped by the year's sunlight and
+it jumps forward at the end of years 2 to 4, repeating each year's change for
+three more, before two years in true time. At 642 cells that is within 0.04 K
+of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check it.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--years Y` | 4 | Simulated years; statistics from the last one |
+| `--years Y` | 6 | Simulated years; statistics from the last one |
+| `--ocean-jumps N` | 3 | Years, from the second on, that end with an ocean jump; 0 for true time. `--years` must be at least N + 3 |
+| `--jump-years Y` | 3 | Years of the ocean's change added by each jump |
+| `--jump-limit K` | 3 | Most any ocean temperature may change in one jump (K) |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |

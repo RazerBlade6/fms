@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     #[ignore = "known gap (O-35): deep convection rains under the trade inversion"]
-    fn bomex_trade_cumulus_do_not_rain() {
+    fn known_gap_bomex_trade_cumulus_do_not_rain() {
         let r = run_case(&bomex(), &PhysicsParams::default());
         assert!(r.rain < 0.1, "{r:?}");
         assert!(r.cumulus > 0.5, "{r:?}");
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     #[ignore = "known gap (O-35): the model's layers can't hold an inversion"]
-    fn dycoms_stratocumulus_entrains_slowly_and_stays_overcast() {
+    fn known_gap_dycoms_stratocumulus_entrains_slowly_and_stays_overcast() {
         let r = run_case(&dycoms(), &PhysicsParams::default());
         assert!((2e-3..8e-3).contains(&r.entrainment_velocity), "{r:?}");
         assert!(r.cloud > 0.8, "{r:?}");

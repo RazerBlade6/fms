@@ -287,11 +287,20 @@ Added after the M1 review: tooling the GCM work depends on.
       error is larger than the 10 m slab's (−0.064 W/m² over 425 days at 640
       cells), a third of that at half the step, and the same with no
       transport.
-    - [ ] 11.1.5. **Early performance pass**: cut the `exp`/`pow` cost in moist
+    - [x] 11.1.5. **Early performance pass**: cut the `exp`/`pow` cost in moist
       physics, flatten and merge the dynamics loops, run inside the rayon
       pool. Target 1.5× or better at 2.5k cells. Dynamics changes keep the
       golden hashes; the moist-physics change may move them once, with the
       climate checked. Step 16 keeps the solver, scheduler and scaling work.
+      Done: 2.60× at 2.5k cells on 8 threads (11.19 to 4.30 ms/step), 3.84× at
+      642 cells on 4; see `REPORT.md` and `docs/BENCHMARKS.md`.
+    - [x] 11.1.6. **Test tiers and a shorter spin-up**: `cargo t1`, `t2` and
+      `t3`, with known gaps apart in `cargo gaps`. The ocean starts shaped by
+      the year's sunlight and jumps three times, repeating a year's change
+      for three more, off in the pinned tests. Six years at 642 cells came
+      within 0.04 K of a 30-year run in the global mean; RMS zonal error 0.32 K
+      at the surface and 0.28 K in the deep ocean (true-time six years: 0.56
+      and 0.76). Must be checked again once ice exists (11.5).
     - [ ] 11.2. **Two-band surface albedo** through radiation and the tiles.
       Test: equal band albedos reproduce today's results bit for bit.
     - [ ] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
@@ -301,15 +310,17 @@ Added after the M1 review: tooling the GCM work depends on.
     - [ ] 11.4. **Snow on sea ice**: its own temperature and heat capacity,
       melting snow, then ice, then warming the ocean. Tests: budgets close;
       conduction against an analytic case.
-    - [ ] 11.5. **Aquaplanet ice-albedo runs**: 20 years at 2.5k cells, with
-      and without tilt and with the feedback off, against the paper's
+    - [ ] 11.5. **Aquaplanet ice-albedo runs**: accelerated six-year runs at
+      2.5k cells, with one 20-year true-time run to check the jump against
+      ice-albedo feedback; with and without tilt and with the feedback off,
+      unattended at the end of the step, against the paper's
       no-transport and diffusion-only cases; ice edge, seasons and hemispheric
       symmetry (O-20, O-36).
     - [ ] 11.6. **Ice-sheet surface** (below). Test: Antarctica's interior
       cools by about 10 K with no change to snow-free land.
     - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and
       snow insulation, one at a time (O-33).
-    - [ ] 11.8. **Earth run and close-out**: 20 years at 2.5k cells, monthly
+    - [ ] 11.8. **Earth run and close-out**: the accelerated run at 2.5k cells, monthly
       ice extent per hemisphere, budgets, O-30's coastal cells again, docs.
 
 

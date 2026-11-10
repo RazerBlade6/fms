@@ -68,7 +68,7 @@
 use fms_grid::Operators;
 use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use fms_grid::zonal::east_north;
-use fms_ocean::{Ocean, OceanParams};
+use fms_ocean::{Ocean, OceanParams, OceanSnapshot};
 use fms_planet::Planet;
 use glam::DVec3;
 use rayon::prelude::*;
@@ -230,6 +230,8 @@ pub struct PhysicsParams {
     pub co2: f64,
     /// The ocean under the ocean tile.
     pub ocean: OceanParams,
+    /// Shortening the ocean's spin-up.
+    pub spin_up: OceanSpinUp,
     /// The land tile.
     pub land: LandParams,
     /// Sub-grid hills.
@@ -253,6 +255,30 @@ pub struct PhysicsParams {
     pub radiation_interval: f64,
 }
 
+/// Asynchronous spin-up of the ocean: at the end of each of the years after
+/// the first, up to `jumps` of them, the ocean's change over that whole year
+/// is repeated for `extra_years` more. Runs that report a climate need
+/// unaccelerated years after the last jump.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OceanSpinUp {
+    /// How many years end in a jump; 0 for none.
+    pub jumps: u32,
+    /// Years of change added by each jump.
+    pub extra_years: f64,
+    /// Most any layer of any cell may change in one jump (K).
+    pub limit: f64,
+}
+
+impl Default for OceanSpinUp {
+    fn default() -> Self {
+        Self {
+            jumps: 0,
+            extra_years: 3.0,
+            limit: 3.0,
+        }
+    }
+}
+
 impl Default for PhysicsParams {
     fn default() -> Self {
         Self {
@@ -260,6 +286,7 @@ impl Default for PhysicsParams {
             moisture: MoistureParams::default(),
             co2: 420.0,
             ocean: OceanParams::default(),
+            spin_up: OceanSpinUp::default(),
             land: LandParams::default(),
             orography: OrographyParams::default(),
             surface_layer: SurfaceLayerParams::default(),
@@ -704,6 +731,13 @@ pub struct ColumnPhysics<'a> {
     relief_slope: Vec<DVec3>,
     /// The ocean under each cell's ocean tile.
     ocean: Ocean,
+    /// When the current model year ends (s).
+    next_year: f64,
+    /// The ocean at the start of the year being measured for a jump.
+    year_start: Option<OceanSnapshot>,
+    jumps_done: u32,
+    /// Heat the jumps have added to the ocean (J); not part of the budget.
+    jumped: f64,
     /// Skin temperature of each cell's land tile (K).
     land_temperature: Vec<f64>,
     /// Temperature of each cell's soil store (K).
@@ -810,6 +844,10 @@ impl<'a> ColumnPhysics<'a> {
             soil_water: vec![params.land.critical_water(); n],
             snow: vec![0.0; n],
             ocean,
+            next_year: time + planet.year_seconds(),
+            year_start: None,
+            jumps_done: 0,
+            jumped: 0.0,
             radiation: vec![Fluxes::default(); n],
             clear: vec![Fluxes::default(); n],
             tile_radiation: vec![TileRadiation::default(); n],
@@ -868,6 +906,30 @@ impl<'a> ColumnPhysics<'a> {
         );
         self.prescribed = true;
         self
+    }
+
+    /// Total heat of the ocean (J).
+    fn ocean_heat(&self) -> f64 {
+        let areas = &self.ops.geometry().cell_areas;
+        let r2 = self.ops.radius() * self.ops.radius();
+        (0..areas.len())
+            .map(|i| (1.0 - self.land_fraction[i]) * (areas[i] * r2 * self.ocean.heat(i)))
+            .sum()
+    }
+
+    /// A model year has ended: jump if a year has been measured, and start
+    /// measuring the next if any jumps remain.
+    fn end_spin_up_year(&mut self) {
+        let spin_up = self.params.spin_up;
+        if let Some(start) = self.year_start.take() {
+            let before = self.ocean_heat();
+            self.ocean.jump(&start, spin_up.extra_years, spin_up.limit);
+            self.jumped += self.ocean_heat() - before;
+            self.jumps_done += 1;
+        }
+        if self.jumps_done < spin_up.jumps {
+            self.year_start = Some(self.ocean.snapshot());
+        }
     }
 
     /// The parameters.
@@ -1446,6 +1508,13 @@ impl Forcing for ColumnPhysics<'_> {
         self.ocean_exchange += dt * r2 * ocean_exchange;
         self.dissipated += dt * self.dissipation;
         self.time += dt;
+        if self.jumps_done < self.params.spin_up.jumps
+            && !self.prescribed
+            && self.time >= self.next_year - 1e-6
+        {
+            self.next_year += self.planet.year_seconds();
+            self.end_spin_up_year();
+        }
         let solve = (!self.prescribed).then_some(dt);
         self.update_surface_fluxes(state, solve);
         if self.time >= self.next_radiation - 1e-6 {
@@ -1463,12 +1532,11 @@ impl Forcing for ColumnPhysics<'_> {
             (0..areas.len())
                 .map(|i| {
                     let (a, f) = (areas[i], self.land_fraction[i]);
-                    (1.0 - f) * (a * r2 * self.ocean.heat(i))
-                        + f * (a
-                            * r2
-                            * (land * self.soil_temperature[i] - FUSION_HEAT * self.snow[i]))
+                    f * (a * r2 * (land * self.soil_temperature[i] - FUSION_HEAT * self.snow[i]))
                 })
-                .sum()
+                .sum::<f64>()
+                + self.ocean_heat()
+                - self.jumped
         };
         Some(ForcingBudget {
             absorbed: self.absorbed,
@@ -1920,6 +1988,44 @@ pub fn initial_state(
     let state =
         LayeredState::new(surface_pressure, vec![vec![0.0; ne]; n], theta).with_humidity(humidity);
     (state, eq.surface_temperature)
+}
+
+/// Warmest minus coldest starting temperature per unit of the annual-mean
+/// insolation's relative contrast (K): Earth's seas, 29 K across 0.72.
+const START_CONTRAST: f64 = 40.0;
+
+/// [`initial_surface_temperature`], warmer where the year's mean sunlight is
+/// above the global mean and colder where it is below, with the global mean
+/// unchanged, so the ocean starts nearer its balance than from one value.
+pub fn initial_surface_temperature_by_latitude(
+    model: &LayeredModel,
+    planet: &Planet,
+    params: &PhysicsParams,
+    sea_level: f64,
+) -> Vec<f64> {
+    const SAMPLES: usize = 48;
+    let year = planet.year_seconds();
+    let ops = model.operators();
+    let sunlight: Vec<f64> = ops
+        .mesh()
+        .cell_centers()
+        .iter()
+        .map(|&p| {
+            let lat = fms_grid::coords::to_lat_lon(p).0;
+            (0..SAMPLES)
+                .map(|n| planet.daily_mean_insolation(lat, year * n as f64 / SAMPLES as f64))
+                .sum::<f64>()
+                / SAMPLES as f64
+        })
+        .collect();
+    let areas = &ops.geometry().cell_areas;
+    let mean =
+        sunlight.iter().zip(areas).map(|(s, a)| s * a).sum::<f64>() / areas.iter().sum::<f64>();
+    initial_surface_temperature(model, params, sea_level)
+        .into_iter()
+        .zip(&sunlight)
+        .map(|(t, s)| t + START_CONTRAST * (s / mean - 1.0))
+        .collect()
 }
 
 /// Starting surface temperature per cell (K): `sea_level` (K) at sea level,

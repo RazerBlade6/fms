@@ -1,0 +1,5 @@
+[alias]
+t1 = "test --workspace --lib --bins"
+t2 = "test --workspace"
+t3 = "test --workspace --release -- --ignored --skip known_gap"
+gaps = "test --workspace --release known_gap -- --ignored"

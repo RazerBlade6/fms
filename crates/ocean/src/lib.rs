@@ -87,6 +87,13 @@ impl OceanParams {
     }
 }
 
+/// The ocean's temperatures at one moment, for [`Ocean::jump`].
+#[derive(Clone, Debug)]
+pub struct OceanSnapshot {
+    mixed: Vec<f64>,
+    deep: Vec<f64>,
+}
+
 /// An edge between two cells that both have ocean.
 #[derive(Clone, Copy, Debug)]
 struct Link {
@@ -256,6 +263,35 @@ impl Ocean {
             &mut self.convergence,
             amount,
         );
+    }
+
+    /// The temperatures now, for a later [`jump`](Self::jump).
+    pub fn snapshot(&self) -> OceanSnapshot {
+        OceanSnapshot {
+            mixed: self.mixed.clone(),
+            deep: self.deep.clone(),
+        }
+    }
+
+    /// Spin-up only: repeat each layer's change since `from` for `periods`
+    /// more of the same span, moving no temperature by more than `limit` (K),
+    /// then overturn what that left unstable. Taken over a whole year, the
+    /// change has no seasonal part. It doesn't conserve heat, by design.
+    pub fn jump(&mut self, from: &OceanSnapshot, periods: f64, limit: f64) {
+        let extrapolate = |now: &mut [f64], then: &[f64]| {
+            for ((t, t0), a) in now.iter_mut().zip(then).zip(&self.area) {
+                if *a > 0.0 {
+                    *t += (periods * (*t - t0)).clamp(-limit, limit);
+                }
+            }
+        };
+        extrapolate(&mut self.mixed, &from.mixed);
+        if self.params.deep_depth > 0.0 {
+            extrapolate(&mut self.deep, &from.deep);
+            if self.params.convective_adjustment {
+                self.adjust();
+            }
+        }
     }
 
     /// Mix each column whose mixed layer is colder than its deep layer.
@@ -546,6 +582,43 @@ mod tests {
             }
         }
         assert!(((total(&ocean) - before) / before).abs() < 1e-14);
+    }
+
+    #[test]
+    fn a_jump_repeats_the_change_within_its_limit() {
+        let grid = Grid::new(4);
+        let mut land = vec![0.0; grid.n()];
+        land[0] = 1.0;
+        let params = OceanParams {
+            diffusivity: 0.0,
+            ..OceanParams::default()
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()]);
+        let start = ocean.snapshot();
+        let c = params.mixed_capacity();
+        ocean.add_surface_heat(1.0, |i| if i == 1 { 2.0 * c } else { 0.5 * c });
+        ocean.jump(&start, 3.0, 3.0);
+        let mixed = ocean.mixed_temperature();
+        assert_eq!(mixed[0], 290.0, "no ocean here");
+        assert_eq!(mixed[1], 295.0, "2 K, plus 6 K limited to 3 K");
+        assert_eq!(mixed[2], 292.0, "0.5 K, plus 3 × 0.5 K");
+    }
+
+    #[test]
+    fn a_jump_overturns_what_it_leaves_unstable() {
+        let grid = Grid::new(4);
+        let land = vec![0.0; grid.n()];
+        let params = OceanParams {
+            diffusivity: 0.0,
+            ..OceanParams::default()
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![277.0; grid.n()]);
+        let start = ocean.snapshot();
+        ocean.add_surface_heat(1.0, |_| -params.mixed_capacity());
+        ocean.jump(&start, 1.0, 10.0);
+        // A quarter of the water at 275 K, the rest at 277 K.
+        assert_eq!(ocean.mixed_temperature()[0], 276.5);
+        assert_eq!(ocean.deep_temperature()[0], 276.5);
     }
 
     #[test]

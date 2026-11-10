@@ -9,7 +9,8 @@ use std::fmt::Write as _;
 
 use clap::Args;
 use fms_atmos::column_physics::{
-    CLIMATE_LEVELS, LATENT_HEAT, initial_state, initial_surface_temperature,
+    CLIMATE_LEVELS, LATENT_HEAT, OceanSpinUp, initial_state,
+    initial_surface_temperature_by_latitude,
 };
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
@@ -32,8 +33,18 @@ pub struct ClimateArgs {
     #[command(flatten)]
     world: WorldArgs,
     /// Simulated years; statistics come from the last one.
-    #[arg(long, default_value_t = 4.0)]
+    #[arg(long, default_value_t = 6.0)]
     years: f64,
+    /// Years, from the second on, that end with the ocean jumping forward; 0
+    /// for a run in true time. Needs `--years` of at least this plus 3.
+    #[arg(long, default_value_t = 3)]
+    ocean_jumps: u32,
+    /// Years of the ocean's change added by each jump.
+    #[arg(long, default_value_t = OceanSpinUp::default().extra_years)]
+    jump_years: f64,
+    /// Most any ocean temperature may change in one jump (K).
+    #[arg(long, default_value_t = OceanSpinUp::default().limit)]
+    jump_limit: f64,
     /// Latitude bands for the zonal means (default: about one per grid
     /// spacing).
     #[arg(long)]
@@ -57,11 +68,23 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     if args.years <= 1.0 {
         return Err("--years must be more than 1 (the last year is averaged)".into());
     }
+    if args.ocean_jumps > 0 && args.years < f64::from(args.ocean_jumps) + 3.0 {
+        return Err(format!(
+            "--years must be at least {} with --ocean-jumps {}: one year to start and two after the last jump",
+            args.ocean_jumps + 3,
+            args.ocean_jumps
+        ));
+    }
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let planet_params = *world.planet.params();
     let params = PhysicsParams {
         co2: planet_params.co2_ppm,
+        spin_up: OceanSpinUp {
+            jumps: args.ocean_jumps,
+            extra_years: args.jump_years,
+            limit: args.jump_limit,
+        },
         ..PhysicsParams::default()
     };
     // Annual-mean maps of these of the physics' cell fields
@@ -206,7 +229,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         params,
         0.0,
         &state,
-        initial_surface_temperature(&model, &params, surface_temperature),
+        initial_surface_temperature_by_latitude(
+            &model,
+            &world.planet,
+            &params,
+            surface_temperature,
+        ),
         world.fields.read(world.core.terrain.land_fraction).to_vec(),
     )
     .with_relief(

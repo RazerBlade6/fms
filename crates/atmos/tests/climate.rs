@@ -3,7 +3,10 @@
 //! close, and (slow, run with `--ignored`) the equilibrium climate is that of
 //! an ice-free, Earth-like aquaplanet.
 
-use fms_atmos::column_physics::{ApeSst, CLIMATE_LEVELS, LATENT_HEAT, initial_state};
+use fms_atmos::column_physics::{
+    ApeSst, CLIMATE_LEVELS, LATENT_HEAT, OceanSpinUp, initial_state,
+    initial_surface_temperature_by_latitude,
+};
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
     ColumnPhysics, Forcing, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
@@ -58,9 +61,32 @@ fn run_over(
     levels: Levels,
     land: impl Fn(glam::DVec3) -> f64,
     relief: impl Fn(glam::DVec3) -> (f64, f64),
+    each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
+) {
+    run_on(
+        &Planet::earth(),
+        params,
+        k,
+        days,
+        levels,
+        land,
+        relief,
+        each,
+    );
+}
+
+/// [`run_over`] on any planet.
+#[allow(clippy::too_many_arguments)]
+fn run_on(
+    planet: &Planet,
+    params: PhysicsParams,
+    k: u32,
+    days: f64,
+    levels: Levels,
+    land: impl Fn(glam::DVec3) -> f64,
+    relief: impl Fn(glam::DVec3) -> (f64, f64),
     mut each: impl FnMut(&LayeredSemiImplicit, &MeshGeometry, f64),
 ) {
-    let planet = Planet::earth();
     let (mesh, _) = SphereMesh::centroidal(k, LloydOptions::default());
     let geometry = MeshGeometry::new(&mesh);
     let model = LayeredModel::new(
@@ -77,14 +103,14 @@ fn run_over(
             .map(|&p| GRAVITY * relief(p).1)
             .collect(),
     );
-    let (state, ts) = initial_state(&model, &planet, &params);
+    let (state, ts) = initial_state(&model, planet, &params);
     // Radiatively driven jets and storms reach ~100 m/s.
     let dt = LayeredSemiImplicit::stable_dt(&model, 120.0, 0.6);
     let dt = DAY / (DAY / dt).ceil();
     let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
     let physics = ColumnPhysics::with_land(
         &model,
-        &planet,
+        planet,
         params,
         0.0,
         &state,
@@ -249,6 +275,114 @@ fn budgets_close(
         total_residual.abs() < 1e-11 * w1,
         "total residual {total_residual:e} kg"
     );
+}
+
+#[test]
+fn an_ocean_jump_moves_the_sea_and_stays_out_of_the_energy_budget() {
+    let (with, largest, when) = jump_run(1);
+    let (without, ..) = jump_run(0);
+    eprintln!("residual {with:+.5} W/m², without the jump {without:+.5}");
+    assert!(largest > 0.2, "largest step change {largest} K");
+    assert!((40.0..40.1).contains(&when), "at day {when}");
+    // The jump adds tens of W/m² of heat over this run; none of it may show.
+    assert!((with - without).abs() < 0.03, "{with} against {without}");
+}
+
+/// Energy-budget residual (W/m²) of 45 days at 642 cells with a 20-day year,
+/// so a jump comes at the end of day 40; and the sea's largest change in one
+/// step (K) and the day of it.
+fn jump_run(jumps: u32) -> (f64, f64, f64) {
+    let (planet, _) = Planet::new(PlanetParams {
+        year_days: 20.0,
+        ..PlanetParams::earth()
+    });
+    let params = PhysicsParams {
+        spin_up: OceanSpinUp {
+            jumps,
+            ..OceanSpinUp::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let mut first = None;
+    let mut last = None;
+    let (mut previous, mut largest, mut when): (Option<Vec<f64>>, f64, f64) = (None, 0.0, 0.0);
+    let levels = Levels::new(&CLIMATE_LEVELS);
+    let land = |_| 0.0;
+    run_on(&planet, params, 8, 45.0, levels, land, FLAT, |si, _, dt| {
+        let forcing = si.model().forcing().unwrap();
+        let row = (
+            si.model().diagnostics(si.state()),
+            si.energy_budget(),
+            forcing.budget().unwrap(),
+            si.steps() as f64 * dt,
+            si.water(),
+        );
+        first.get_or_insert(row);
+        last = Some(row);
+        let fields = forcing.cell_fields();
+        let sea = &fields
+            .iter()
+            .find(|f| f.name == "ocean.mixed_temperature")
+            .unwrap()
+            .values;
+        if let Some(before) = &previous {
+            let change = sea
+                .iter()
+                .zip(before)
+                .map(|(a, b): (&f64, &f64)| (a - b).abs())
+                .fold(0.0, f64::max);
+            if change > largest {
+                (largest, when) = (change, row.3 / DAY);
+            }
+        }
+        previous = Some(sea.clone());
+    });
+    let ((d0, e0, b0, t0, w0), (d1, e1, b1, t1, w1)) = (first.unwrap(), last.unwrap());
+    let area = 4.0 * std::f64::consts::PI * RADIUS * RADIUS;
+    let toa = (b1.absorbed - b0.absorbed) - (b1.outgoing - b0.outgoing);
+    let uptake = (d1.energy - d0.energy) + (b1.stored - b0.stored) + LATENT_HEAT * (w1 - w0);
+    let removed = (e1.forcing.kinetic - e0.forcing.kinetic)
+        + (b1.dissipated - b0.dissipated)
+        + (e1.diffusion.total() - e0.diffusion.total());
+    ((toa - uptake + removed) / (t1 - t0) / area, largest, when)
+}
+
+#[test]
+fn the_latitude_start_keeps_the_mean_and_warms_the_equator() {
+    let planet = Planet::earth();
+    let (mesh, _) = SphereMesh::centroidal(8, LloydOptions::default());
+    let geometry = MeshGeometry::new(&mesh);
+    let model = LayeredModel::new(
+        Operators::new(&mesh, &geometry, RADIUS),
+        GRAVITY,
+        Gas::EARTH_AIR,
+        Levels::new(&CLIMATE_LEVELS),
+        vec![0.0; mesh.n_vertices()],
+        vec![0.0; mesh.n_cells()],
+    );
+    let params = PhysicsParams::default();
+    let start = initial_surface_temperature_by_latitude(&model, &planet, &params, 288.0);
+    let total: f64 = geometry.cell_areas.iter().sum();
+    let mean = start
+        .iter()
+        .zip(&geometry.cell_areas)
+        .map(|(t, a)| t * a)
+        .sum::<f64>()
+        / total;
+    assert!((mean - 288.0).abs() < 1e-9, "mean {mean}");
+    let at = |z: f64| {
+        let centers = mesh.cell_centers();
+        let i = (0..centers.len())
+            .min_by(|&a, &b| {
+                (centers[a].z - z)
+                    .abs()
+                    .total_cmp(&(centers[b].z - z).abs())
+            })
+            .unwrap();
+        start[i]
+    };
+    assert!((295.0..301.0).contains(&at(0.0)), "equator {}", at(0.0));
+    assert!((262.0..275.0).contains(&at(1.0)), "pole {}", at(1.0));
 }
 
 #[test]
