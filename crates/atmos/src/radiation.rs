@@ -78,6 +78,11 @@ use crate::levels::Levels;
 pub const STEFAN_BOLTZMANN: f64 = 5.670_374_419e-8;
 /// Second radiation constant `hc/k` (cm K).
 const C2: f64 = 1.438_776_877;
+/// Index of the visible band of sunlight.
+pub const VISIBLE: usize = 0;
+/// Index of the near-infrared band of sunlight.
+pub const NEAR_INFRARED: usize = 1;
+
 /// CO₂ band centre (cm⁻¹).
 const CO2_CENTRE: f64 = 667.0;
 /// Window edges (cm⁻¹).
@@ -123,8 +128,9 @@ pub struct RadiationParams {
     pub lapse_rate: f64,
     /// Effective cosine of the solar zenith angle for the downward beam.
     pub mu: f64,
-    /// Surface albedo.
-    pub albedo: f64,
+    /// Surface albedo in each band of sunlight ([`VISIBLE`],
+    /// [`NEAR_INFRARED`]).
+    pub albedo: [f64; 2],
     /// Albedo of the fixed cloud deck at mid-level that the single column
     /// (fixed relative humidity) uses in place of clouds.
     pub cloud_albedo: f64,
@@ -156,7 +162,7 @@ impl Default for RadiationParams {
             near_infrared: 0.35,
             lapse_rate: 6.5e-3,
             mu: 0.5,
-            albedo: 0.08,
+            albedo: [0.08; 2],
             cloud_albedo: 0.33,
             rayleigh: 0.06,
         }
@@ -245,6 +251,8 @@ pub struct Fluxes {
     pub layers: Vec<f64>,
     /// Shortwave absorbed by the surface.
     pub surface_shortwave: f64,
+    /// The visible band's part of `surface_shortwave`.
+    pub surface_visible: f64,
     /// Downward longwave at the surface.
     pub surface_down: f64,
     /// Upward longwave from the surface.
@@ -864,7 +872,6 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
         path[j + 1] = path[j] + slab.water;
     }
     let s = column.insolation.max(0.0);
-    let albedo = params.albedo;
     let visible = |j: usize, m: f64| {
         if j == 0 {
             fms_math::exp(-m * params.ozone_absorption)
@@ -877,17 +884,24 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
         fms_math::exp(-a * ((m * path[j + 1]).sqrt() - (m * path[j]).sqrt()))
     };
     let mut surface_shortwave = 0.0;
+    let mut surface_visible = 0.0;
     let mut escaped = 0.0;
-    for (share, transmit) in [
+    for (b, (share, transmit)) in [
         (
             1.0 - params.near_infrared,
             &visible as &dyn Fn(usize, f64) -> f64,
         ),
         (params.near_infrared, &infrared),
-    ] {
-        let band = shortwave_band(&elements, &sheets, albedo, share * s, |j| {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let band = shortwave_band(&elements, &sheets, params.albedo[b], share * s, |j| {
             (transmit(j, 1.0 / params.mu), transmit(j, DIFFUSIVITY))
         });
+        if b == VISIBLE {
+            surface_visible = band.surface;
+        }
         for (j, e) in elements.iter().enumerate() {
             if let Element::Slab(i) = *e {
                 layers[slabs[i].layer] += band.absorbed[j];
@@ -1024,6 +1038,7 @@ pub fn column_fluxes(params: &RadiationParams, gas: Gas, column: &Column) -> Flu
         outgoing,
         layers,
         surface_shortwave,
+        surface_visible,
         surface_down,
         surface_up,
         water,
@@ -1216,6 +1231,31 @@ mod tests {
         // nearly equal steps per doubling.
         let (a, b, c) = (olr(200.0), olr(400.0), olr(800.0));
         assert!(((a - b) / (b - c) - 1.0).abs() < 0.1, "{a} {b} {c}");
+    }
+
+    #[test]
+    fn each_band_of_sunlight_reflects_off_its_own_albedo() {
+        let params = RadiationParams {
+            ozone_absorption: 0.0,
+            rayleigh: 0.0,
+            albedo: [0.5, 0.1],
+            ..RadiationParams::default()
+        };
+        let column = Column {
+            clouds: &[Cloud::NONE; 2],
+            ..earthlike()
+        };
+        let base = column_fluxes(&params, Gas::EARTH_AIR, &column);
+        let expected = (1.0 - 0.5) * (1.0 - params.near_infrared) * column.insolation;
+        assert!((base.surface_visible - expected).abs() < 1e-9);
+        let bright = RadiationParams {
+            albedo: [0.5, 0.6],
+            ..params
+        };
+        let more = column_fluxes(&bright, Gas::EARTH_AIR, &column);
+        assert_eq!(more.surface_visible, base.surface_visible);
+        assert!(more.surface_shortwave < base.surface_shortwave - 1.0);
+        assert!(more.absorbed < base.absorbed - 1.0);
     }
 
     #[test]

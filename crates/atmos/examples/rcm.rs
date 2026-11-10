@@ -27,7 +27,7 @@ fn column() -> SingleColumn {
     r.continuum_opacity = env("continuum_opacity", r.continuum_opacity);
     r.water_absorption = env("water_absorption", r.water_absorption);
     r.ozone_absorption = env("ozone_absorption", r.ozone_absorption);
-    r.albedo = env("albedo", r.albedo);
+    r.albedo = [env("albedo", r.albedo[0]); 2];
     r.cloud_albedo = env("cloud_albedo", r.cloud_albedo);
     r.surface_humidity = env("surface_humidity", r.surface_humidity);
     c.params.lapse_rate = env("lapse_rate", c.params.lapse_rate);

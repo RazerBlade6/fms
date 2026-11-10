@@ -301,8 +301,11 @@ Added after the M1 review: tooling the GCM work depends on.
       within 0.04 K of a 30-year run in the global mean; RMS zonal error 0.32 K
       at the surface and 0.28 K in the deep ocean (true-time six years: 0.56
       and 0.76). Must be checked again once ice exists (11.5).
-    - [ ] 11.2. **Two-band surface albedo** through radiation and the tiles.
+    - [x] 11.2. **Two-band surface albedo** through radiation and the tiles.
       Test: equal band albedos reproduce today's results bit for bit.
+      Done: each band reflects off its own albedo and tiles split sunlight
+      band by band. Ocean and land keep one value in both bands, so the pinned
+      hash is unchanged; ice brings the first real difference (11.3).
     - [ ] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
       temperature, the authors' growth and melt rules, and the ocean-to-ice
       flux. Tests: growth against Stefan's law; energy and water close through

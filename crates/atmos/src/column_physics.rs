@@ -82,8 +82,8 @@ use crate::moisture::{
     moist_physics,
 };
 use crate::radiation::{
-    Cloud, Column, Fluxes, Humidity, Profile, RadiationParams, STEFAN_BOLTZMANN, column_fluxes,
-    saturation_humidity, saturation_pressure, specific_humidity,
+    Cloud, Column, Fluxes, Humidity, NEAR_INFRARED, Profile, RadiationParams, STEFAN_BOLTZMANN,
+    VISIBLE, column_fluxes, saturation_humidity, saturation_pressure, specific_humidity,
 };
 use crate::surface_layer::{
     Surface, SurfaceAir, SurfaceLayerParams, convective_velocity, entrainment_velocity, exchange,
@@ -533,16 +533,18 @@ struct TileRadiation {
 struct TiledSurface {
     /// Land fraction.
     fraction: f64,
-    /// Each tile's albedo.
-    albedo: [f64; 2],
+    /// Each tile's albedo in each band of sunlight.
+    albedo: [[f64; 2]; 2],
     /// Each tile's temperature (K).
     temperature: [f64; 2],
 }
 
 impl TiledSurface {
-    /// Area-weighted albedo.
-    fn mean_albedo(&self) -> f64 {
-        (1.0 - self.fraction) * self.albedo[OCEAN] + self.fraction * self.albedo[LAND]
+    /// Area-weighted albedo in each band.
+    fn mean_albedo(&self) -> [f64; 2] {
+        std::array::from_fn(|b| {
+            (1.0 - self.fraction) * self.albedo[OCEAN][b] + self.fraction * self.albedo[LAND][b]
+        })
     }
 
     /// `T⁴` of each tile, and their area-weighted mean.
@@ -562,14 +564,20 @@ impl TiledSurface {
         }
     }
 
-    /// Divide the cell's surface `shortwave` and `longwave_up` between the
-    /// tiles, conserving both: each tile absorbs in proportion to `1 − α`
-    /// and emits in proportion to `T⁴`.
-    fn split(&self, shortwave: f64, longwave_up: f64) -> TileRadiation {
-        let co_albedo = 1.0 - self.mean_albedo();
+    /// Divide the cell's surface `shortwave`, of which `visible` is in the
+    /// visible band, and `longwave_up` between the tiles, conserving both:
+    /// in each band a tile absorbs in proportion to `1 − α`, and it emits in
+    /// proportion to `T⁴`.
+    fn split(&self, shortwave: f64, visible: f64, longwave_up: f64) -> TileRadiation {
+        let mean_albedo = self.mean_albedo();
+        let share = |a: &[f64; 2], b: usize| (1.0 - a[b]) / (1.0 - mean_albedo[b]);
         let (fourth, mean) = self.fourth_powers();
         TileRadiation {
-            shortwave: self.albedo.map(|a| shortwave * ((1.0 - a) / co_albedo)),
+            // Written as a correction so that equal bands cost no round-off.
+            shortwave: self.albedo.map(|a| {
+                let infrared = share(&a, NEAR_INFRARED);
+                shortwave * infrared + visible * (share(&a, VISIBLE) - infrared)
+            }),
             longwave_up: fourth.map(|t| longwave_up * (t / mean)),
         }
     }
@@ -978,7 +986,7 @@ impl<'a> ColumnPhysics<'a> {
             fraction: self.land_fraction[i],
             albedo: [
                 self.params.radiation.albedo,
-                self.params.land.albedo_under(self.snow[i]),
+                [self.params.land.albedo_under(self.snow[i]); 2],
             ],
             temperature: [self.ocean.mixed_temperature()[i], self.land_temperature[i]],
         }
@@ -1280,7 +1288,8 @@ impl<'a> ColumnPhysics<'a> {
                 let all = column_fluxes(&radiation, gas, &column);
                 column.clouds = &[Cloud::NONE; 2];
                 let clear = column_fluxes(&radiation, gas, &column);
-                let tiles = surface.split(all.surface_shortwave, all.surface_up);
+                let tiles =
+                    surface.split(all.surface_shortwave, all.surface_visible, all.surface_up);
                 (all, clear, tiles)
             })
             .collect();
@@ -2346,7 +2355,7 @@ mod tests {
     fn mixed_surface() -> TiledSurface {
         TiledSurface {
             fraction: 0.3,
-            albedo: [0.08, 0.2],
+            albedo: [[0.08; 2], [0.2; 2]],
             temperature: [290.0, 305.0],
         }
     }
@@ -2454,7 +2463,7 @@ mod tests {
     #[test]
     fn splitting_radiation_between_tiles_conserves_it() {
         let s = mixed_surface();
-        let t = s.split(180.0, 400.0);
+        let t = s.split(180.0, 110.0, 400.0);
         let mean = |x: [f64; 2]| (1.0 - s.fraction) * x[OCEAN] + s.fraction * x[LAND];
         assert!((mean(t.shortwave) - 180.0).abs() < 1e-10);
         assert!((mean(t.longwave_up) - 400.0).abs() < 1e-10);
@@ -2472,13 +2481,45 @@ mod tests {
     }
 
     #[test]
+    fn equal_band_albedos_split_sunlight_as_one_band_does_bit_for_bit() {
+        let s = mixed_surface();
+        let co_albedo = 1.0 - s.mean_albedo()[VISIBLE];
+        for visible in [0.0, 65.3, 180.0] {
+            let t = s.split(180.0, visible, 400.0);
+            for tile in [OCEAN, LAND] {
+                let one_band = 180.0 * ((1.0 - s.albedo[tile][VISIBLE]) / co_albedo);
+                assert_eq!(t.shortwave[tile], one_band);
+            }
+        }
+    }
+
+    #[test]
+    fn tiles_split_sunlight_band_by_band() {
+        let s = TiledSurface {
+            albedo: [[0.06, 0.1], [0.5, 0.3]],
+            ..mixed_surface()
+        };
+        let (visible, infrared) = (110.0, 70.0);
+        let t = s.split(visible + infrared, visible, 400.0);
+        let mean = s.mean_albedo();
+        for tile in [OCEAN, LAND] {
+            let a = s.albedo[tile];
+            let expected = visible / (1.0 - mean[VISIBLE]) * (1.0 - a[VISIBLE])
+                + infrared / (1.0 - mean[NEAR_INFRARED]) * (1.0 - a[NEAR_INFRARED]);
+            assert!((t.shortwave[tile] - expected).abs() < 1e-12);
+        }
+        let total = (1.0 - s.fraction) * t.shortwave[OCEAN] + s.fraction * t.shortwave[LAND];
+        assert!((total - 180.0).abs() < 1e-12, "{total}");
+    }
+
+    #[test]
     fn a_tile_covering_the_whole_cell_is_used_exactly() {
         for (fraction, tile) in [(0.0, OCEAN), (1.0, LAND)] {
             let s = TiledSurface {
                 fraction,
                 ..mixed_surface()
             };
-            let t = s.split(180.0, 400.0);
+            let t = s.split(180.0, 110.0, 400.0);
             assert_eq!(s.radiating_temperature(), s.temperature[tile]);
             assert_eq!(s.mean_albedo(), s.albedo[tile]);
             assert_eq!(t.shortwave[tile], 180.0);
