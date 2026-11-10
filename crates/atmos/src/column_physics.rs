@@ -35,7 +35,9 @@
 //!   freezing, and the surplus melts the snow into the bucket. Evaporation
 //!   takes snow first, paying its fusion too. The pack owes the heat of
 //!   fusion the air was given when it froze, so the planet's stored heat
-//!   counts it as a deficit, `−L_f × snow`.
+//!   counts it as a deficit, `−L_f × snow`. Land fully covered for a whole
+//!   year is an ice sheet, brighter and smoother than seasonal snow; land
+//!   starting cold enough starts as one, under a thick pack.
 //! - **Boundary layer**: the bottom layer is a well-mixed boundary layer
 //!   ([`crate::surface_layer`]): surface air has its potential temperature
 //!   and specific humidity. Bulk formulas with stability-dependent
@@ -132,6 +134,19 @@ pub struct LandParams {
     pub snow_albedo: f64,
     /// Snow (kg m⁻²) that covers the land fully.
     pub snow_covering: f64,
+    /// Albedo of an ice sheet: old, clean snow with nothing showing through.
+    pub ice_sheet_albedo: f64,
+    /// Momentum roughness length of an ice sheet (m).
+    pub ice_sheet_roughness: f64,
+    /// Years of unbroken full snow cover that make land an ice sheet;
+    /// infinite for no ice sheets.
+    pub ice_sheet_years: f64,
+    /// Land starting colder than this (K) starts as an ice sheet. A sheet
+    /// needs its bright surface to outlast the summer, so one can't grow
+    /// from bare ground under seasonal snow's albedo.
+    pub ice_sheet_start_temperature: f64,
+    /// Snow (kg m⁻²) on land that starts as an ice sheet.
+    pub ice_sheet_start_pack: f64,
 }
 
 impl Default for LandParams {
@@ -146,6 +161,11 @@ impl Default for LandParams {
             critical_wetness: 0.75,
             snow_albedo: 0.65,
             snow_covering: 10.0,
+            ice_sheet_albedo: 0.82,
+            ice_sheet_roughness: 1.0e-3,
+            ice_sheet_years: 1.0,
+            ice_sheet_start_temperature: 267.0,
+            ice_sheet_start_pack: 1000.0,
         }
     }
 }
@@ -165,6 +185,34 @@ impl LandParams {
     fn albedo_under(&self, snow: f64) -> f64 {
         let cover = (snow / self.snow_covering).min(1.0);
         self.albedo + cover * (self.snow_albedo - self.albedo)
+    }
+
+    /// The albedo of land under `snow` (kg m⁻²), which an ice sheet overrides.
+    fn surface_albedo(&self, snow: f64, ice_sheet: bool) -> f64 {
+        if ice_sheet {
+            self.ice_sheet_albedo
+        } else {
+            self.albedo_under(snow)
+        }
+    }
+
+    /// The momentum roughness length of the land (m).
+    fn surface_roughness(&self, ice_sheet: bool) -> f64 {
+        if ice_sheet {
+            self.ice_sheet_roughness
+        } else {
+            self.roughness
+        }
+    }
+
+    /// How long land has been fully covered (s), `age` before a step of `dt`
+    /// that left `snow` (kg m⁻²) on it. Losing full cover restarts the clock.
+    fn cover_age(&self, age: f64, snow: f64, dt: f64) -> f64 {
+        if snow >= self.snow_covering {
+            age + dt
+        } else {
+            0.0
+        }
     }
 
     /// The share (0–1) of the potential evaporation that soil holding
@@ -779,6 +827,10 @@ pub struct ColumnPhysics<'a> {
     soil_water: Vec<f64>,
     /// Snow on each cell's land (kg per m² of land).
     snow: Vec<f64>,
+    /// How long each cell's land has been fully covered by snow (s).
+    cover_age: Vec<f64>,
+    /// The unbroken cover that makes land an ice sheet (s).
+    ice_sheet_age: f64,
     /// Last radiation call, all-sky and clear-sky, and its division between
     /// the tiles.
     radiation: Vec<Fluxes>,
@@ -876,6 +928,8 @@ impl<'a> ColumnPhysics<'a> {
             soil_temperature: surface_temperature,
             soil_water: vec![params.land.critical_water(); n],
             snow: vec![0.0; n],
+            cover_age: vec![0.0; n],
+            ice_sheet_age: params.land.ice_sheet_years * planet.year_seconds(),
             ocean,
             next_year: time + planet.year_seconds(),
             year_start: None,
@@ -898,6 +952,17 @@ impl<'a> ColumnPhysics<'a> {
             runoff: 0.0,
             ocean_exchange: 0.0,
         };
+        if physics.ice_sheet_age.is_finite() {
+            let land = params.land;
+            for i in 0..n {
+                if physics.land_fraction[i] > 0.0
+                    && physics.land_temperature[i] < land.ice_sheet_start_temperature
+                {
+                    physics.snow[i] = land.ice_sheet_start_pack;
+                    physics.cover_age[i] = physics.ice_sheet_age;
+                }
+            }
+        }
         // Water that starts below freezing is ice from the start.
         physics.ocean.rearrange_ice();
         // Clouds for the first radiation call; radiation (clear sky) for the
@@ -1014,6 +1079,12 @@ impl<'a> ColumnPhysics<'a> {
         &self.snow
     }
 
+    /// Whether cell `i`'s land is an ice sheet: snow has covered it through
+    /// a whole year, so no seasonal snow counts.
+    fn is_ice_sheet(&self, i: usize) -> bool {
+        self.cover_age[i] >= self.ice_sheet_age
+    }
+
     /// What the radiation sees of cell `i`'s tiles.
     fn tiled_surface(&self, i: usize) -> TiledSurface {
         TiledSurface {
@@ -1021,7 +1092,9 @@ impl<'a> ColumnPhysics<'a> {
             ice: self.ocean.ice_fraction(i),
             albedo: [
                 self.params.radiation.albedo,
-                [self.params.land.albedo_under(self.snow[i]); 2],
+                [self.params
+                    .land
+                    .surface_albedo(self.snow[i], self.is_ice_sheet(i)); 2],
                 self.ocean.ice_albedo(i, self.params.radiation.albedo),
             ],
             temperature: [
@@ -1174,7 +1247,8 @@ impl<'a> ColumnPhysics<'a> {
                 }
                 let mut skin = self.land_temperature[i];
                 if fraction > 0.0 {
-                    let rough = Surface::Rough(self.params.land.roughness);
+                    let rough =
+                        Surface::Rough(self.params.land.surface_roughness(self.is_ice_sheet(i)));
                     let snow = self.snow[i];
                     let wetness = self.params.land.wetness(self.soil_water[i] + snow);
                     if let Some(dt) = dt {
@@ -1579,6 +1653,10 @@ impl Forcing for ColumnPhysics<'_> {
                 };
                 heat -= FUSION_HEAT * melted / dt;
                 self.snow[i] = pack - sublimated - melted;
+                self.cover_age[i] = self
+                    .params
+                    .land
+                    .cover_age(self.cover_age[i], self.snow[i], dt);
                 self.soil_temperature[i] += dt * heat / land_capacity;
                 let gain = dt * (moist[i].rain - evaporation) + sublimated + melted;
                 let (water, overflow) = self.params.land.fill(self.soil_water[i], gain);
@@ -1681,6 +1759,20 @@ impl Forcing for ColumnPhysics<'_> {
                     .iter()
                     .zip(&self.land_fraction)
                     .map(|(s, f)| s * f)
+                    .collect(),
+            ),
+            field(
+                "land.ice_sheet",
+                "Share of the whole cell that is ice sheet",
+                "1",
+                (0..self.land_fraction.len())
+                    .map(|i| {
+                        if self.is_ice_sheet(i) {
+                            self.land_fraction[i]
+                        } else {
+                            0.0
+                        }
+                    })
                     .collect(),
             ),
             field(
@@ -2512,6 +2604,26 @@ mod tests {
         );
         let half = land.albedo_under(0.5 * land.snow_covering);
         assert!((half - 0.5 * (land.albedo + land.snow_albedo)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn only_an_ice_sheet_takes_the_ice_sheet_surface() {
+        let land = LandParams::default();
+        for snow in [0.0, 5.0, land.snow_covering, 500.0] {
+            assert_eq!(land.surface_albedo(snow, false), land.albedo_under(snow));
+        }
+        assert_eq!(land.surface_roughness(false), land.roughness);
+        assert_eq!(land.surface_albedo(500.0, true), land.ice_sheet_albedo);
+        assert_eq!(land.surface_roughness(true), land.ice_sheet_roughness);
+    }
+
+    #[test]
+    fn losing_full_cover_restarts_the_clock() {
+        let land = LandParams::default();
+        let full = land.snow_covering;
+        assert_eq!(land.cover_age(100.0, full, 10.0), 110.0);
+        assert_eq!(land.cover_age(0.0, 5.0 * full, 10.0), 10.0);
+        assert_eq!(land.cover_age(1.0e9, 0.99 * full, 10.0), 0.0);
     }
 
     #[test]

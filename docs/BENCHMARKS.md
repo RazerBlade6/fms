@@ -107,3 +107,38 @@ before and 98.4% after the baseline (`top -l 2`).
 |---|---|---|---|---|---|
 | `775c84a` (baseline) | 11.19 ms/step | 11.63 | 35.53 | 6.37 | 10.85 |
 | `90259f9` (05:15 IST, same conditions, CPU idle 98.6% before and after) | 4.30 | 4.55 | 16.17 | 1.66 | 5.02 |
+
+## Everyday conditions (M2.11.6)
+
+Not a formal benchmark: this is what the model costs on a laptop in ordinary
+use, to set against the quiet, plugged-in figures above. Same 8 threads and
+`bench_layers` command as the performance pass, then the full climate run:
+`RAYON_NUM_THREADS=8 fms-climate climate --climate-frequency 16 --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif`
+(Earth, 2,562 cells, six accelerated years, dt 2057 s, 92,030 steps).
+
+**Conditions** (2026-11-10, 18:52 to 19:48 IST): Apple M5 Pro, 15 cores, 24 GB,
+macOS 26.6.2, rustc 1.99.1. On battery, normal power mode (`powermode 0`, not
+High Power), battery falling from 82% to 31%. The user was working: Steam
+(about 60% of a core throughout), Firefox with its GPU and content processes,
+the window server at about 45%. CPU 87% idle before the jobs and 52–55% idle
+during them (`top`); load average 8–9; 0.5–1 GB of memory unused by `top`'s
+count, with 22–23 GB in use. Commit `e2cc65d` plus the ice-sheet work of
+this step, which has no effect on the aquaplanet benchmark. The fourth Earth run
+has ice sheets; the first ran before the ice-sheet code was built in.
+
+| Job | Here | Quiet, plugged in (`90259f9`) |
+|---|---|---|
+| `bench_layers`, moist aquaplanet, 2,562 cells, median of 3 | 4.52, 4.52 and 4.93 ms/step (first two at the start of each pass, last after 35 minutes as the browser got busier) | 4.30 ms/step |
+| Earth, six years, inside the time loop | 596, 616, 621 and 633 s (155, 149, 148 and 145 steps/s; 6.5–6.9 ms/step) | not measured |
+
+- Everyday use cost 5–15% on the like-for-like benchmark. Only 8 of the 15
+  cores are in use, which leaves the background work room.
+- A year on Earth takes about 1.7 minutes, so a six-year run about 10. Land,
+  sea ice and sampling put Earth about 45% above the aquaplanet's ms/step at
+  the same grid.
+- Whole-process time was 8 s beyond the time loop in one run and 135 s in
+  another, with the same outputs. The cause wasn't identified; memory was tight
+  and the browser busy at the time.
+- Battery fell about 55–60% per hour during these runs, so a laptop on battery
+  lasts a little under two hours of continuous simulation with this workload.
+- `cargo t2`, the workspace tests, took 4 min 9 s under the same conditions.

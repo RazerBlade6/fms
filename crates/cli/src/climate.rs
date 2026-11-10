@@ -7,16 +7,18 @@
 
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::path::Path;
 
 use clap::Args;
 use fms_atmos::column_physics::{
-    CLIMATE_LEVELS, LATENT_HEAT, OceanSpinUp, initial_state,
+    CLIMATE_LEVELS, LATENT_HEAT, LandParams, OceanSpinUp, initial_state,
     initial_surface_temperature_by_latitude,
 };
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
 use fms_ocean::{IceParams, OceanParams};
+use glam::DVec3;
 
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
@@ -57,6 +59,9 @@ pub struct ClimateArgs {
     /// the ice-albedo feedback.
     #[arg(long)]
     no_ice_albedo: bool,
+    /// Keep the seasonal snow surface on land that stays snow-covered.
+    #[arg(long)]
+    no_ice_sheet: bool,
     /// Latitude bands for the zonal means (default: about one per grid
     /// spacing).
     #[arg(long)]
@@ -74,6 +79,35 @@ pub struct ClimateArgs {
     dynamics: DynamicsArgs,
     #[command(flatten)]
     image: ImageArgs,
+}
+
+/// Writes the final year's mean of each field for every cell, to compare runs
+/// over a part of the map such as an ice sheet.
+fn write_annual_cells(
+    path: &Path,
+    centers: &[DVec3],
+    land: &[f64],
+    names: &[&str],
+    means: &[Vec<f64>],
+) -> Result<(), String> {
+    let mut rows = format!(
+        "latitude_deg,longitude_deg,land_fraction,{}\n",
+        names.join(",")
+    );
+    for (i, p) in centers.iter().enumerate() {
+        let _ = write!(
+            rows,
+            "{:.3},{:.3},{:.6}",
+            fms_math::asin(p.z / p.length()).to_degrees(),
+            fms_math::atan2(p.y, p.x).to_degrees(),
+            land[i],
+        );
+        for mean in means {
+            let _ = write!(rows, ",{:.6}", mean[i]);
+        }
+        rows.push('\n');
+    }
+    std::fs::write(path, rows).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 pub fn run(args: ClimateArgs) -> Result<(), String> {
@@ -109,6 +143,14 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     };
     let params = PhysicsParams {
         ocean,
+        land: LandParams {
+            ice_sheet_years: if args.no_ice_sheet {
+                f64::INFINITY
+            } else {
+                LandParams::default().ice_sheet_years
+            },
+            ..LandParams::default()
+        },
         co2: planet_params.co2_ppm,
         spin_up: OceanSpinUp {
             jumps: args.ocean_jumps,
@@ -185,6 +227,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             "Snow on land (per unit of cell area)",
             "kg m-2",
             ColorScale::Moisture,
+        ),
+        (
+            "land.ice_sheet",
+            "Ice sheet (per unit of cell area)",
+            "1",
+            ColorScale::Sequential,
         ),
         (
             "ocean.ice_fraction",
@@ -464,6 +512,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .iter()
         .map(|s| s.iter().map(|v| v / samples).collect())
         .collect();
+    write_annual_cells(
+        &out.dir.join("annual_cells.csv"),
+        mesh.cell_centers(),
+        &land,
+        &names,
+        &means,
+    )?;
     let zonal = crate::layered_run::upper_and_lower(si.model(), climate.means());
     let zonal_physics: Vec<Vec<f64>> = means.iter().map(|m| lat_bands.mean(geometry, m)).collect();
 

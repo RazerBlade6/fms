@@ -340,20 +340,23 @@ Added after the M1 review: tooling the GCM work depends on.
       Diffusion moves the no-tilt ice edge 7° poleward and warms the sea
       2–4 K at 42–53° (the paper: 5–6 K). No hemispheric lock-in. The
       default jump barely speeds the ice (O-37).
-    - [ ] 11.6. **Ice-sheet surface** (below). Test: Antarctica's interior
-      cools by about 10 K with no change to snow-free land.
+    - [x] 11.6. **Ice-sheet surface**: land that stays snow-covered takes
+      albedo 0.82 and roughness 1 mm; seasonal snow keeps 0.65 and 0.1 m. Test:
+      Antarctica's interior cools by about 10 K with no change to snow-free
+      land.
+      Done, with the second half partly met. A year of unbroken full cover
+      makes land an ice sheet, but Antarctica melts out every summer here, so
+      land starting below 267 K starts as one under a 1000 kg/m² pack (O-39).
+      Earth at 2.5k cells, 6 years, against `--no-ice-sheet`: Antarctica south
+      of 75° cools 11.4 K to 242.7 K, 87°S by 12.3 K, Greenland by 7.3 K;
+      planet 288.03 to 286.91 K, albedo 0.334 to 0.342, energy residual
+      +0.0071 W/m². Snow-free land's surface is unchanged, but it cools 0.64 K
+      with the planet (noise about 0.1 K). Two Tibetan cells are seeded too,
+      and are melting away.
     - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and
       snow insulation, one at a time (O-33).
     - [ ] 11.8. **Earth run and close-out**: the accelerated run at 2.5k cells, monthly
       ice extent per hemisphere, budgets, O-30's coastal cells again, docs.
-
-
-    Also an **ice-sheet surface** on land that stays snow-covered, with its
-    own albedo (about 0.82, against 0.65 for seasonal snow) and roughness
-    (about 1 mm). Seasonal snow keeps its current values. Then test the rest
-    of Antarctica's warm bias: cloud cover, the missing surface inversion and
-    snow insulation (O-33). Test: Antarctica's interior cools by about 10 K
-    with no change to snow-free land.
 - [ ] 12. **Ocean heat transport by currents**:
     - Ekman transport from the surface wind stress, `M = (ετ + f k×τ)/(ε² + f²)`
       at the edges, with the deep layer's return flow and the upwelling or

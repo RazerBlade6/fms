@@ -43,6 +43,7 @@ set its status to *Resolved* and say how, rather than deleting it.
 | O-36 | [Too much sea ice is expected until M2 step 12](#o-36-too-much-sea-ice-is-expected-until-m2-step-12) | Ocean | Scheduled: M2 step 12 |
 | O-37 | [The ocean jump barely speeds up the ice](#o-37-the-ocean-jump-barely-speeds-up-the-ice) | Ocean | Open: jump setting to choose before M2.11.8 |
 | O-38 | [Perennial ice has no equilibrium in 20 years](#o-38-perennial-ice-has-no-equilibrium-in-20-years) | Ocean | Watching |
+| O-39 | [Ice sheets are seeded from the start temperature](#o-39-ice-sheets-are-seeded-from-the-start-temperature) | Land | Watching |
 
 ---
 
@@ -806,6 +807,11 @@ insulation.
 **Revisit when:** the ice-sheet surface in M2 step 11, long runs (M4) and the
 land's seasonal cycle (M2 step 15), or sooner if soil temperatures look wrong.
 
+**Update (M2.11.6):** ice sheets now have their own surface (O-39). Their packs
+still have no limit: the mean grew from the seeded 1000 to 1627 kg/m² in six
+years, and reaches 3013. Antarctica south of 75° is at 242.7 K, about 18 K above
+the roughly 224 K noted above; the rest is for M2.11.7.
+
 ### O-34: More rain on the lee of a ridge than the windward side
 
 **Seen (M2.10.2.6):** the orographic rain scheme works when wind blows onto a
@@ -955,3 +961,44 @@ with tilt melts its ice every summer and does settle, within 0.2 W/m² by year
 **Revisit when:** step 12 adds upwelling to the deep layer. A world with
 perennial ice would need a limit on snow, or a start that doesn't begin at the
 thickness limit.
+
+### O-39: Ice sheets are seeded from the start temperature
+
+**Seen (M2.11.6):** making land an ice sheet only after a year of unbroken full
+snow cover turned one cell into a sheet on Earth at 2.5k cells. Antarctica's
+monthly mean reaches 287 K at 87°S under seasonal snow's albedo, so its pack
+melts out each summer, and the surface that would stop that never arrives. So
+land starting below 267 K (`ice_sheet_start_temperature`; the start already
+falls with height) starts as ice sheet under 1000 kg/m². The one-year clock
+keeps running, so a sheet whose pack drops below full cover goes back to
+seasonal snow, and new sheets can still form: at least three cells starting at
+267.5–268.8 K became sheets once the climate cooled.
+
+| 2.5k cells, 6 years, against `--no-ice-sheet` | Change |
+|---|---|
+| Antarctica south of 75° | −11.4 K (254.0 to 242.7) |
+| Greenland, 6 full-land cells | −7.3 K |
+| Global mean | −1.12 K, albedo +0.008 |
+| Sea-ice share of the planet's cells | 6.5% to 9.0% |
+| Snow-free land (281 cells) | −0.64 K |
+
+**Side effects:**
+- The threshold has little margin on Earth: the coldest lowland cell in the
+  north starts at 268.1 K. It was chosen on Earth, so other planets may need a
+  different value.
+- Two cells on the Tibetan Plateau (34°N, near 5000 m) start below it. Their
+  packs fell from 1000 to 471 and 613 kg/m² in six years, so the rule should
+  remove them in another five or six; until then they're 10–13 K too cold.
+- Snow-free land's own surface is untouched, but it cools 0.64 K with the
+  planet, since the sheets and the extra sea ice reflect more sunlight.
+- One year of weather sets the noise floor. Two runs differing in a single cell
+  gave +0.08 K globally, −0.08 K on snow-free land, +0.56 K on land with seasonal
+  snow and +1.85 K on Greenland, so changes of that size mean nothing.
+
+**Why it's acceptable for now:** Antarctica's interior cools by the 10 K
+expected, and nearly all of Antarctica and Greenland start as sheets. Too much cooling
+elsewhere isn't a reason to tune; that is step 15.
+
+**Revisit when:** M2.11.7 (Antarctica's remaining warm bias), M2.11.8 (the sea
+ice with sheets present), step 15 (tuning), and long runs (M4), where the Tibetan
+cells should have gone and a limit on the pack (O-33) starts to matter.

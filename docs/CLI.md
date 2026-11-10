@@ -274,6 +274,7 @@ of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check i
 | `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean, m²/s; 0 for none |
 | `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
 | `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
+| `--no-ice-sheet` | off | Land that stays snow-covered keeps seasonal snow's albedo and roughness |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
@@ -294,7 +295,9 @@ Outputs in `output/climate/`:
 - final-year mean maps: `rad.surface_temperature`, `rad.outgoing_longwave`,
   `rad.absorbed_shortwave`, `atm.water_vapour`, `atm.precipitation`,
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,
-  `rad.shortwave_cloud_effect`, `rad.longwave_cloud_effect`;
+  `rad.shortwave_cloud_effect`, `rad.longwave_cloud_effect`, `land.ice_sheet`;
+- `annual_cells.csv`: final-year means of the mapped fields for every cell, with
+  its latitude, longitude and land fraction, to compare runs over part of the map;
 - `monthly_zonal.csv`: monthly zonal means over the whole run, with each
   band's share of the planet; ice cover and volume are per unit of the band's
   whole area;

@@ -249,6 +249,9 @@ crates never depend on it. Everything except the viewer runs headless.
   off, and leaves the planet's water until rivers (M3). Snow piles up on
   land, brightening it, and melts when the skin reaches freezing; the pack
   counts as a heat deficit, `−L_f × snow`, in the planet's stored energy.
+  Land covered through a whole year is an ice sheet, with albedo 0.82 and
+  roughness 1 mm; land starting below 267 K starts as one, under a thick pack
+  ([OBSERVATIONS.md](OBSERVATIONS.md) O-39).
 - **Vertical structure** (decided at M2.5, generalized at M2.9.5): sigma
   layers (`σ = p/p_s`, model top at p = 0) at any interfaces
   (`crates/atmos/src/levels.rs`). Two equal-mass layers (interface at σ = 0.5)

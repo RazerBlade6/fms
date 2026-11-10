@@ -4,7 +4,7 @@
 //! an ice-free, Earth-like aquaplanet.
 
 use fms_atmos::column_physics::{
-    ApeSst, CLIMATE_LEVELS, LATENT_HEAT, OceanSpinUp, initial_state,
+    ApeSst, CLIMATE_LEVELS, LATENT_HEAT, LandParams, OceanSpinUp, initial_state,
     initial_surface_temperature_by_latitude,
 };
 use fms_atmos::williamson::{GRAVITY, RADIUS};
@@ -291,8 +291,8 @@ fn an_ocean_jump_moves_the_sea_and_stays_out_of_the_energy_budget() {
         ..PhysicsParams::default()
     };
     // A 20-day year, so the jump comes at the end of day 40.
-    let with = budget_run(&planet, params(1), 45.0);
-    let without = budget_run(&planet, params(0), 45.0);
+    let with = budget_run(&planet, params(1), 45.0, |_| 0.0);
+    let without = budget_run(&planet, params(0), 45.0, |_| 0.0);
     eprintln!(
         "residual {:+.5} W/m², without the jump {:+.5}",
         with.energy, without.energy
@@ -333,7 +333,7 @@ fn energy_and_water_close_through_freezing_and_melting() {
         },
         ..PhysicsParams::default()
     };
-    let run = budget_run(&planet, params, 90.0);
+    let run = budget_run(&planet, params, 90.0, |_| 0.0);
     eprintln!(
         "energy residual {:+.5} W/m², water residual {:+.1e}, ice cover {:.3} to {:.3} of the planet",
         run.energy, run.water, run.least_ice, run.most_ice
@@ -351,6 +351,70 @@ fn energy_and_water_close_through_freezing_and_melting() {
     );
 }
 
+#[test]
+fn energy_and_water_close_as_land_becomes_an_ice_sheet() {
+    // Polar land on a dim planet whose short year lets cells turn into ice
+    // sheets within the run.
+    let (planet, _) = Planet::new(PlanetParams {
+        year_days: 40.0,
+        luminosity: 0.85,
+        ..PlanetParams::earth()
+    });
+    let params = PhysicsParams {
+        land: LandParams {
+            snow_covering: 2.0,
+            ice_sheet_years: 0.5,
+            ice_sheet_start_temperature: 0.0,
+            ..LandParams::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let polar = |p: glam::DVec3| if p.z.abs() > 0.75 { 1.0 } else { 0.0 };
+    let run = budget_run(&planet, params, 90.0, polar);
+    eprintln!(
+        "energy residual {:+.5} W/m², water residual {:+.1e}, ice sheets on {:.3} of the planet",
+        run.energy, run.water, run.most_sheet
+    );
+    assert!(
+        run.energy.abs() < 0.1,
+        "energy residual {} W/m²",
+        run.energy
+    );
+    assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
+    assert!(run.most_sheet > 0.02, "ice sheets {}", run.most_sheet);
+}
+
+#[test]
+fn energy_and_water_close_with_a_seeded_ice_sheet() {
+    // Everything starts colder than the threshold, so all the land starts
+    // as ice sheet, and a pack this thin can melt away within the run.
+    let (planet, _) = Planet::new(PlanetParams {
+        year_days: 40.0,
+        ..PlanetParams::earth()
+    });
+    let params = PhysicsParams {
+        land: LandParams {
+            ice_sheet_start_temperature: 400.0,
+            ice_sheet_start_pack: 30.0,
+            ..LandParams::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let polar = |p: glam::DVec3| if p.z.abs() > 0.75 { 1.0 } else { 0.0 };
+    let run = budget_run(&planet, params, 45.0, polar);
+    eprintln!(
+        "energy residual {:+.5} W/m², water residual {:+.1e}, ice sheets on {:.3} of the planet",
+        run.energy, run.water, run.most_sheet
+    );
+    assert!(
+        run.energy.abs() < 0.1,
+        "energy residual {} W/m²",
+        run.energy
+    );
+    assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
+    assert!(run.most_sheet > 0.1, "ice sheets {}", run.most_sheet);
+}
+
 /// The budgets of a run on [`CLIMATE_LEVELS`] at 642 cells.
 struct BudgetRun {
     /// Energy residual (W/m²).
@@ -363,15 +427,22 @@ struct BudgetRun {
     /// The least and most of the planet under ice (after the first day).
     least_ice: f64,
     most_ice: f64,
+    /// The most of the planet that was ever ice sheet.
+    most_sheet: f64,
 }
 
-fn budget_run(planet: &Planet, params: PhysicsParams, days: f64) -> BudgetRun {
+fn budget_run(
+    planet: &Planet,
+    params: PhysicsParams,
+    days: f64,
+    land: impl Fn(glam::DVec3) -> f64,
+) -> BudgetRun {
     let mut first = None;
     let mut last = None;
     let (mut previous, mut largest, mut when): (Option<Vec<f64>>, f64, f64) = (None, 0.0, 0.0);
     let (mut least_ice, mut most_ice) = (f64::INFINITY, 0.0f64);
+    let mut most_sheet = 0.0f64;
     let levels = Levels::new(&CLIMATE_LEVELS);
-    let land = |_| 0.0;
     run_on(
         planet,
         params,
@@ -406,6 +477,13 @@ fn budget_run(planet: &Planet, params: PhysicsParams, days: f64) -> BudgetRun {
                 }
             }
             previous = Some(sea.clone());
+            let sheet = field("land.ice_sheet")
+                .iter()
+                .zip(&geometry.cell_areas)
+                .map(|(f, a)| f * a)
+                .sum::<f64>()
+                / (4.0 * std::f64::consts::PI);
+            most_sheet = most_sheet.max(sheet);
             if row.3 > DAY {
                 let ice = field("ocean.ice_fraction")
                     .iter()
@@ -438,6 +516,7 @@ fn budget_run(planet: &Planet, params: PhysicsParams, days: f64) -> BudgetRun {
         largest_day: when,
         least_ice,
         most_ice,
+        most_sheet,
     }
 }
 
