@@ -1,1004 +1,231 @@
 # Observations
 
-Known limitations, measured quirks and ideas for later: things we noticed while
-building and decided **not** to act on yet. Each entry says what we saw, why it
-is acceptable for now, and what would make us revisit it. Planned work lives in
-[ROADMAP.md](ROADMAP.md); this file is for everything else.
+Known limitations, measured quirks and ideas we've chosen not to act on yet.
+Scheduled work is in [ROADMAP.md](ROADMAP.md).
 
-When something here gets scheduled, link the roadmap step. When it is resolved,
-set its status to *Resolved* and say how, rather than deleting it.
+Each entry says what we saw, why it's acceptable and when to revisit, in a few
+lines. Numbers never change, because code comments cite them. A resolved entry
+shrinks to one line.
 
-| # | Observation | Area | Status |
-|---|---|---|---|
-| O-1 | [Operator errors peak at the 12 pentagons](#o-1-operator-errors-peak-at-the-12-pentagons) | Numerics | Scheduled: M2 step 14 |
-| O-2 | [Cell sizes vary by up to 1.76×](#o-2-cell-sizes-vary-by-up-to-176) | Grid | Watching |
-| O-3 | [Grid frequencies need small prime factors](#o-3-grid-frequencies-need-small-prime-factors) | Grid | Accepted |
-| O-4 | [Terrain cells are assigned whole to climate cells](#o-4-terrain-cells-are-assigned-whole-to-climate-cells) | Grid | Accepted |
-| O-5 | [Kepler's third law is not enforced](#o-5-keplers-third-law-is-not-enforced) | Planet | Accepted |
-| O-6 | [The equation of time is ignored](#o-6-the-equation-of-time-is-ignored) | Planet | Accepted |
-| O-7 | [Daily-mean insolation uses one orbital state per day](#o-7-daily-mean-insolation-uses-one-orbital-state-per-day) | Planet | Accepted |
-| O-8 | [Scheduler overhead is ~119 µs per step](#o-8-scheduler-overhead-is-119-µs-per-step) | Performance | Scheduled: M2 step 16 |
-| O-9 | [Vector fields render as arrows only](#o-9-vector-fields-render-as-arrows-only) | Tooling | Watching |
-| O-10 | [Field names must be `'static` strings](#o-10-field-names-must-be-static-strings) | Fields | Scheduled: M4 step 2 |
-| O-11 | [Land below sea level counts as ocean](#o-11-land-below-sea-level-counts-as-ocean) | Terrain | Watching |
-| O-12 | [Shallow-water steps are overhead-bound](#o-12-shallow-water-steps-are-overhead-bound) | Performance | Scheduled: M2 step 16 |
-| O-13 | [Semi-implicit steps are long but expensive](#o-13-semi-implicit-steps-are-long-but-expensive) | Performance | Scheduled: M2 step 16 |
-| O-14 | [The undamped core collapses to the grid scale](#o-14-the-undamped-core-collapses-to-the-grid-scale) | Dynamics | Resolved: M2 step 6 |
-| O-15 | [Baroclinic growth is ~75% of local theory](#o-15-baroclinic-growth-is-75-of-local-theory) | Dynamics | Accepted |
-| O-16 | [No sponge layer](#o-16-no-sponge-layer) | Dynamics | Accepted |
-| O-17 | [Zig-zag vertex modes limit explicit hyperdiffusion](#o-17-zig-zag-vertex-modes-limit-explicit-hyperdiffusion) | Numerics | Accepted |
-| O-18 | [Two layers have no surface wind](#o-18-two-layers-have-no-surface-wind) | Dynamics | Resolved: M2.10.1 |
-| O-19 | [Radiation is calibrated, not resolved](#o-19-radiation-is-calibrated-not-resolved) | Radiation | Accepted |
-| O-20 | [No cloud or ice feedbacks yet](#o-20-no-cloud-or-ice-feedbacks-yet) | Radiation | Scheduled: M2 steps 10–11 (clouds done in step 9) |
-| O-21 | [Dissipated kinetic energy leaks out of the planet](#o-21-dissipated-kinetic-energy-leaks-out-of-the-planet) | Energy | Resolved: M2.10.1 |
-| O-22 | [The subtropics rain out their own evaporation](#o-22-the-subtropics-rain-out-their-own-evaporation) | Moisture | Improved: M2.10.1; rest in M2 step 15 |
-| O-23 | [An ice-free aquaplanet runs warmer than Earth](#o-23-an-ice-free-aquaplanet-runs-warmer-than-earth) | Climate | Scheduled: M2 steps 11–12, 15 |
-| O-24 | [The water cycle is too strong](#o-24-the-water-cycle-is-too-strong) | Moisture | Scheduled: M2 step 15 |
-| O-25 | [Clouds are calibrated from layer-mean humidity](#o-25-clouds-are-calibrated-from-layer-mean-humidity) | Clouds | Accepted |
-| O-26 | [Strong easterlies aloft at the equator](#o-26-strong-easterlies-aloft-at-the-equator) | Dynamics | Watching |
-| O-27 | [Shortwave water absorption depends on the layering](#o-27-shortwave-water-absorption-depends-on-the-layering) | Radiation | Resolved: M2.10.1 |
-| O-28 | [More than two layers make the vertical modes non-normal](#o-28-more-than-two-layers-make-the-vertical-modes-non-normal) | Numerics | Accepted |
-| O-29 | [The layered core is ~12% slower than the two-layer one](#o-29-the-layered-core-is-12-slower-than-the-two-layer-one) | Performance | Scheduled: M2 step 16 |
-| O-30 | [Terrain is smoothed, and spreads over coastal ocean](#o-30-terrain-is-smoothed-and-spreads-over-coastal-ocean) | Terrain | Watching |
-| O-36 | [Too much sea ice is expected until M2 step 12](#o-36-too-much-sea-ice-is-expected-until-m2-step-12) | Ocean | Scheduled: M2 step 12 |
-| O-37 | [The ocean jump barely speeds up the ice](#o-37-the-ocean-jump-barely-speeds-up-the-ice) | Ocean | Open: jump setting to choose before M2.11.8 |
-| O-38 | [Perennial ice has no equilibrium in 20 years](#o-38-perennial-ice-has-no-equilibrium-in-20-years) | Ocean | Watching |
-| O-39 | [Ice sheets are seeded from the start temperature](#o-39-ice-sheets-are-seeded-from-the-start-temperature) | Land | Watching |
-
----
+## Grid and numerics
 
 ### O-1: Operator errors peak at the 12 pentagons
-
-**Seen (M1.3, M1.5, M2.2):** several operators have errors that converge in RMS
-(halving when resolution doubles) but whose *maximum* stays fixed, located at or
-next to the 12 pentagons:
-
-| Operator | Max error (k = 16 → 32 [→ 64]) | RMS error (k = 16 → 32 [→ 64]) |
-|---|---|---|
-| TRiSK tangential reconstruction | 0.62% → 0.71% | 0.094% → 0.039% |
-| Perot cell-vector reconstruction | 2.0% → 2.0% | 0.30% → 0.15% |
-| Vertex vorticity (Rossby–Haurwitz) | 6.3% → 5.8% of peak | 1.4% → 0.7% of peak |
-| Divergence (M2.2) | 1.24% → 1.15% → 1.13% | 0.13% → 0.058% → 0.028% |
-| Laplacian, div(grad) (M2.2) | 1.11% → 1.15% → 1.16% | 0.22% → 0.075% → 0.032% |
-| Kinetic energy (M2.2) | 1.74% → 1.53% → 1.50% | 0.25% → 0.081% → 0.032% |
-
-This matches the literature (Peixoto 2016, *Accuracy analysis of mimetic finite
-volume operators on geodesic grids*). The divergence and Laplacian maxima sit in the
-hexagons right next to the pentagons. Three or more cells away the error is
-about 5× smaller (`cargo run --release -p fms-grid --example divergence_error`).
-
-The first flow to show it is Williamson case 2 (M2.3): the l2 height error
-converges at second order, but l∞ stalls at ~5e-4 because of sharp error
-dipoles at exactly the 12 pentagons (`fms-climate williamson --case 2`, then look at
-`output/williamson2/sw.height_error.png`). They are ±1.5 m against a 3 km
-fluid depth after 5 days.
-
-**Why it matters:** fixed local errors at the pentagons can leave a spurious
-wavenumber-5 / 12-point pattern in long GCM runs ("grid imprinting"), e.g. in
-jets and storm tracks.
-
-**Plan:** M2 step 14 measures imprinting in the Held–Suarez run. If it is
-visible: Heikes–Randall grid optimization, or Peixoto's corrected
-reconstruction weights.
+*Scheduled: M2.14.* TRiSK reconstruction, Perot, vorticity, divergence, Laplacian
+and kinetic energy converge in RMS, but their maxima (1–6%) stay fixed at or next
+to the pentagons, as in Peixoto 2016. Williamson 2 shows ±1.5 m dipoles on a 3 km
+depth after 5 days. The risk is grid imprinting in long runs. If visible:
+Heikes–Randall optimization or Peixoto's corrected weights.
 
 ### O-2: Cell sizes vary by up to 1.76×
-
-**Seen (M1.2):** after Lloyd optimization the largest cell is 1.46× the
-smallest at 20k cells, and 1.76× at 1.6M. The smallest cells cluster around the
-pentagons.
-
-**Why it matters:** the smallest cells set the CFL timestep, costing ~17% of the
-maximum `dt` on the climate grid.
-
-**Revisit if:** the M2 performance pass shows `dt` is the bottleneck. Options:
-density-weighted Lloyd, or spring-dynamics grid optimization.
+*Watching.* Largest over smallest is 1.46 at 20k cells and 1.76 at 1.6M, costing
+~17% of the maximum `dt`. Revisit if `dt` is the bottleneck: density-weighted Lloyd
+or spring dynamics.
 
 ### O-3: Grid frequencies need small prime factors
-
-**Seen (M1.2):** multilevel Lloyd refines by prime factors ≤ 7, so frequencies
-like 45 or 400 build in seconds. A frequency with a large prime factor (e.g.
-401) falls back to plain Lloyd, which needs O(frequency²) iterations.
-
-**Accepted:** we choose the frequencies. The UI should only offer good ones.
+*Accepted.* Multilevel Lloyd refines by primes ≤ 7; others fall back to plain
+Lloyd, O(f²) iterations. We choose the frequencies, and the UI should only offer
+good ones.
 
 ### O-4: Terrain cells are assigned whole to climate cells
-
-**Seen (M1.4):** each terrain cell belongs entirely to the climate cell
-containing its centre, rather than being split by exact polygon overlap. A climate
-cell's child area is within ±25% of its own area (72–83 children at 1.6M → 20k).
-
-**Accepted:** sums are still exactly conservative globally, and area-weighted
-means are accurate for smooth fields. Exact overlap remapping would only matter
-if per-cell conservation at the climate scale is ever needed.
-
-### O-5: Kepler's third law is not enforced
-
-**Seen (M1.7):** year length and semi-major axis are set independently, so
-physically impossible combinations are allowed (`P² ∝ a³ / M★` is not checked).
-
-**Accepted** for fantasy worlds. If realism is wanted: an optional star-mass
-parameter that derives one from the other, or flags inconsistent combinations.
-
-### O-6: The equation of time is ignored
-
-**Seen (M1.7):** the Sun's position uses mean solar time. On an eccentric or
-tilted orbit, true local noon drifts from mean noon by minutes (about ±16 min on
-Earth).
-
-**Accepted:** irrelevant for climate. Revisit only if exact sundials or sunrise
-times are ever displayed.
-
-### O-7: Daily-mean insolation uses one orbital state per day
-
-**Seen (M1.8):** `planet.daily_insolation` uses the orbital state at mid-day
-for the whole day.
-
-**Accepted:** declination and distance change negligibly within a day for any
-year longer than ~20 days (the minimum allowed).
-
-### O-8: Scheduler overhead is ~119 µs per step
-
-**Seen (M1.5.4):** 20 trivial systems in 2 stages cost ~119 µs per step, mostly
-from starting parallel work for each stage. At speed 2 (~340 steps/s) that's ~4%
-overhead.
-
-**Plan:** look at it in the M2 performance pass (step 16) if profiles show it.
-Options: cache stage plans; run stages of tiny systems serially.
-
-### O-9: Vector fields render as arrows only
-
-**Seen (M1.5.2):** the CLI draws vector fields as speed plus arrows. Streamlines
-read better for large-scale circulation (Hadley cells, gyres).
-
-**Revisit if:** M2 images of the general circulation are hard to read.
-
-### O-10: Field names must be `'static` strings
-
-**Seen (M1.5):** fine for every system compiled in, but names loaded at runtime
-(unknown fields in a save file, scripting) can't be registered.
-
-**Plan:** switch `FieldSpec::name` to `Cow<'static, str>` in M4 step 2 (save
-format), where keeping unknown fields first needs it.
-
-### O-11: Land below sea level counts as ocean
-
-**Seen (M2.1):** land and sea are split at elevation 0, so inland basins below
-sea level count as ocean in `terrain.land_fraction` and get a flat sea-level
-surface. On ETOPO the Caspian Sea (−28 m) is the only one visible at climate
-resolution. The Dead Sea, Qattara Depression and Death Valley are a few terrain
-cells at most.
-
-**Why it's acceptable for now:** the Caspian really is water, so for climate it
-mostly behaves right, and nothing reads the land/sea split yet.
-
-**Checked (M2.11.1):** the two-layer ocean doesn't need a mask yet. Diffusion
-only has to stop at coasts, which it does, and a closed basin simply keeps its
-own heat. Fine-grid connectivity is also unreliable: straits like the Bosporus
-are far narrower than a terrain cell, so "connected to the open sea" needs
-care.
-
-**Revisit when:** the gyres of M2 step 12, solved over each basin, need a real
-ocean mask: take the ocean to be the below-sea-level region connected to the
-open sea, and leave closed basins to hydrology's lakes and depressions.
-
-### O-12: Shallow-water steps are overhead-bound
-
-**Seen (M2.3):** the RK4 shallow-water model runs about 226 steps/s on the 20k
-climate grid with 15 threads, about 4.4 ms per step. That's 4 stages of about
-15 operator calls each, so each call costs ~70 µs, mostly in thread
-scheduling: a single thread is 7× faster on a 2.5k mesh. Setting a minimum
-chunk of 4096 elements per thread (`fms_geo::operators::MIN_CHUNK`) won 11×
-on small meshes, but large ones are still dominated by per-call overhead.
-
-**Why it's acceptable for now:** correctness first. The roadmap's target is
-speed 2 (~340 steps/s) for the full two-layer model, so this needs work. The
-semi-implicit step (M2 step 4) makes it worse per step; see O-13.
-
-**Plan:** M2 step 16. Options: fuse operators into fewer passes (one loop over
-edges per stage instead of several), run a whole stage per parallel task over
-mesh partitions, and precompute per-edge factors like `lₑ/(dₑ r)`.
-
-### O-13: Semi-implicit steps are long but expensive
-
-**Seen (M2.4):** semi-implicit leapfrog runs the Williamson cases stably at
-4.7–7.3× the explicit time step, with the same accuracy. But on the 20k climate
-grid it is only 1.35–1.9× faster in wall time (case 5: 15.3 s against 21.3 s
-for RK4). Each step needs a Helmholtz solve, and conjugate gradient with a
-diagonal preconditioner takes ~36 iterations at 7× the explicit step. The
-iteration count grows with the gravity-wave Courant number, roughly in
-proportion to Δt. Every iteration is several small parallel calls, which pay
-the overhead of O-12.
-
-Also: the step must be chosen from the fastest wind *expected* over the run,
-not the current wind (`SemiImplicit::stable_dt` takes a design maximum).
-Williamson case 5 starts at 20 m/s and accelerates to 40 m/s; a step sized for
-the initial wind blew up.
-
-**Why it's acceptable for now:** the scheme is correct, conserves mass to
-round-off, and is already a net win. Per-step cost is a performance problem.
-
-**Also seen (M2.7):** Held–Suarez at 10k cells runs at 42 steps/s. Of the
-24 ms per step, 18 ms is the adiabatic core (15 CG iterations per solve),
-3 ms hyperdiffusion, 1 ms the forcing and 0.7 ms the energy budget. The
-1200-day benchmark takes 28 minutes.
-
-**Plan:** M2 step 16, together with O-12. Options: a better preconditioner
-(geometric multigrid on the icosahedral refinement hierarchy, or a Chebyshev
-polynomial preconditioner, which needs no dot products); fusing each CG
-iteration into fewer passes; a looser tolerance (1e-6 halves the iterations
-again without measurable error, since mass is restored exactly). M2 step 13
-(deriving `dt` from the CFL limit) should use a design maximum wind for the
-same reason as above.
-
-### O-14: The undamped core collapses to the grid scale
-
-**Seen (M2.5):** in `fms-climate baroclinic` the storms mature around day 7. Then
-fronts and vortices sharpen to single cells (lower-layer vorticity reaches
-7×10⁻⁴ s⁻¹, about 7f), winds pass 130 m/s, and the run blows up on day 8.
-RK4 at the explicit step does the same through day 7 (132 vs 134 m/s), so this
-is the inviscid equations cascading enstrophy to the grid scale with nothing
-to remove it, not a time-stepping fault. The semi-implicit run dies first only
-because its step was sized for 80 m/s winds.
-
-**Why it's acceptable for now:** every inviscid grid-point model does this;
-dissipation is a planned step.
-
-**Plan:** M2 step 6 adds hyperdiffusion. Held–Suarez runs ~1000 days and
-cannot work without it (Held & Suarez 1994 used ∇⁸ diffusion), so the
-dissipation step was moved ahead of it: Held–Suarez is now step 7.
-
-**Resolved (M2.6):** the diagnosis above was half right. The day-8 blow-up
-was winds outrunning a step sized for 80 m/s. With a step sized for faster
-winds the inviscid core survives a month, but it does collapse. On the
-default 30 m/s-shear jet at 10k cells, vorticity sharpens to
-1.4×10⁻³ s⁻¹ (14f) by day 30, winds reach 129 m/s, and the energy error grows
-to ~10⁻⁵. With ∇⁴ hyperdiffusion (`crates/atmos/src/diffusion.rs`), the same
-storms keep |ζ| below 3×10⁻⁴ s⁻¹ and peak at 105 m/s, and the energy budget
-closes to within 1% of what diffusion removes. Blow-ups now stop the run at
-the first unhealthy step and write a diagnostic dump (`fms-climate baroclinic`;
-`crates/atmos/src/safety.rs`). The default storm run lasts 30 days.
-
-### O-15: Baroclinic growth is ~75% of local theory
-
-**Seen (M2.5):** on a balanced sheared jet, wavenumber-6 perturbations grow at
-0.83 /day (k = 16) and 0.78 /day (k = 32), against 1.10 /day from two-level
-quasi-geostrophic theory on the local β-plane at 45° N (Phillips 1954; Holton
-§8.2), using the model's own internal gravity-wave speed for the deformation
-radius. RK4 and semi-implicit agree to three digits. Below the critical shear
-(11 m/s) nothing grows, as theory predicts, and the fastest-growing zonal
-wavenumber is 6 in both model and theory.
-
-**Why it's acceptable:** local theory assumes waves with no north–south
-structure on a flat β-plane. On the sphere the unstable zone is about 30° of
-latitude wide; adding that meridional wavenumber to the theory gives a factor
-of about 0.73. So local theory is an upper bound, and the tests check 0.6–1.0
-of it.
-
-**Revisit if:** a sharper check is wanted. That needs the linear stability
-problem of the spherical jet solved numerically (an eigenvalue problem in
-latitude) as the reference.
-
-### O-16: No sponge layer
-
-**Seen (M2.6):** the roadmap step listed a sponge layer: extra damping near the
-model top that absorbs upward-propagating gravity waves before they reflect
-off the lid.
-
-**Why it's acceptable:** with two layers and the top at p = 0 there is no
-vertical room for one. A sponge works over several upper levels; here it
-would be Rayleigh friction on half the atmosphere. The two-layer model also
-has only one internal gravity-wave mode, which the semi-implicit scheme
-already handles, and Held–Suarez's Rayleigh friction (M2 step 7) acts at the
-surface, not the top.
-
-**Revisit if:** the model gets more vertical levels.
+*Accepted.* A climate cell's child area is within ±25% of its own. Global sums
+stay exact and smooth means are accurate. Exact overlap only matters if per-cell
+conservation does.
 
 ### O-17: Zig-zag vertex modes limit explicit hyperdiffusion
-
-**Seen (M2.6):** a hexagonal C-grid has about twice as many vertices as cells.
-The extra rotational modes zig-zag between neighbouring vertices, and the
-vertex Laplacian reaches 3.7× higher than the cell Laplacian
-(λ·d² = 28.8 vs 7.8 at 10k cells). Hyperdiffusion set to damp the shortest
-*cell* wave in `τ` damps these modes `3.7ⁿ` times faster: 14× for ∇⁴, 190×
-for ∇⁸. Explicit diffusion, lagged over a leapfrog step, is only stable for
-`Δt` below that fastest e-folding time. So the default `τ` is the shortest the
-step allows with a 2× margin: 5 h at 20k cells, 7.5 h at 10k. ∇⁸, as in
-Held & Suarez (1994), would need `τ ≈ 370 Δt` (about 3 days at 20k cells),
-which leaves the 2–4 cell scales almost undamped. Normalizing the rotational
-part to the vertex grid instead was tried and fails: then vorticity at the
-cell scale is barely damped, and the storms still collapse.
-
-Separately, the TRiSK vector Laplacian is inconsistent (it doesn't converge
-pointwise): ~1% RMS error in its divergent part and ~12% in its rotational
-part, at every resolution.
-
-**Why it's acceptable:** ∇⁴ at the default strength does the job. Storms live
-30 days with smooth fields, and large-scale waves are untouched (wave-6
-baroclinic growth changes by 0.5%). The Laplacian errors only matter at
-scales where the damping is negligible anyway.
-
-**Revisit if:** the eddies look too damped at mid scales, or Held–Suarez
-(M2 step 7) needs a sharper filter. Options: implicit diffusion (one CG
-solve per step; its matrix is well conditioned at these strengths), or
-filtering the vertex modes separately.
-
-### O-18: Two layers have no surface wind
-
-**Seen (M2.7):** in the Held–Suarez benchmark (1200 days, 10k cells) the
-upper layer's jets are close to HS94: 26 m/s at 49° in both hemispheres. The
-lower layer is the mean over σ 0.5–1, and its westerlies peak at only
-5.7 m/s, against a 20 m/s difference between the layers. Extrapolated
-linearly to the surface (`1.5 u_lower − 0.5 u_upper`), that gives about
-−4 m/s, easterly under the jets, where HS94's surface winds are westerly.
-The zonal-mean surface pressure agrees: it rises steadily from 987 hPa at the
-equator to 1019 hPa at the poles. HS94 has subtropical highs and subpolar
-lows. The upper-level climate, the temperature contrast (43 K in the lower
-layer) and the energy budget all look right.
-
-**Why it's acceptable for now:** it's a limit of two layers. The model has
-one wind for the whole lower half of the atmosphere, and friction acts on
-that layer mean. Held–Suarez only tests the dynamics, and those behave.
-
-**Plan:** M2 step 10 (land surface and boundary-layer friction) must
-diagnose a surface wind rather than use the lower-layer wind: bulk fluxes,
-orographic lift and step 12's wind-stress-driven currents all depend on it.
-Options: a boundary-layer profile below the lower layer, or a thin third
-(boundary) layer. Check the result against the sign of Held–Suarez's
-surface winds.
-
-**Update (M2.9.5):** the core now takes any layers, and step 10 will use a
-thin third layer. Held–Suarez (k = 16, days 100–200) with five equal-mass
-layers has westerlies of +7.3 m/s in the lowest layer under jets of 26 m/s
-at 42°: the right sign. With three layers split at σ 0.4 and 0.85, the
-jets sit at 32° (in the 0–0.4 layer) with −2 m/s under them, so a thin
-bottom layer alone isn't the whole answer; step 10's surface drag and
-boundary-layer mixing replace Held–Suarez's friction there.
-
-**Resolved (M2.10.1):** the climate's four layers diagnose a 10 m wind from
-the thin bottom layer (log profile, ocean roughness, stability). The bottom
-layer has easterly trades (about −6 m/s at 15°) and westerlies (about +6 at
-35°) at fixed APE sea temperatures, and on these layers Held–Suarez has
-westerlies of +3 to +4 m/s under its jets, where three layers had −2.
-
-### O-19: Radiation is calibrated, not resolved
-
-**Seen (M2.8):** a few of the radiation scheme's parameters are effective
-values, set so a single column reproduces Earth's global-mean column, not
-values from spectroscopy:
-
-- **CO₂ band growth** `l = 30` cm⁻¹ per e-fold, against the spectroscopic
-  ~10 cm⁻¹. Two layers can't resolve the stratosphere cooling and
-  readjusting when CO₂ rises, which adds about a third to the instantaneous
-  forcing. With l = 30 the model's forcing per doubling is 3.6 W/m², close to
-  the adjusted value (Myhre 3.7). Its instantaneous forcing at l = 20 was
-  2.5 W/m², close to Earth's real instantaneous value.
-- **Convective lapse rate** 4.4 K/km between the layer means, not 6.5: the
-  upper layer (0–500 hPa) includes the stratosphere, so Earth's observed
-  layer means (272 and 226 K, 10.5 km apart) sit at 4.4. It is fixed, so
-  the single column has no lapse-rate feedback (the moist adiabat
-  flattening as the surface warms, about −0.5 W/m²/K on Earth). Since M2
-  step 9 the 3-D model convects towards the moist adiabat instead, and has
-  it; 4.4 K/km still extrapolates the lower layer to the surface air.
-- **In-layer lapse rate** 6.5 K/km for the radiation's temperature and
-  water-vapour profiles. Through the lower layer's mean this puts its
-  radiating bottom ~5 K above the surface air (extrapolated at 4.4 K/km).
-  Making the two consistent (M2 step 9 check) cuts downward longwave at the
-  surface by 26 W/m², well below Earth's; restoring it needs more
-  continuum, which makes the surface's longwave even more sensitive to
-  warming (O-24). So 6.5 K/km is effectively a calibrated value too.
-- **Water vapour's spectrum** is two regions (band cores, and weak edges
-  where CO₂'s wings lie), each a four-term k-distribution, plus a window
-  continuum. Calibrating this mattered more than anything else: one grey
-  water band gave a runaway (outgoing longwave collapses once it turns
-  opaque); a too-strong continuum cut the clear-sky feedback from ~2 to
-  ~0.5 W/m²/K.
-- **Cloud reflection** in the single column is a fixed deck at the layer
-  interface (albedo 0.27); the 3-D model diagnoses its clouds (O-25).
-- **Rayleigh scattering** (added at M2 step 9) is one non-absorbing sheet
-  at the atmosphere's mass centre reflecting 6% of sunlight: an aquaplanet's
-  clear sky then has an albedo of ~0.08, as Earth's oceans do. It doesn't
-  yet scale with the column's mass.
-
-Also simplified: vapour pressure capped at a quarter of the air pressure
-(very hot planets).
-
-**Why it's acceptable:** with them, the single column reproduces Earth's
-global mean: surface 287 K, layers 232/274 K, outgoing longwave 247 W/m²,
-21 kg/m² of water, sensible and latent heat 22 and 77 W/m². It also gives
-~2 W/m²/K clear-sky feedback, 3.6 W/m² and 2.4 K per CO₂ doubling, and
-monotonic, finite climates across the planet parameters' full ranges
-(`crates/atmos/tests/radiation.rs`).
-
-**Revisit if:** fantasy settings far from Earth (dense CO₂ atmospheres, hot
-or very thin ones) need to be quantitatively right. Then a correlated-k
-scheme fitted to line-by-line spectra would replace the effective
-parameters, and Rayleigh scattering would scale with the air's mass (thick
-atmospheres are now too dark, and so too warm).
-
-### O-20: No cloud or ice feedbacks yet
-
-**Seen (M2.8):** clouds are a fixed deck at the layer interface reflecting
-33% of the sunlight that reaches it (30% in the single column, which needs a
-lower value to reach the same global mean as the 3-D model). There is no sea ice or snow. So the
-model has the Planck, water-vapour and shortwave-absorption feedbacks only,
-and warms 2.4 K per CO₂ doubling in a single column. Earth's ~3 K includes
-ice-albedo and cloud feedbacks.
-
-**Why it's acceptable for now:** those need moisture (clouds) and surfaces
-(ice and snow), which are later steps; 2.4 K is in the plausible range.
-
-**Plan:** M2 step 9 diagnoses clouds from humidity and condensation and
-replaces the fixed deck; steps 10–11 add snow and sea ice with their albedo.
-
-**Update (M2.9):** done for clouds: the 3-D model's clouds now come from
-humidity and convection and act on both sunlight and longwave (O-25). Snow
-falls (and is reported) but doesn't yet lie anywhere; ice and snow cover
-remain for steps 10–11.
-
-**Update (M2.11.5):** sea-ice albedo is done. On an aquaplanet at 2.5k cells,
-giving ice and its snow the albedo of open water warms the planet by 0.9 K
-with tilt and 2.2 K without, and the poles by 5–7 K and 10–13 K.
-
-### O-21: Dissipated kinetic energy leaks out of the planet
-
-**Seen (M2.8):** at M2 step 6 we chose to keep the kinetic energy that
-hyperdiffusion removes in the budget only, not return it as heat (and the
-Held–Suarez friction, now a placeholder for surface drag, does the same).
-With radiation running this is a permanent leak: in equilibrium, absorbed
-sunlight exceeds outgoing longwave by the energy friction and diffusion
-destroy: 1.3 W/m² (friction 1.1, diffusion 0.2) in the 3-D Earth run. Earth's
-frictional dissipation is ~2 W/m², all of it returned as heat. The budget still closes exactly; it just has this sink.
-
-**Why it's acceptable for now:** the leak is small next to the 240 W/m²
-flows and steady, so the climate is calibrated with it in place. It is,
-though, a third of the forcing from doubling CO₂, so fix it before
-interpreting small climate changes.
-
-**Plan:** M2 step 10 replaces the Rayleigh friction with surface drag; return
-the dissipated kinetic energy as heat there (frictional heating in the lower
-layer, and the diffusion's loss spread where it occurs), so the top of the
-atmosphere balances in equilibrium.
-
-**Resolved (M2.10.1):** surface drag, boundary-layer mixing and
-hyperdiffusion return their kinetic energy as heat. After five slab years the
-top of the atmosphere balances: ASR − OLR is −0.03 W/m², all of it the slab's
-uptake, with the energy budget closing to the time-stepping error.
-
-### O-22: The subtropics rain out their own evaporation
-
-**Seen (M2.9):** in the aquaplanet the Hadley circulation is about Earth's
-strength (lower-layer flow toward the equator of ~0.35 m/s at 15°, an
-overturning of ~70×10⁹ kg/s per hemisphere), and the equator rains
-~6.5 mm/day, near Earth's zonal mean. But the subtropics rain 4.4 mm/day
-(Earth: ~2) and so do the midlatitudes: rain is nearly flat from 45° S to
-45° N, and the subtropics rain out ~75% of their own evaporation instead of
-exporting it to the rain belt. Neither the convection scheme nor its
-humidity settings change this (four variants tried: faster convection, a
-diluted (entraining) parcel, higher condensation thresholds, a moister
-convective reference).
-
-**Why:** on Earth the subtropics' water stays in a ~1.5 km boundary layer
-under the trade-wind inversion, where it makes shallow, barely raining
-cumulus, and the trades carry it to the equator. The model's lower layer is
-the whole 500–1000 hPa slab, so evaporation is mixed through half the
-atmosphere at once and condenses where it rose; the same missing boundary
-layer gives the weak surface winds of O-18.
-
-**Why it's acceptable for now:** the water budget and the large-scale
-circulation are right; this is where rain falls, and land (M2 step 10)
-reshapes it anyway. But without a fix the world has no subtropical deserts.
-
-**Plan:** M2 step 10, together with O-18: a boundary layer (a profile
-under the lower layer, or a thin third layer) that holds the evaporated
-water near the surface. Check that the subtropics then rain ≲2 mm/day.
-
-**Update (M2.10.1):** the boundary layer is in, and at fixed APE CONTROL sea
-temperatures the subtropics rain 2.5–2.9 mm/day at 25° (down from 4.4), still
-above the target. The cause is not the boundary layer. Raising the
-condensation thresholds to saturation only reaches 2.5, and venting the
-boundary layer harder rains the same water out a layer higher: evaporation
-minus rain at 25° stays at 1.2–1.4 mm/day in every experiment. It is set by
-the water the circulation exports. The Hadley cell ends near 25°, so it barely
-dries the 20–30° band, and transient eddies carry water poleward across 15°
-at about three-quarters of the rate the cell brings it equatorward, which also
-weakens the ITCZ (6 mm/day). This doesn't change with resolution (k = 16, 24
-and 32 agree: 5.8, 5.1 and 5.3×10⁸ kg/s at 15°), and stationary eddies and
-time variations of the zonal mean are near zero. The APE paper's text gives
-no eddy flux at 15° to compare with.
-
-**Revisit:** M2 step 15's tuning pass, with the width of the Hadley cell and
-the tropical eddy moisture flux as the first things to check.
-
-### O-23: An ice-free aquaplanet runs warmer than Earth
-
-**Seen (M2.9):** with Earth's orbit and CO₂ and Earth-like clouds and
-humidity, the 3-D aquaplanet settles at ~297 K after 5 years (Earth: 288;
-still warming ~0.1 K/year), with the tropics at ~301 K (Earth's oceans
-~300) and the poles at ~279 K (Earth's ~250 under ice). Its planetary albedo
-is Earth's (0.29), but its clear
-sky is a dark ocean everywhere (albedo ~0.08, Earth's ~0.15 with ice, snow
-and deserts), and without ice there is no ice–albedo feedback to cool the
-high latitudes.
-
-**Why it's acceptable for now:** it is what an ice-free Earth-like
-aquaplanet should do, and the cloud parameters were calibrated for
-realistic clouds, humidity and cloud radiative effects rather than to force
-288 K. Forcing it now would leave the clouds wrong once land and ice
-arrive.
-
-Without ocean heat transport the slab also can't cool the tropics or warm
-the poles.
-
-**Plan:** M2 steps 10–12 add land, snow, sea ice and ocean heat transport
-(which cools an aquaplanet's equator by ~8 K and moves its ice edge
-10–15° poleward; Bhatnagar et al. 2026); M2 step 15's tuning pass then
-checks the global mean against Earth's 288 K.
-
-**Update (M2.10.1):** on four layers with recalibrated clouds the ice-free
-slab aquaplanet settles at 290.7 K, about 3 K warmer than Earth (albedo 0.322,
-OLR 230.7 W/m²). Ice and land will cool it further, so step 15 sets the final
-temperature.
-
-### O-24: The water cycle is too strong
-
-**Seen (M2.9):** the aquaplanet evaporates and rains ~4.7 mm/day (latent
-heat ~138 W/m²; Earth ~2.7–3 mm/day, ~85 W/m²) and its sensible heat flux
-is small (~9 W/m²; Earth ~20). The surface absorbs Earth's ~160 W/m² of
-sunlight, but loses only ~13 W/m² of net longwave (Earth: ~55; ~30 under
-clear skies, so the clear sky is most of it), and the rest must leave by
-evaporation. Partly that is the warm, moist aquaplanet
-(O-23); partly the radiation: in the single column, downward longwave at
-the surface rises ~8 W/m² per kelvin of warming at fixed relative humidity,
-~30% more than Earth-like models (~6), mostly through the window
-continuum, and evaporation rises ~5.5%/K (models: 2–3%/K). The single
-column's clear-sky surface budget itself matches Earth's (downward 299 W/m²
-and net loss 82 W/m² at 286 K; Earth ~314 and ~84 at 288 K).
-
-**Why it's acceptable for now:** the budgets close, and the excess is
-largest in the warm aquaplanet that land and ice will cool.
-
-**Plan:** M2 step 15's tuning pass. Options: a boundary-layer sublayer in the
-radiation (which would let the continuum act on the near-surface air
-alone), or recalibrating the continuum against both the surface and
-top-of-atmosphere budgets.
-
-### O-25: Clouds are calibrated from layer-mean humidity
-
-**Seen (M2.9):** the 3-D model's two cloud sheets (high at σ = 0.25, low at
-0.8; now 0.3 and 0.9) take their cover from each layer's mean relative humidity (linear
-between two bounds) plus anvils from convective rain. The bounds,
-albedos, emissivities and the large-scale condensation thresholds are
-calibrated so that layer humidities match the radiation's calibration
-(0.31 upper, 0.63 lower) and cover (~0.64), planetary albedo (~0.30) and
-cloud radiative effects (−70 shortwave, +15 longwave W/m²) are Earth-like
-for an aquaplanet. Cover was very sensitive to the formula: SPEEDY's
-quadratic, with the overcast bound at 0.8, gave a cold (277 K), 89%-cloudy
-planet with almost no circulation, through a feedback loop (cloud cools the
-surface, convection stops, the lower layer fills to its condensation
-threshold, more cloud). The linear ramp is gentler near saturation.
-The longwave effect is about half of Earth's (+28).
-
-**Recalibrated (M2.10.1), on four layers:** the high sheet now reads the
-moister σ 0.25–0.5 layer, so its humidity bounds rose to 0.45–0.85 and the low
-sheet's lower bound to 0.5. At fixed APE CONTROL sea temperatures (240 days):
-imbalance +14 W/m² (APE ~13), albedo 0.307, cloud effects −70 and +19 W/m²,
-cover 0.62. Clear-sky absorbed minus outgoing radiation is +65 W/m², so the
-net cloud effect has to be about −52 for that imbalance, which is what holds
-the longwave effect below Earth's.
-
-**Why it's acceptable:** a two-layer model can't resolve cloud layers; its
-cloud scheme is necessarily a calibrated diagnosis, and its cloud feedback
-under climate change follows the layers' humidity, so it is not a
-prediction.
-
-**Revisit if:** the climate's response to CO₂ or orbit matters
-quantitatively (cloud feedback), or M2 step 15's benchmark shows the
-cloud pattern off. Low stratocumulus under subsidence inversions (absent:
-they need a boundary layer, O-22) would be the first addition.
-
-### O-26: Strong easterlies aloft at the equator
-
-**Seen (M2.9):** the aquaplanet's upper layer blows from the east at
-~26 m/s over the equator (Earth: ~5). The jets (24 m/s at 45°) and the
-lower layer's trades and westerlies are reasonable.
-
-**Why it's acceptable for now:** it doesn't visibly affect the rain belt
-or temperatures. A likely cause is that convection mixes heat and water
-between the layers but not momentum (convective momentum transport, which
-brakes upper-level winds in the tropics on Earth).
-
-**Revisit if:** the equatorial winds start to matter (tropical waves,
-monsoons, M2 step 15), by mixing momentum between the layers along with
-the convective mass exchange.
-
-### O-27: Shortwave water absorption depends on the layering
-
-**Seen (M2.9.5):** the same column cut into four or six layers instead of
-two (each at the two-layer profile's temperature, fixed relative
-humidity) puts 7.7 and 12.3 W/m² less sunlight on the surface, though its
-water agrees to 0.5% and its longwave to a few W/m². Water vapour's
-near-infrared absorption saturates as `√w` layer by layer, so splitting a
-layer raises it (`Σ√wₖ > √Σwₖ`); and each layer takes its share of all the
-light rather than of what's left in the near-infrared, which over-counts
-it further.
-
-**Why it's acceptable for now:** two layers are calibrated with it in
-place, and the climate stays on two layers until step 10.
-
-**Plan:** M2 step 10, before recalibrating on three layers: carry the
-near-infrared band separately through the adding method, with each slab's
-optical depth from the cumulative water path (`τ ∝ √W_below − √W_above`),
-so absorption doesn't depend on the layering. Check that more layers
-converge.
-
-**Fixed (M2.10.1):** sunlight now runs through the adding method in two
-bands, the visible (ozone) and the near-infrared (water, from the
-cumulative slant path). Four and six layers now put 0.03 and 0.01 W/m² less
-sunlight on the surface than two. Recalibrated to the same column
-absorption: ozone 0.03 → 0.046 (it now acts on the visible band only),
-water 0.04 → 0.062; the reference column absorbs 49.3 W/m² against 49.4
-before, and its response to halving the water is the same within 0.5 W/m².
+*Accepted.* The vertex Laplacian reaches 3.7× the cell one, so those modes set the
+stable strength. ∇⁸ would leave the 2–4 cell scales almost undamped, so we use ∇⁴.
+The TRiSK vector Laplacian also doesn't converge pointwise (~12% RMS rotational).
+Revisit if eddies look too damped: implicit diffusion, or filter the vertex modes.
 
 ### O-28: More than two layers make the vertical modes non-normal
+*Accepted.* The arithmetic interface θ makes the gravity-wave matrix non-symmetric
+(0.4% for three layers, 2% for five), so the solver decomposes the general matrix.
+Eigenvalues stay real and energy is conserved. Revisit if modes misbehave with many
+layers: Arakawa & Suarez's weighted interface θ.
 
-**Seen (M2.9.5):** with two layers, the gravity-wave matrix `A` is
-self-adjoint in the mass-weighted inner product (`δσₖ A` symmetric to
-1e-11). With more, and stratification, it isn't (0.4% for three layers, 2%
-for five), although the linearization matches the model's own tendencies
-to 1e-12. The cause is the interface θ: Arakawa & Suarez (1983) conserve
-energy with any interface value, but the arithmetic mean of the two layers
-doesn't give a symmetric linear operator once there are several
-interfaces. Using the symmetric part instead made the semi-implicit
-solver inconsistent (spurious wind over the mountain test rose from 0.105
-to 0.166 m/s), so the solver decomposes the general matrix.
+### O-40: The pinned climate hash doesn't see convection's reference
+*Accepted.* `a_world_without_land_is_the_aquaplanet_bit_for_bit` (5 days, 642 cells)
+is unchanged by adding 1 mK to every `lift` result. It guards dynamics, radiation
+and the in-layer profile. Changes to `lift` need their own check.
 
-**Why it's acceptable:** the eigenvalues stay real and distinct (or
-exactly repeated, for an unstratified atmosphere), energy is still
-conserved exactly by the spatial scheme, and all the layered tests pass.
+### O-41: `KineticHeating::rate` uses a parallel float sum
+*Scheduled: M4.1.* Above 4,096 edges its result can depend on how rayon splits. It
+only feeds the `dissipation` diagnostic.
 
-**Revisit if:** the vertical modes misbehave with many layers (computational
-modes, noise in θ between layers): Arakawa & Suarez's weighted interface θ
-is the alternative.
+## Planet and tooling
+
+### O-5: Kepler's third law is not enforced
+*Accepted.* Year length and semi-major axis are independent, for fantasy worlds. If
+realism is wanted: an optional star mass.
+
+### O-6: The equation of time is ignored
+*Accepted.* Irrelevant for climate (about ±16 min on Earth).
+
+### O-7: Daily-mean insolation uses one orbital state per day
+*Accepted.* Negligible for any year of at least 20 days.
+
+### O-9: Vector fields render as arrows only
+*Watching.* Streamlines read better for large-scale circulation. Revisit if
+general-circulation images are hard to read.
+
+### O-10: Field names must be `'static` strings
+*Scheduled: M4.2.* Switch `FieldSpec::name` to `Cow<'static, str>` so saves can keep
+unknown fields.
+
+## Performance
+
+### O-8: Scheduler overhead is ~119 µs per step
+*Scheduled: M2.16.* 20 trivial systems in 2 stages, ~4% at speed 2. Options: cache
+stage plans, or run tiny stages serially.
+
+### O-12: Shallow-water steps are overhead-bound
+*Scheduled: M2.16.* About 70 µs per operator call, mostly thread scheduling. Options:
+fuse operators into fewer passes, run stages over mesh partitions, precompute edge
+factors. M2.11.1.5 didn't reach operator fusion.
+
+### O-13: Semi-implicit steps are long but expensive
+*Scheduled: M2.16.* 4.7–7.3× the explicit step, but only 1.35–1.9× faster in wall
+time, because CG iterations grow with Δt (~36 at 7×). Options: multigrid or Chebyshev
+preconditioning, looser tolerance (1e-6 halves iterations), fused iterations. Size the
+step from a design maximum wind: flows accelerate, and Williamson 5 blew up otherwise.
 
 ### O-29: The layered core is ~12% slower than the two-layer one
+*Scheduled: M2.16.* Likely per-cell small vectors and scratch copies. Plan: profile,
+then stack arrays of `MAX_LAYERS` and reuse buffers.
 
-**Seen (M2.9.5):** on two layers, with arithmetic identical to step 9's
-(bit-for-bit results), the layered core takes 7.31 ms per moist step
-against 6.60, and 3.09 per dry Held–Suarez step against 2.75, at 2.5k cells
-([BENCHMARKS.md](BENCHMARKS.md)). Likely causes: small vectors allocated
-per cell and step in the moist physics, radiation and interface humidity
-ratios (`Vec` per column where step 9 had fixed arrays), per-layer vectors of
-vectors, and copying the per-cell Exner and geopotential scratch into the
-layers.
+## Dynamics
 
-**Why it's acceptable for now:** it's a constant factor, well within the
-performance budget's margin at this stage.
+### O-14: The undamped core collapses to the grid scale
+*Resolved at M2.6* by ∇⁴ hyperdiffusion and blow-up detection.
 
-**Plan:** M2 step 16 (performance pass): profile first; then stack arrays
-of `MAX_LAYERS` in the per-column physics, and reuse buffers.
+### O-15: Baroclinic growth is ~75% of local theory
+*Accepted.* 0.78–0.83 /day against 1.10 from local QG theory, which is an upper bound
+that ignores meridional structure (a factor of about 0.73). Tests check 0.6–1.0 of it.
+A sharper check needs the spherical eigenvalue problem.
 
-### O-30: Terrain is smoothed, and spreads over coastal ocean
+### O-16: No sponge layer
+*Accepted.* There was no room for one on two layers, and the four-layer climate
+hasn't been checked for a need. Revisit with more levels.
 
-**Seen (M2.10.2.1):** a stratified atmosphere at rest over Earth's unsmoothed
-terrain at 10k cells holds a persistent wind error of 5.7 m/s at the steepest
-cells, measured by damping the winds with a one-day timescale for 15 days. It
-is 15.6 m/s if released and left undamped. So the atmosphere sees the surface
-height after ten conservative diffusion passes (`smooth_height`), which give:
+### O-18: Two layers have no surface wind
+*Resolved at M2.10.1* by the thin bottom layer and a diagnosed 10 m wind.
 
-| Passes | Highest cell | Persistent error |
-|---|---|---|
-| 0 | 5300 m | 5.70 m/s |
-| 5 | 4982 m | 1.27 m/s |
-| 10 | 4842 m | 0.87 m/s |
-| 20 | 4468 m | 0.66 m/s |
-| 40 | 3786 m | 0.58 m/s |
+### O-26: Strong easterlies aloft at the equator
+*Watching.* About 26 m/s on the two-layer aquaplanet (Earth ~5), likely from no
+convective momentum transport. Doesn't visibly affect rain or temperature. Revisit if
+equatorial winds matter (M2.15).
 
-Two side effects:
+## Radiation and energy
 
-- Terrain spreads onto all-ocean cells next to steep coasts: of 6802 at 10k
-  cells, 236 end up above 100 m and 8 above 500 m (Greenland and Antarctic
-  margins).
-- The resting start isn't discretely balanced, because the layers sample a
-  continuous profile. It radiates gravity waves of ~5 m/s in the first day,
-  independent of how steep the terrain is.
+### O-19: Radiation is calibrated, not resolved
+*Accepted.* Effective values set against Earth's global-mean column: CO₂ band growth 30
+cm⁻¹ (spectroscopic ~10), in-layer lapse rate 6.5 K/km, the single column's 4.4 K/km,
+a two-region k-distribution, a Rayleigh sheet that doesn't scale with column mass, and
+vapour pressure capped at a quarter of air pressure. Gives 3.6 W/m² and 2.4 K per CO₂
+doubling. Revisit if worlds far from Earth must be quantitatively right: correlated-k
+from line-by-line spectra, and Rayleigh scaled with mass.
 
-**Why it's acceptable for now:** the remaining error is well below the winds
-that matter, and it does not grow with resolution (0.83 m/s at 20k cells with
-20 passes). The start's waves disperse and are damped in spin-up. Mountains
-lose some height at the grid scale, as in any GCM; sub-grid effects are step
-10.2.6's job.
+### O-20: No cloud or ice feedbacks yet
+*Resolved:* clouds at M2.9, land snow at M2.10.2.5, sea-ice albedo at M2.11.5.
 
-**Checked with ocean tiles (M2.10.2.2):** holding all-ocean cells at sea
-level during smoothing brings steep steps back at the coast, raising the
-persistent wind error from 0.87 to 1.18 m/s at 10k cells, and loses the
-filter's conservation. Leaving them lifted costs little. After 400 days on
-Earth's terrain at 2.5k cells, the lifted cells' surface temperature against
-sea-level ocean within 3° of latitude is:
+### O-21: Dissipated kinetic energy leaks out of the planet
+*Resolved at M2.10.1:* it returns as heat, and the top of the atmosphere balances.
 
-| Lifted height | Cells | Mean height | Temperature difference |
-|---|---|---|---|
-| 50–100 m | 93 | 71 m | −0.56 K |
-| 100–200 m | 53 | 134 m | −0.64 K |
-| 200–500 m | 30 | 293 m | −1.06 K |
-| above 500 m | 2 | 722 m | −2.08 K |
+### O-27: Shortwave water absorption depends on the layering
+*Resolved at M2.10.1* by the two-band adding method on the cumulative path.
 
-These cells all sit beside land, so continental air explains part of the
-difference. We keep the lift.
+## Moisture and clouds
 
-**Revisit when:** the slab ocean (M2 step 11), which gives cells at height
-sea ice and heat transport: check the same cells again.
+### O-22: The subtropics rain out their own evaporation
+*Improved at M2.10.1; rest at M2.15.* At fixed APE CONTROL SSTs, 25° rains 2.5–2.9
+mm/day (Earth ~2). The circulation sets it, not the boundary layer: evaporation minus
+rain stays 1.2–1.4 mm/day in every experiment, the Hadley cell ends near 25°, and eddies
+carry water poleward across 15° at ¾ of the cell's return flow. Independent of
+resolution. Start with Hadley width and the tropical eddy moisture flux.
 
-### O-31: The land skin's solver and its longwave
+### O-24: The water cycle is too strong
+*Scheduled: M2.15.* The aquaplanet evaporates ~4.7 mm/day (Earth ~2.7–3). Downward
+longwave at the surface rises ~8 W/m²/K (models ~6), mostly the window continuum.
+Options: a radiation sublayer in the boundary layer, or recalibrating the continuum.
 
-**Seen (M2.10.2.3):** with the exchange coefficients frozen in its slope,
-Newton's method left 25% of skin solves unconverged after eight iterations
-(on a year at 640 cells), oscillating in light winds and crawling in stable
-night air. Bracketing alone barely helped (24%). Taking the slope from
-successive iterations (a secant step, still bracketed) brings it to 0.3%, at
-3.6 flux evaluations per solve, and it matters: the land's seasonal range rose
-from 38.4 to 41.9 K, mostly from colder winters.
-
-**Decisions:**
-- The skin changes faster than radiation runs (every 3 hours), so the land
-  emits at its current skin temperature. The difference from what the last
-  radiation call counted heats the bottom layer, which keeps the budget exact.
-- On a step that refreshes radiation, the skin is solved just before the new
-  sunlight arrives, so it lags by one step. Reordering would change the
-  ocean-only climate (cloud-top cooling), breaking its pinned hash, for little
-  gain. The soil store takes the difference.
-
-**Limits for now:** one soil layer can't hold both the daily and the seasonal
-heat wave, so there's no deep-ground heat store carrying summer into winter.
-The land is always wet until the bucket (step 10.2.4), which holds the daily
-range down: evaporation takes most of the sunlight that dry ground would turn
-into heating.
-
-**Revisit when:** the Earth run's seasonal cycle is compared with observations
-(step 15), if continental interiors are too extreme or too early. The 10.2.8
-close-out didn't make that comparison: the run writes annual-mean maps only.
-
-### O-32: Too little rain over the Amazon
-
-**Seen (M2.10.2.4):** after 1.2 years on Earth's terrain at 2.5k cells, the
-Amazon's soil is dry. The soil is right to be: the annual-mean rain there is
-only about 2–3 mm/day, where Earth gets 6 or more. The rain belts over the
-oceans and the Maritime Continent are present and the bucket follows them
-elsewhere (wet boreal zones, dry subtropics and Australia).
-
-**Why it's acceptable for now:** this step only needed the bucket to respond
-to the rain it's given. Tropical land rainfall depends on the land surface
-as a whole, and 2.5k cells is coarse. Dry-soil surface air is also still
-buoyant as if saturated, in `exchange`.
-
-**Checked at the close-out (M2.10.2.8):** still too dry at 10k cells, so
-going from 2.5k to 10k cells doesn't fix it. The Amazon gets about 3.4 mm/day, read from the
-final-year map, with Borneo at 4.4 mm/day where Earth gets 8 or more.
-
-**Revisit when:** the tropical rain comparison and tuning pass (M2 step 15).
-
-### O-33: The snow pack is simple
-
-**Seen (M2.10.2.5):** a single pack per land tile, with no heat capacity of
-its own. It works through a melt season: the budgets close, and snow comes
-and goes at the mid-latitudes.
-
-**Limits for now:**
-- Snow doesn't insulate the ground, so winter soil is colder under snow than
-  it should be.
-- Nothing limits the pack where snow never melts, so it grows on ice sheets
-  without bound (Antarctica's coast reaches ~90 kg/m² in a year). That's
-  harmless over a few years, but not over the long runs.
-- Frost forms as liquid in the bucket, and rain passes through the pack
-  without freezing.
-
-**Checked at the close-out (M2.10.2.8):** after 4 years the Antarctic pack
-reaches 129 kg/m² at most, and soil water there is high, which fits frost landing
-in the bucket. Antarctica's coldest annual mean is 246 K, about 20 K warmer
-than its interior should be.
-
-**Antarctic experiments (4 years, 2.5k cells, zonal mean at 87° S):** the
-standard run gives 253 K, against roughly 224 K on Earth (from memory). Snow
-albedo 0.82 gives 243 K, and adding 1 mm roughness on snow gives 242 K. Applied
-to all snow, 0.82 also cools the global mean from 287.98 to 286.15 K. The
-remaining 18 K or so is untested: cloud cover (0.92 in the albedo run), terrain
-about 800 m too low at this resolution, no surface inversion, no snow
-insulation.
-
-**Revisit when:** the ice-sheet surface in M2 step 11, long runs (M4) and the
-land's seasonal cycle (M2 step 15), or sooner if soil temperatures look wrong.
-
-**Update (M2.11.6):** ice sheets now have their own surface (O-39). Their packs
-still have no limit: the mean grew from the seeded 1000 to 1627 kg/m² in six
-years, and reaches 3013. Antarctica south of 75° is at 242.7 K, about 18 K above
-the roughly 224 K noted above; the rest is for M2.11.7.
-
-### O-34: More rain on the lee of a ridge than the windward side
-
-**Seen (M2.10.2.6):** the orographic rain scheme works when wind blows onto a
-slope (1.8 mm/day on the windward flank, none on the lee). But in 120-day 3-D
-runs at 2.5k cells, total rain is higher on the lee:
-
-| Setup | Windward (no ridge) | Lee (no ridge) |
-|---|---|---|
-| Ridge on a pole-to-pole continent | 2.89 (3.88) mm/day | 3.53 (3.32) mm/day |
-| Mountain chain in open ocean | 2.55 (3.56) mm/day | 3.51 (3.39) mm/day |
-
-The scheme's own rain is also small there, 0.12–0.22 mm/day, and slightly
-higher on the lee. Mean bottom-layer eastward winds on these flanks are only
-about 1–3 m/s (sometimes reversed), against ~15 m/s aloft, so "windward" barely
-exists at low levels, and rain follows passing storms and the ridge's stationary
-waves. A lee-side trough at this resolution probably adds to it.
-
-**Why it's acceptable for now:** the scheme responds correctly to the wind it's
-given, and on Earth its rain falls where mountains force it to. A real test
-needs a better low-level circulation.
-
-**Checked at the close-out (M2.10.2.8):** rain read from the final-year map of
-the 10k-cell Earth run. The contrast has the right sign in two places and is
-absent in a third:
-
-| Region | Windward | Lee |
-|---|---|---|
-| Pacific Northwest and interior plateau | 4.2 mm/day | 3.7 mm/day |
-| South Himalaya and Tibet | 5.3 mm/day | 3.9 mm/day |
-| Southern Chile and Patagonia | 4.1 mm/day | 4.2 mm/day |
-
-The idealized ridge runs in the table above weren't repeated at 10k cells, so
-whether low-level westerlies strengthen there is still unmeasured.
-
-**Revisit when:** the Earth benchmark (M2 step 15).
+### O-25: Clouds are calibrated from layer-mean humidity
+*Accepted.* Bounds, albedos and emissivities are tuned to Earth-like cover (~0.62) and
+cloud effects (−70, +19 W/m²); the longwave effect is below Earth's +28. Cover is very
+sensitive to the formula, so cloud feedback isn't a prediction. Revisit if the response
+to CO₂ matters or M2.15 shows the pattern off; low stratocumulus would come first.
 
 ### O-35: The column cases find two gaps at the inversion
+*Accepted; kept as ignored tests (`cargo gaps`).* BOMEX rains 11.8 mm/day (observed
+none) because Betts–Miller has no inhibition; this may be part of O-22. DYCOMS entrains
+41 mm/s against 3.8–5.9 from large-eddy runs, and has cover 0.31 instead of overcast,
+because extrapolating the layer above leaves 0.36 K of the real 8.5 K jump. BOMEX
+cover with deep convection off is 0.80 (large-eddy 0.13). Candidates at M2.15: an
+inhibition trigger, and an inversion diagnosed from the column.
 
-**Seen (M2.10.2.7):** run as single columns against BOMEX (Siebesma et al.
-2003) and DYCOMS-II RF01 (Stevens et al. 2005):
+## Climate and terrain
 
-| | Model | Observed or LES |
-|---|---|---|
-| BOMEX rain | 11.8 mm/day, all convective | none |
-| BOMEX with deep convection off: θ, q change over 6 h | −0.004 K, +0.29 g/kg | steady by design |
-| BOMEX cloud cover, deep convection off | 0.80 | 0.13 total, 0.06 at most in any level (large-eddy) |
-| BOMEX `w*`, as if over the 500 m sub-cloud layer | 0.66 m/s (0.92 over the 1.4 km layer) | about 0.6 m/s |
-| BOMEX shallow cumulus at the layer's top | never | always |
-| DYCOMS entrainment | 41 mm/s | 3.8–5.9 mm/s (large-eddy) |
-| DYCOMS cloud cover | 0.31 | overcast |
-| DYCOMS entrainment given the real 8.5 K jump | 1.4 mm/s | 3.8–5.9 mm/s |
+### O-11: Land below sea level counts as ocean
+*Watching.* Land and sea split at elevation 0; only the Caspian shows at climate
+resolution. The two-layer ocean doesn't need a mask. M2.12's gyres do: take the
+below-sea-level region connected to the open sea, leaving closed basins to hydrology.
+Narrow straits make connectivity unreliable.
 
-**Why:** both trace to the trade or subtropical inversion, which layers this
-thick can't hold.
-- Deep convection (Betts–Miller) has no inhibition, so a surface parcel warmer
-  than the mean of the layer above convects through an inversion that in
-  reality caps it. This may be part of O-22's too-wet subtropics.
-- The entrainment closure is fine, but the jump it's given isn't: extrapolating
-  the layer above down to the boundary layer's top along the free tropospheric
-  lapse rate leaves 0.36 K of DYCOMS' 8.5 K. The same extrapolation keeps shallow
-  cumulus off in BOMEX.
+### O-23: An ice-free aquaplanet runs warmer than Earth
+*Scheduled: M2.12, M2.15.* The ice-free four-layer slab settles at 290.7 K. Ice and
+ocean transport cool it further; M2.15 sets the final temperature.
 
-**Sources:** both cases are set up from the papers in `docs/sources`
-(`siebesma-large-eddy-intercomp-2003.pdf`, Appendix B, and
-`stevens-eddy-simulations-2005.pdf`). DYCOMS' observed entrainment isn't stated
-in the paper's text, so its target is the large-eddy range. The third gap above
-is new: cloud cover diagnosed from relative humidity alone reads far too high in
-a trade-cumulus layer, whose humidity is high but whose clouds are sparse.
+### O-30: Terrain is smoothed, and spreads over coastal ocean
+*Watching; recheck at M2.11.8.* Ten passes cut the persistent σ-coordinate wind error on
+Earth at 10k cells from 5.7 to 0.87 m/s, and it doesn't grow with resolution. Terrain
+spreads onto all-ocean coastal cells (236 of 6802 above 100 m, 8 above 500 m), which run
+0.6–2 K colder. Pinning them at sea level is worse (1.18 m/s, and loses conservation).
 
-**Why it's acceptable for now:** the checks that isolate the boundary layer
-pass, and fixing either would shift the climate and its calibration: a decision,
-not part of a check. The gaps are kept as ignored tests.
+### O-31: Land has one soil layer
+*Watching.* No deep-ground store carries summer heat into winter. Revisit at M2.15 if
+continental interiors are too extreme or too early. The 10.2.8 close-out wrote annual
+means only, so that comparison hasn't been made.
 
-**Revisit when:** the circulation work on the subtropics (M2 step 15), or sooner
-if low cloud limits the Earth run's close-out (step 10.2.8). Candidates are an
-inhibition trigger for deep convection, and an inversion diagnosed from the
-column instead of extrapolated.
+### O-32: Too little rain over the Amazon
+*Scheduled: M2.15.* About 3.4 mm/day at 10k cells (Earth 6 or more), and Borneo 4.4 (8 or
+more). Going from 2.5k to 10k cells doesn't fix it. Dry-soil surface air is also still
+buoyant as if saturated, in `exchange`.
+
+### O-33: The snow pack is simple
+*Watching; M2.11.7, M2.15, M4.* No heat capacity or insulation, frost lands as liquid in
+the bucket, rain passes through, and nothing limits the pack on ice sheets (1627 kg/m²
+mean after six years, 3013 at most). Antarctica south of 75° is 242.7 K, about 18 K
+above the ~224 K noted from memory. Untested causes: cloud, terrain ~800 m too low at
+2.5k cells, no surface inversion, no snow insulation.
+
+### O-34: More rain on the lee of a ridge than the windward side
+*Scheduled: M2.15.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
+mm/day): low-level westerlies are only 1–3 m/s, so rain follows storms and stationary
+waves. The scheme responds correctly to the wind it's given. At 10k cells on Earth the
+contrast has the right sign in the Pacific Northwest and Himalaya, none in Patagonia.
 
 ### O-36: Too much sea ice is expected until M2 step 12
-
-**Expected (planning M2 step 11):** step 11 adds sea ice but moves heat only by
-horizontal diffusion, at 2000 m²/s. Ekman and eddy transport arrive in step 12.
-Until then the ice edge will sit too far equatorward and the high latitudes will
-be too cold. In Bhatnagar et al. (2026), Earth with no ocean transport has about
-10 million km² too much ice all year and an Arctic up to 15 °C too cold, and on
-their aquaplanet the full transport moves the ice line 10–15° poleward.
-
-The 2000 m²/s comes from their code: the coefficient the paper gives as
-8000 m²/s is multiplied by 50/(50 + 150) m (`ocean_slab_mod.F90`). Their
-diffusion-only aquaplanet case (Case 2) ran this way.
-
-**What this means for step 11:**
-- Its tests must not require Earth's ice extent or SSTs. Compare with the paper's
-  no-transport and diffusion-only cases instead.
-- Too much ice is not a reason to retune albedo, clouds or diffusion. Tuning is
-  step 15.
-- Check for a hemispheric imbalance: the paper finds that without ocean transport
-  ice-albedo feedback can lock one in.
-
-**Revisit when:** step 12's transport is on. The ice edge is then compared with
-the paper's full-transport cases, and this entry is resolved or updated.
-
-**Update (M2.11.5):** on aquaplanets at 2.5k cells the paper's comparison
-holds in sign and rough size. Without tilt, diffusion takes the ice edge from
-54° to 61° and warms the sea 1.9, 3.2 and 4.3 K at 42°, 48° and 53°; the paper's
-Case 2 gives 5–6 K at mid-to-high latitudes (its ten-year means are settled;
-ours are six accelerated years, and the case with no transport is still gaining
-ice). There was no hemispheric lock-in: with tilt and no transport, year one's
-ice of 14 million km² in the north and 34 in the south became 8.8 and 9.4 by
-year 6. The paper's figures could not be read here, only its text.
+*Scheduled: M2.12.* Only diffusion moves heat until then. Tests must not require Earth's
+ice extent or SSTs, and excess ice isn't a reason to retune. On aquaplanets the
+comparison with Bhatnagar et al.'s no-transport and diffusion-only cases holds in sign
+and rough size, with no hemispheric lock-in. Revisit with full transport on.
 
 ### O-37: The ocean jump barely speeds up the ice
-
-**Seen (M2.11.5):** against year 20 of a true-time aquaplanet with tilt at 2.5k
-cells, the default of three jumps of three years leaves the planet 0.33 K too
-cold, an RMS zonal error of 0.70 K, and annual-mean ice of 6.0 and 7.7 million
-km² in the north and south against 4.2 and 4.0. True time at year 6 has 6.0 and
-8.4, so the ice gains almost nothing. Most of the true-time ice loss after year
-6 is slow retreat from year one's excess in the south.
-
-Same cost, three jumps of six years: −0.05 K, RMS 0.32 K, ice 4.7 and 5.3. Five
-jumps of three years over 8 years: −0.14 K, RMS 0.44 K, ice 5.2 and 6.5. For
-comparison, a true-time run reaches −0.20 K, RMS 0.38 K, ice 4.4 and 6.2 at year
-10.
-
-Without tilt no schedule helps (+0.46 K for the default, +0.63 K with jumps of
-six years), but its target is itself still moving (O-38).
-
-**Why it's open:** `--jump-years 6` looks better for a planet with seasons, but
-the default was validated without ice, at 642 cells, against a 30-year Earth
-run. It needs an Earth check at M2.11.8 before the default changes.
+*Open: choose the jump setting before M2.11.8.* Against year 20 of a true-time tilted
+aquaplanet at 2.5k cells, the default (three 3-year jumps) is −0.33 K and leaves ice at
+6.0 and 7.7 million km² (target 4.2 and 4.0). Three 6-year jumps at the same cost: −0.05
+K, 4.7 and 5.3. No schedule helps without tilt. The default was validated without ice,
+so it needs an Earth check before changing.
 
 ### O-38: Perennial ice has no equilibrium in 20 years
-
-**Seen (M2.11.5):** on a no-tilt aquaplanet the poles never melt. The latitude
-shaped start is far below freezing there, so the first ice is already at the
-10 m limit. Snow then piles up, to 1700 kg/m² after 20 years, and floods into
-ice, reaching 15 m. Flooding passes the 10 m limit in the authors' code too
-(`ocean_slab_mod.F90`). Net radiation at the top stays near −1 W/m² for 15
-years, about half going into thickening ice and half into a cooling deep layer.
-
-**Why it's acceptable for now:** energy still closes (residual +0.010 W/m²),
-and the ice edge at about 60° is set by the much thinner ice near it. A planet
-with tilt melts its ice every summer and does settle, within 0.2 W/m² by year
-11.
-
-**Revisit when:** step 12 adds upwelling to the deep layer. A world with
-perennial ice would need a limit on snow, or a start that doesn't begin at the
-thickness limit.
+*Watching; revisit at M2.12.* On a no-tilt aquaplanet the poles never melt: snow piles
+up and floods into ice past the 10 m limit, as in the authors' code, and the top of the
+atmosphere stays near −1 W/m². Energy still closes, and the ice edge is set by the much
+thinner ice. A long-lived perennial world would need a snow limit or a thinner start.
 
 ### O-39: Ice sheets are seeded from the start temperature
-
-**Seen (M2.11.6):** making land an ice sheet only after a year of unbroken full
-snow cover turned one cell into a sheet on Earth at 2.5k cells. Antarctica's
-monthly mean reaches 287 K at 87°S under seasonal snow's albedo, so its pack
-melts out each summer, and the surface that would stop that never arrives. So
-land starting below 267 K (`ice_sheet_start_temperature`; the start already
-falls with height) starts as ice sheet under 1000 kg/m². The one-year clock
-keeps running, so a sheet whose pack drops below full cover goes back to
-seasonal snow, and new sheets can still form: at least three cells starting at
-267.5–268.8 K became sheets once the climate cooled.
-
-| 2.5k cells, 6 years, against `--no-ice-sheet` | Change |
-|---|---|
-| Antarctica south of 75° | −11.4 K (254.0 to 242.7) |
-| Greenland, 6 full-land cells | −7.3 K |
-| Global mean | −1.12 K, albedo +0.008 |
-| Sea-ice share of the planet's cells | 6.5% to 9.0% |
-| Snow-free land (281 cells) | −0.64 K |
-
-**Side effects:**
-- The threshold has little margin on Earth: the coldest lowland cell in the
-  north starts at 268.1 K. It was chosen on Earth, so other planets may need a
-  different value.
-- Two cells on the Tibetan Plateau (34°N, near 5000 m) start below it. Their
-  packs fell from 1000 to 471 and 613 kg/m² in six years, so the rule should
-  remove them in another five or six; until then they're 10–13 K too cold.
-- Snow-free land's own surface is untouched, but it cools 0.64 K with the
-  planet, since the sheets and the extra sea ice reflect more sunlight.
-- One year of weather sets the noise floor. Two runs differing in a single cell
-  gave +0.08 K globally, −0.08 K on snow-free land, +0.56 K on land with seasonal
-  snow and +1.85 K on Greenland, so changes of that size mean nothing.
-
-**Why it's acceptable for now:** Antarctica's interior cools by the 10 K
-expected, and nearly all of Antarctica and Greenland start as sheets. Too much cooling
-elsewhere isn't a reason to tune; that is step 15.
-
-**Revisit when:** M2.11.7 (Antarctica's remaining warm bias), M2.11.8 (the sea
-ice with sheets present), step 15 (tuning), and long runs (M4), where the Tibetan
-cells should have gone and a limit on the pack (O-33) starts to matter.
+*Watching; M2.11.7, M2.11.8, M2.15, M4.* A year of full snow cover alone made almost no
+sheets, because Antarctica's pack melts out under seasonal albedo. So land starting below
+267 K starts as a sheet. Earth at 2.5k cells: Antarctica −11.4 K, Greenland −7.3 K, the
+planet −1.12 K, and snow-free land −0.64 K (noise ~0.1 K). The threshold was chosen on
+Earth and has little margin: the coldest northern lowland starts at 268.1 K. Two Tibetan
+cells are seeded too, and are melting away.

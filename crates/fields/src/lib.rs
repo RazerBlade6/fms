@@ -23,7 +23,7 @@
 //! assert_eq!(fields.id::<f32>("terrain.elevation").unwrap(), elevation);
 //! ```
 //!
-//! See `docs/PLAN.md` §3.1 for the design.
+//! See `docs/DESIGN.md` for the design.
 
 mod column;
 mod meta;

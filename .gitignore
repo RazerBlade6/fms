@@ -6,3 +6,5 @@
 # Papers read for the design: cited in REFERENCES.md, not stored in git.
 /docs/*.pdf
 /docs/sources/
+# Archive of removed write-ups; not used in development.
+/docs/HISTORY.md

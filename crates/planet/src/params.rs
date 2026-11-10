@@ -88,7 +88,7 @@ macro_rules! limit {
 }
 
 /// Supported ranges. Wide enough for most fantasy worlds; extremes such as
-/// tidal locking or 90° tilt are out of scope for now (`docs/PLAN.md` M7).
+/// tidal locking or 90° tilt are out of scope for now (`docs/ROADMAP.md`, Later).
 pub(crate) const LIMITS: &[Limit] = &[
     limit!(radius, 1.0e6, 2.0e7),
     limit!(gravity, 1.0, 30.0),

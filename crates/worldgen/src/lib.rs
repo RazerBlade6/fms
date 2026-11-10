@@ -5,7 +5,7 @@
 //! the climate grid derives from it ([`TerrainStats`]); and an idealized
 //! [`Continent`] for developing the land surface.
 //!
-//! See `docs/PLAN.md` for the design.
+//! See `docs/DESIGN.md` for the design.
 
 pub mod heightmap;
 pub mod idealized;

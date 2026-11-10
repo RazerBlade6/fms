@@ -248,7 +248,7 @@ design wind defaults to 120 m/s) and `fms-climate climate`.
 boundary layer with surface drag, bulk fluxes and entrainment; its physics
 assumes a thin bottom layer, see `--levels`) driven by sunlight, radiation and
 moisture (evaporation, convection, condensation, rain and snow, clouds)
-instead of an idealized forcing (PLAN §4.2), on the world's planet: its
+instead of an idealized forcing ([DESIGN.md](DESIGN.md)), on the world's planet: its
 orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 `--surface-pressure`, the sea-level value). The atmosphere flows over the
 world's terrain (`--continent`, `--heightmap`), lightly smoothed

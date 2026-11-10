@@ -37,15 +37,29 @@ through optimized-out code).
 | Path | Contents |
 |---|---|
 | `crates/` | The Cargo workspace. Each crate is described in [PLAN.md](PLAN.md) §3.3 |
-| `docs/PLAN.md` | Design: architecture, decisions, subsystems, equations |
-| `docs/ROADMAP.md` | Milestones and steps, ticked as they're done |
-| `docs/FMSMAP.md` | The `.fmsmap` file every `fms` module exchanges |
+| `docs/PLAN.md` | The agreed design; changes when a decision overrules it |
+| `docs/ROADMAP.md` | Milestones, steps and substeps: what's done and what's next |
+| `docs/DESIGN.md` | How each built subsystem works now |
 | `docs/OBSERVATIONS.md` | Known limitations and ideas we've chosen not to act on yet |
+| `docs/FMSMAP.md` | The `.fmsmap` file every `fms` module exchanges |
 | `docs/CLI.md` | The `fms-climate` command-line runner |
 | `docs/BENCHMARKS.md` | How to run benchmarks; baseline numbers |
 | `output/` | Generated images and other artifacts for review (gitignored) |
 
 The README stays short and points here.
+
+## Documentation
+
+Keep these short. Finishing a step adds:
+
+- a tick in `ROADMAP.md`, with no method, rationale or results;
+- an edit to `DESIGN.md` only if a mechanism changed, replacing the old text, so it
+  always reads as the final result;
+- an edit to `PLAN.md` only if a decision overruled it;
+- an `OBSERVATIONS.md` entry only if something is left open, in a few lines.
+
+`docs/HISTORY.md` is a gitignored archive of older write-ups. It isn't part of
+day-to-day work.
 
 ## Git workflow
 

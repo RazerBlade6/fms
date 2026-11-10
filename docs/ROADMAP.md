@@ -1,484 +1,130 @@
 # Roadmap
 
-Milestones and steps for `fms-climate`. Design details live in
-[PLAN.md](PLAN.md); step references like "M5 step 10" point here.
+What we've done and what we're doing next. How things work is in
+[DESIGN.md](DESIGN.md), and open issues (O-n) are in
+[OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
+a visual check.
 
-Every step ends with an automated test or a visual check (a PNG/GIF from the CLI).
+**Next: M2.11.7.**
 
 ## M1 — Foundations
-- [x] 1. **Workspace and CI**: Cargo workspace with all crate skeletons; rustfmt and
-   clippy; GitHub Actions running tests.
-- [x] 2. **Icosahedral mesh**: subdivide the icosahedron, build the Voronoi dual (cell
-   centres, vertices, edges), and optimize it into an SCVT using Lloyd's algorithm.
-   Tests:
-   - exactly 12 pentagons
-   - Euler characteristic = 2
-   - cell areas sum to 4πr²
-- [x] 3. **Mesh geometry and layout**: cell areas, edge lengths, dual lengths, edge
-   normals and tangents, and the TRiSK weights. Neighbours stored as CSR, cells
-   reordered along a Hilbert curve.
-- [x] 4. **Two-level grid**: map each fine cell to its coarse parent with area weights.
-   Point → cell lookup (for picking and rasterization).
-- [x] 5. **Field registry**: typed struct-of-arrays fields tagged by grid level;
-   double buffering; field metadata (units, valid range, default colormap).
-- [x] 6. **Scheduler**:
-   - `System` trait with read/write sets and a rate as a multiple of `dt`
-   - deterministic ordering, with independent systems run in parallel
-   - sim clock and calendar (solar day, year, seasons)
-- [x] 7. **Planet**:
-   - parameter struct with validation and clamping
-   - derived quantities: Ω, f, sidereal day
-   - orbit (Kepler) and insolation (instantaneous and daily mean)
-- [x] 8. **CLI**: run a world headless; dump any field to an equirectangular PNG with
-   a colormap; render a year of insolation as a GIF.
-- [x] 9. **Tests**:
-   - insolation matches analytic values (equinox and solstice, polar night)
-   - annual-mean symmetry at zero eccentricity
+- [x] 1. Cargo workspace, rustfmt, clippy and CI
+- [x] 2. Icosahedral SCVT mesh
+- [x] 3. Mesh geometry, TRiSK weights, CSR neighbours, Hilbert-curve ordering
+- [x] 4. Two-level grid and point location
+- [x] 5. Field registry
+- [x] 6. Scheduler, sim clock and calendar
+- [x] 7. Planet parameters, orbit and insolation
+- [x] 8. CLI: headless runs, field PNGs, insolation GIF
+- [x] 9. Insolation tests against analytic values
 
 ## M1.5 — Tooling and visibility
-Added after the M1 review: tooling the GCM work depends on.
-- [x] 1. **Portable math**: `fms-math` wraps `libm` for all transcendental
-   functions; `clippy.toml` forbids the std versions; golden-hash tests prove
-   results are bit-identical on macOS, Windows and Linux.
-- [x] 2. **Wind visualization**: reconstruct a cell-centred vector field from edge
-   normal velocities (Perot-style reconstruction); CLI renders vector fields as
-   speed plus arrows or streamlines, and edge/vertex fields via cell averages.
-   Needed to debug every dynamics step in M2.
-- [x] 3. **Per-system timing**: wall-clock time for each system in the
-   `StepReport`; `fms-climate` prints a timing breakdown per run.
-- [x] 4. **Benchmarks**: `criterion` suite for mesh build, geometry, two-level
-   transfers, point location and scheduler overhead. Run locally (CI timing is
-   too noisy) to catch performance regressions.
-- [x] 5. **API docs in CI**: `cargo doc` with `-D warnings` (broken intra-doc
-   links fail the build).
-- [x] 6. **Astronomical seasons**: season and equinox/solstice dates from the
-   orbit (solar longitude) rather than calendar quarters, so eccentric orbits get
-   seasons of unequal length. The calendar quarter stays available as a
-   convention.
+- [x] 1. Portable math (`fms-math`) and golden-hash tests
+- [x] 2. Wind visualization (Perot reconstruction, arrows)
+- [x] 3. Per-system timing
+- [x] 4. Criterion benchmarks
+- [x] 5. API docs in CI
+- [x] 6. Astronomical seasons
 
 ## M2 — Headless GCM
-- [x] 0. **Point probe**: `fms-climate probe --lat --lon -f FIELD [-f …] --days D` writes a
-   time series at one location to `output/` as CSV plus a simple line chart. Needed
-   to check diurnal and seasonal cycles and energy drift in the steps below.
-- [x] 1. **Earth heightmap import** (ETOPO-style equirectangular): resample to the fine
-   grid, then aggregate to the coarse grid, keeping sub-grid terrain statistics.
-- [x] 2. **Discrete operators**: TRiSK gradient, divergence, curl, kinetic energy and
-   tangential-velocity reconstruction. Test: convergence against analytic
-   spherical-harmonic fields; mass and energy conservation.
-- [x] 3. **Shallow-water model (explicit)**: single layer. Pass Williamson test cases
-   2 (steady geostrophic flow), 5 (flow over a mountain) and 6 (Rossby–Haurwitz wave).
-- [x] 4. **Semi-implicit time stepping**: leapfrog with the RAW filter; implicit
-   gravity-wave terms; Helmholtz solver (preconditioned conjugate gradient). Rerun
-   the Williamson tests at the larger `dt`.
-- [x] 5. **2-layer dry dynamical core**: sigma coordinates, hydrostatic balance,
-   potential temperature per layer, a surface-pressure equation. Equal-mass
-   layers (σ = 0.5); explicit RK4 first, then semi-implicit with a vertical-mode
-   split. Tests: an atmosphere at rest over mountains stays at rest; mass and
-   energy conserved; baroclinic instability grows at the rate linear theory
-   predicts.
-- [x] 6. **Dissipation and safety**: hyperdiffusion, global energy and mass
-   diagnostics, automatic blow-up detection with a diagnostic dump. Moved ahead
-   of Held–Suarez at the end of M2.5: without dissipation the core collapses to
-   the grid scale ~8 days into a storm life cycle
-   ([OBSERVATIONS.md](OBSERVATIONS.md) O-14). Done as ∇⁴ (order configurable),
-   at the strongest strength the step allows (O-17). The sponge layer is
-   deferred until there are more levels (O-16). Tests: a storm life cycle
-   survives 30 days with mass and θ exact and the energy budget closed; rest
-   over a mountain is untouched; blow-ups are caught before they become NaNs.
-- [x] 7. **Held–Suarez benchmark**: Newtonian temperature relaxation plus Rayleigh
-   friction. Mid-latitude jets and baroclinic eddies should appear. Use ∇⁴, not
-   the paper's ∇⁸ ([OBSERVATIONS.md](OBSERVATIONS.md) O-17). Done with the
-   forcing averaged over each layer's mass (`fms-climate held-suarez`). 1200 days at
-   10k cells: upper jets of 26 m/s at 49°, north and south within 0.5 m/s, and an
-   energy budget that closes (Newtonian heating 0.38 W/m² balanced by friction
-   and diffusion). Tests (k = 16, 450 days): jets, hemispheric agreement,
-   steady and closed energy budget. The lower layer is not the surface (O-18).
-- [x] 8. **Radiation**: grey two-stream scheme, shortwave absorption, surface albedo,
-   CO₂/pressure-dependent optical depth. Replaces the Held–Suarez forcing.
-   Test: global energy balance closes. Done as semi-grey two-stream radiation
-   (CO₂ band-wing model, window, k-distribution water), with water vapour at
-   fixed relative humidity and a temporary 10 m slab aquaplanet with bulk
-   sensible and latent heat fluxes and convective adjustment (`fms-climate climate`,
-   PLAN §4.2). Single column: Earth-like climate (287 K, OLR 247 W/m²),
-   3.6 W/m² and 2.4 K per CO₂ doubling, sane across 0–100,000 ppm, 0.1–10 bar,
-   sunlight and gravity. 3-D (5 years, 2.5k cells): global mean ~287 K,
-   planetary albedo ~0.29, equator 300 K and poles ~245 K, and the planet's
-   energy budget closes to ~0.01 W/m².
-   Calibrated rather than resolved: O-19; no cloud or ice feedbacks yet: O-20.
-- [x] 9. **Moisture**: positive-definite humidity advection, Clausius–Clapeyron
-   saturation, large-scale condensation, moist convective adjustment, latent
-   heating, precipitation output. Replaces step 8's fixed-relative-humidity
-   water vapour and immediate condensation; diagnose clouds to replace the
-   fixed cloud deck ([OBSERVATIONS.md](OBSERVATIONS.md) O-20). Done as
-   humidity per layer carried by flux-corrected transport (water exact to
-   round-off), Betts–Miller convection towards the moist adiabat,
-   large-scale condensation with re-evaporation, rain or snow, and two
-   diagnosed cloud sheets acting on sunlight and longwave, plus Rayleigh
-   scattering (PLAN §4.2). Aquaplanet (5 years, 2.5k cells): ~297 K
-   (ice-free, O-23), albedo ~0.29, cloud ~0.63, layer humidities as
-   calibrated, rain belt at the equator; water budget exact, energy budget
-   to ~0.1 W/m² (time stepping).
-   Known gaps: the subtropics rain out their own evaporation (O-22), the
-   water cycle is too strong (O-24), clouds are calibrated (O-25).
-- [x] 9.5. **N-layer vertical structure**: generalize the two-layer model to
-    any number of σ layers with arbitrary interfaces: the Arakawa–Suarez
-    (1983) energy-conserving vertical scheme, one vertical mode per layer in
-    the semi-implicit solver, flux-corrected humidity transport across every
-    interface, and radiation and moist physics per layer. The climate stays
-    on two layers; step 10 moves it to three, with a thin bottom layer for
-    the boundary layer, and recalibrates once. Test: two layers reproduce
-    step 9 to round-off (Held–Suarez, baroclinic wave, energy and water
-    budgets); with three to five layers, mass, Θ, water and energy are
-    conserved and Held–Suarez and the moist aquaplanet run stably.
-    Done (`levels.rs`, `LayeredModel`, `fms-climate … --levels`): with step 9's
-    semi-implicit reference, two layers reproduce step 9 bit for bit; with
-    three and five, energy is conserved exactly in space, mass, Θ and water
-    to round-off, and Held–Suarez (200 days) and the moist aquaplanet (60
-    days) run stably at 7.5× the explicit step. Two changes beyond the
-    refactor, both needed for more layers: the semi-implicit reference is
-    now an isothermal 300 K atmosphere (Simmons et al. 1978; the start's own
-    profile blew up three-layer Held–Suarez at day 28), and shallow
-    convection only moves water from layers above their reference humidity
-    to those below (it drew dry layers negative). The two-layer climate is
-    unchanged (5 years: 297.0 K, albedo 0.286, cloud 0.63, 4.83 mm/day;
-    energy closes to 0.03 W/m²). Found: shortwave water absorption depends
-    on the layering (O-27); with more than one interface the vertical modes
-    are non-normal (O-28).
-- [x] 10. **Boundary layer and land surface**, in two reviewed parts:
-    - [x] 10.1. **Boundary layer** (on the aquaplanet):
-      - make the shortwave independent of the layering (O-27): the
-        near-infrared band carried separately, each layer's absorption from
-        the cumulative water path;
-      - move the climate to four layers (σ 0.25/0.5/0.85): a thin (~1.4 km)
-        bottom one, and a top split at 250 hPa so that the Hadley outflow
-        isn't averaged with the stratosphere;
-      - diagnose a 10 m surface wind from the bottom layer (log profile,
-        roughness, stability), replacing the lower-layer wind
-        ([OBSERVATIONS.md](OBSERVATIONS.md) O-18);
-      - bulk surface drag and stability-dependent heat and moisture
-        exchange in place of the Rayleigh friction;
-      - return friction's and diffusion's dissipated energy as heat (O-21);
-      - stability-dependent mixing out of the bottom layer that keeps
-        evaporated water near the surface (O-22);
-      - recalibrate once on four layers.
-
-      Tests: surface sunlight converges with more layers; the subtropics
-      rain ≲2 mm/day; Held–Suarez-like surface westerlies under the jets;
-      the top of the atmosphere balances in equilibrium; energy and water
-      budgets close.
-
-      Done, with one target unmet. Four layers (σ 0.25/0.5/0.85); surface
-      sunlight agrees to 0.03 W/m² across layerings; Held–Suarez has +3 to
-      +4 m/s under its jets; five slab years settle at 290.7 K with the top
-      of the atmosphere balanced (O-23). At fixed APE CONTROL sea
-      temperatures: Hadley cell 80×10⁹ kg/s at 15° (45 on three layers),
-      imbalance +14 W/m² (APE ~13), albedo 0.31, rain 3.4 mm/day. Unmet:
-      the subtropics rain 2.5–2.9 mm/day, set by the circulation rather
-      than the boundary layer (O-22, for step 15).
-    - [x] 10.2. **Land surface**, developed on an idealized continent, then
-      run on the Earth heightmap:
-      - [x] 10.2.1. **Terrain in the climate run**: surface geopotential
-        from the world's terrain; a resting start in hydrostatic balance
-        with it (the planet's surface pressure is the sea-level value); an
-        idealized continent (`--continent`). Test: a stratified atmosphere
-        at rest over the continent stays nearly at rest, measuring the
-        spurious σ-coordinate winds; smooth the terrain if they demand it.
-        Done, with ten conservative diffusion passes over the terrain the
-        atmosphere sees: the persistent wind error on Earth at 10k cells
-        falls from 5.7 to 0.87 m/s, 0.48 over the continent, 0.01 flat
-        (O-30). 1.2 years of full physics run stably on the continent and
-        on Earth's terrain, energy closing to under 0.01 W/m². The surface
-        is still the slab until the next step.
-      - [x] 10.2.2. **Land and ocean tiles**: land fraction into the
-        physics; each cell has a land and an ocean tile with its own surface
-        temperature, albedo, roughness, radiation and fluxes, weighted by
-        land fraction (land starts as a slab; the ocean tile stays the 10 m
-        slab until step 11). Tests: no land reproduces the aquaplanet bit
-        for bit; energy and water budgets close with tiles.
-        Done: land is a 1 m wet slab, albedo 0.2, roughness 0.1 m. No land
-        matches the pre-tile aquaplanet's state hash exactly; with a
-        continent, energy closes to −0.02 W/m² over 90 days and water to
-        6×10⁻¹⁴. Lifted coastal ocean stays lifted (O-30).
-      - [x] 10.2.3. **Land energy balance**: a skin temperature over a thin
-        soil heat store, solved implicitly. Tests: the implicit solve
-        against an analytic case; land swings more than ocean daily and
-        seasonally.
-        Done: a skin with no heat capacity over a 1 m soil store, conductance
-        7 W/m²/K between them (O-31). The implicit step matches the analytic
-        relaxation at any step length. Over a year at 640 cells, mid-latitude
-        land swings 6.2 K daily and 41.9 K seasonally against the 10 m ocean
-        slab's 0.23 K and 28.1 K. 1.2-year runs are stable on the continent
-        and on Earth's terrain at 2.5k cells, energy closing to 0.011 W/m².
-      - [x] 10.2.4. **Soil water**: Manabe bucket limiting evaporation, with
-        runoff. Test: the water budget closes with soil water and runoff.
-        Done: a 150 mm bucket, evaporating freely above 75% of that. Air, soil
-        and runoff together change only by the ocean's evaporation minus
-        precipitation, to 5×10⁻¹⁴ of the atmosphere's water. Dry land raises
-        mid-latitude swings to 9.6 K daily and 49 K seasonally. On Earth at
-        2.5k cells: 288.9 K, albedo 0.32, boreal soils wet, subtropics and
-        Australia dry, but so is the Amazon, from too little rain (O-32).
-      - [x] 10.2.5. **Snow**: snow mass, melt and snow albedo. Test: energy
-        and water budgets close through melting; snow comes and goes with
-        the seasons.
-        Done: land carries a snow pack that brightens it to 0.65 once 10 kg/m²
-        covers it; a skin at freezing melts the pack with its surplus heat
-        (O-33). Over 425 days through a melt season at 640 cells, energy
-        closes to −0.024 W/m² and water to 3×10⁻¹⁴ of the atmosphere's;
-        mid-latitude land snow peaks at 54 kg/m² and melts away entirely. On
-        Earth at 2.5k cells: 288.4 K, albedo 0.328.
-      - [x] 10.2.6. **Sub-grid orography**: orographic rain and drag from
-        the height spread. Test: more rain on the windward side of the
-        ridge than the lee; the drag slows the flow over rough terrain and
-        its energy returns as heat.
-        Done: upslope wind rains out a share of the moisture it carries
-        (Smith 1979), and the height spread adds a drag through the existing
-        friction path. A steady 10 m/s westerly rains 1.8 mm/day on a ridge's
-        windward flank and nothing on its lee; the hills slow the wind on the
-        crest from 4.2 to 3.0 m/s, and the budgets close. On Earth the rain
-        falls on the Rockies, Andes, Himalayas and East African highlands.
-        Unmet: in the full 3-D model at 2.5k cells, the lee of a ridge still
-        gets more total rain than the windward side (O-34).
-      - [x] 10.2.7. **Single-column cases** for the boundary layer and
-        convection (BOMEX trade cumulus, DYCOMS stratocumulus): the column
-        physics as a per-column function forced by the cases' prescribed
-        large-scale tendencies, checked against their observations and
-        large-eddy simulations in seconds per run.
-        Done: `crates/atmos/src/column_cases.rs`, each case in milliseconds,
-        column water exact. The boundary layer holds BOMEX steady with no rain
-        once deep convection is off, and the entrainment closure gets
-        stratocumulus right given the real inversion. Two gaps, kept as
-        ignored tests (O-35): deep convection rains 12 mm/day in BOMEX, and
-        DYCOMS entrains about ten times too fast.
-      - [x] 10.2.8. **Earth run and close-out**: the full model on the
-        Earth heightmap, with terrain land, ocean, soil water and snow
-        together; energy and water budgets close over a year.
-        Done: 4 years at 2.5k cells and 1.2 years at 10k. Over the final year
-        the energy residual is +0.0022 and -0.0060 W/m², and the water
-        residuals are under 10⁵ kg of about 10¹⁶. Global means at 2.5k: 287.98 K,
-        albedo 0.331, precipitation 3.46 mm/day. The regional rain is still
-        wrong in places (O-32, O-34); comparing it with observations is step
-        15.
-- [ ] 11. **Two-layer slab ocean and sea ice** (the dynamical slab ocean of
-    Codron 2012 and Bhatnagar et al. 2026, PLAN §4.3): a 50 m mixed layer
-    over a 150 m deep layer per ocean cell, horizontal diffusion in both
-    (2000 m²/s, which is what the paper's "8000" comes to in its code),
-    and convective adjustment when the surface layer is colder than the deep
-    one. Sea ice forms when the mixed layer falls below freezing, as a
-    fraction and a thickness; the ocean's heat reaches it at a turbulent
-    rate, as in the authors' code. A prognostic ice surface temperature with
-    a linear profile, snow on ice with its own heat capacity, and an albedo
-    that rises with thickness from the ocean's, separately in visible and
-    near-infrared light. Ice-albedo feedback (O-20). Tests: energy conserved
-    through freezing and melting; the ice edge and seasonal cycle are
-    plausible for an ocean with no transport yet: too much ice is expected
-    until step 12, so step 11's tests must not require Earth's extent (O-36).
-    Built in reviewed parts:
-    - [x] 11.1. **Two-layer ocean, no ice**: the ocean moves into `fms-ocean`,
-      with diffusion and convective adjustment. Tests: the old 10 m setup
-      still matches its pinned hash; heat is conserved to round-off.
-      Done: 50 m over 150 m, 2000 m²/s in both layers, edges opened by the
-      smaller of the two ocean fractions, the deep layer starting no warmer
-      than 4 °C. `OceanParams::slab(10.0)` reproduces the aquaplanet bit for
-      bit; diffusion conserves heat to 10⁻¹⁴ on rough coasts and damps a
-      zonal wave at the analytic rate to 2%. On Earth at 2.5k cells, 8 years:
-      289.50 K, albedo 0.327, energy residual +0.0055 W/m²; the ocean is
-      still settling, and with no ice yet it runs below freezing near the
-      poles. Over the warming from one uniform start the leapfrog's budget
-      error is larger than the 10 m slab's (−0.064 W/m² over 425 days at 640
-      cells), a third of that at half the step, and the same with no
-      transport.
-    - [x] 11.1.5. **Early performance pass**: cut the `exp`/`pow` cost in moist
-      physics, flatten and merge the dynamics loops, run inside the rayon
-      pool. Target 1.5× or better at 2.5k cells. Dynamics changes keep the
-      golden hashes; the moist-physics change may move them once, with the
-      climate checked. Step 16 keeps the solver, scheduler and scaling work.
-      Done: 2.60× at 2.5k cells on 8 threads (11.19 to 4.30 ms/step), 3.84× at
-      642 cells on 4; see `REPORT.md` and `docs/BENCHMARKS.md`.
-    - [x] 11.1.6. **Test tiers and a shorter spin-up**: `cargo t1`, `t2` and
-      `t3`, with known gaps apart in `cargo gaps`. The ocean starts shaped by
-      the year's sunlight and jumps three times, repeating a year's change
-      for three more, off in the pinned tests. Six years at 642 cells came
-      within 0.04 K of a 30-year run in the global mean; RMS zonal error 0.32 K
-      at the surface and 0.28 K in the deep ocean (true-time six years: 0.56
-      and 0.76). Must be checked again once ice exists (11.5).
-    - [x] 11.2. **Two-band surface albedo** through radiation and the tiles.
-      Test: equal band albedos reproduce today's results bit for bit.
-      Done: each band reflects off its own albedo and tiles split sunlight
-      band by band. Ocean and land keep one value in both bands, so the pinned
-      hash is unchanged; ice brings the first real difference (11.3).
-    - [x] 11.3. **Sea ice**: a third tile with fraction, thickness and surface
-      temperature, the authors' growth and melt rules, and the ocean-to-ice
-      flux. Tests: growth against Stefan's law; energy and water close through
-      freezing and melting.
-      Done: `fms-ocean`'s third tile, with the authors' growth and melt rules.
-      Area and thickness change only at radiation calls, so stored sunlight
-      still balances. The 10 m slab has no ice and keeps its hash. Growth is
-      within 1% of Stefan's law, and a freezing and thawing planet closes
-      energy to −0.025 W/m² and water to 1e-14. Earth at 642 cells, 6 years:
-      289.4 K, albedo 0.318; ice cover 0.50 near 73°N and 0.31 near 84°S, not
-      yet settled. Snow melts on landing for now (11.4).
-    - [x] 11.4. **Snow on sea ice**: its own temperature and heat capacity,
-      melting snow, then ice, then warming the ocean. Tests: budgets close;
-      conduction against an analytic case.
-      Done: snow above 15 kg/m² is its own layer, solved together with the
-      interface temperature so thin ice stays stable. Wind blows part of the
-      snow into the water, and snow below the waterline floods into ice, as
-      in the authors' code. Heat through snow and ice in series matches the
-      analytic interface temperature to 1e-6 K, and a freezing and thawing
-      planet closes energy to −0.028 W/m². Earth at 642 cells, 6 years:
-      289.3 K, albedo 0.318, ice cover 0.53 near 73°N, 0.31 near 84°S.
-    - [x] 11.5. **Aquaplanet ice-albedo runs**: accelerated six-year runs at
-      2.5k cells, with one 20-year true-time run to check the jump against
-      ice-albedo feedback; with and without tilt and with the feedback off,
-      unattended at the end of the step, against the paper's
-      no-transport and diffusion-only cases; ice edge, seasons and hemispheric
-      symmetry (O-20, O-36).
-      Done: all runs stable, energy residual under 0.014 W/m². True time at
-      20 years: 291.07 K with tilt, ice 4 million km² per hemisphere and
-      ice-free summers; 287.43 K without, ice to 60°, still thickening
-      (O-38). Feedback off warms the poles 5–13 K and the planet 0.9–2.2 K.
-      Diffusion moves the no-tilt ice edge 7° poleward and warms the sea
-      2–4 K at 42–53° (the paper: 5–6 K). No hemispheric lock-in. The
-      default jump barely speeds the ice (O-37).
-    - [x] 11.6. **Ice-sheet surface**: land that stays snow-covered takes
-      albedo 0.82 and roughness 1 mm; seasonal snow keeps 0.65 and 0.1 m. Test:
-      Antarctica's interior cools by about 10 K with no change to snow-free
-      land.
-      Done, with the second half partly met. A year of unbroken full cover
-      makes land an ice sheet, but Antarctica melts out every summer here, so
-      land starting below 267 K starts as one under a 1000 kg/m² pack (O-39).
-      Earth at 2.5k cells, 6 years, against `--no-ice-sheet`: Antarctica south
-      of 75° cools 11.4 K to 242.7 K, 87°S by 12.3 K, Greenland by 7.3 K;
-      planet 288.03 to 286.91 K, albedo 0.334 to 0.342, energy residual
-      +0.0071 W/m². Snow-free land's surface is unchanged, but it cools 0.64 K
-      with the planet (noise about 0.1 K). Two Tibetan cells are seeded too,
-      and are melting away.
-    - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and
-      snow insulation, one at a time (O-33).
-    - [ ] 11.8. **Earth run and close-out**: the accelerated run at 2.5k cells, monthly
-      ice extent per hemisphere, budgets, O-30's coastal cells again, docs.
-- [ ] 12. **Ocean heat transport by currents**:
-    - Ekman transport from the surface wind stress, `M = (ετ + f k×τ)/(ε² + f²)`
-      at the edges, with the deep layer's return flow and the upwelling or
-      downwelling their divergence implies; blended near the equator into
-      the Sverdrup transport of the wind-stress curl. Needs step 10's
-      surface wind (O-18).
-    - Gent–McWilliams eddy transport, proportional to the isotherm slope
-      between the layers.
-    - A wind-driven barotropic gyre: a Stommel–Munk streamfunction from the
-      wind-stress curl, β and friction, solved over each basin with the
-      conjugate-gradient solver, whose currents carry mixed-layer heat:
-      western boundary currents for coastal climates, and the current map.
-    - Rotation-aware coefficients: cap the Sverdrup term for slow rotators
-      and scale the eddy coefficients with the deformation radius (the
-      paper's are calibrated for Earth).
-    - Tests: the aquaplanet benchmark of Bhatnagar et al. 2026 (heat
-      transport ~2–3 PW by component, an equatorial cold tongue, the ice
-      edge, against a run with transport off); the ocean's heat budget
-      closes; western intensification in a closed basin.
-- [ ] 13. **Multi-rate scheduling**:
-    - derive `dt` from the CFL limit, rounded so it divides the solar day. Size
-      it from a design maximum wind, not the current one: flows accelerate
-      ([OBSERVATIONS.md](OBSERVATIONS.md) O-13)
-    - radiation every ~3 h, ocean every 1–6 h (§4.6)
-- [ ] 14. **Idealized planets**: aquaplanet (symmetric Hadley cell), no-tilt (no
-    seasons), fast and slow rotation (number and width of circulation cells).
-    Automated assertions on zonal-mean wind and temperature. Also a
-    **grid-imprinting check**: measure how strongly the pentagons' pattern shows up
-    in the long-run Held–Suarez climate ([OBSERVATIONS.md](OBSERVATIONS.md) O-1), and
-    apply a fix if it is visible. Already visible in Williamson case 2 as error
-    dipoles at the pentagons (±1.5 m of 3 km after 5 days).
-- [ ] 15. **Earth benchmark, part 1**: compare against a reference climatology:
-    - trade winds and jets
-    - the tropical rain belt and its seasonal migration
-    - subtropical highs
-    - monsoons
-    - deserts in the right places
-
-    Includes a parameter-tuning pass.
-- [ ] 16. **Performance pass**: profile, parallelize the hot kernels with rayon, check
-    the memory layout. Target: speed 2 (~340 steps/s) at the default resolution.
-    Known costs going in ([OBSERVATIONS.md](OBSERVATIONS.md)):
-    - per-call parallel overhead dominates the dynamics (O-12): fuse operators
-    - the Helmholtz solve takes ~36 CG iterations per step (O-13): better
-      preconditioner (multigrid or Chebyshev), looser tolerance
-    - scheduler overhead (O-8)
+- [x] 0. Point probe (CSV and line chart at one location)
+- [x] 1. Earth heightmap import with sub-grid statistics
+- [x] 2. TRiSK discrete operators
+- [x] 3. Explicit shallow-water model (Williamson cases 2, 5, 6)
+- [x] 4. Semi-implicit leapfrog, RAW filter, Helmholtz solver
+- [x] 5. Two-layer dry dynamical core
+- [x] 6. Hyperdiffusion, energy and mass diagnostics, blow-up detection
+- [x] 7. Held–Suarez benchmark
+- [x] 8. Semi-grey radiation on a temporary slab aquaplanet
+- [x] 9. Moisture: humidity transport, convection, condensation, clouds
+- [x] 9.5. N-layer vertical structure
+- [x] 10. Boundary layer and land surface
+  - [x] 10.1. Boundary layer: four layers, 10 m wind, surface drag,
+    entrainment, dissipative heating, layering-independent shortwave
+  - [x] 10.2. Land surface
+    - [x] 10.2.1. Terrain in the climate run; idealized continent
+    - [x] 10.2.2. Land and ocean tiles
+    - [x] 10.2.3. Land energy balance: skin over a soil store
+    - [x] 10.2.4. Soil water bucket and runoff
+    - [x] 10.2.5. Snow on land
+    - [x] 10.2.6. Sub-grid orographic rain and drag
+    - [x] 10.2.7. Single-column BOMEX and DYCOMS cases
+    - [x] 10.2.8. Earth run and close-out
+- [ ] 11. Two-layer slab ocean and sea ice
+  - [x] 11.1. Two-layer ocean in `fms-ocean`, no ice
+  - [x] 11.1.5. Early performance pass (2.6× at 2.5k cells)
+  - [x] 11.1.6. Test tiers and a shorter ocean spin-up
+  - [x] 11.2. Two-band surface albedo
+  - [x] 11.3. Sea ice as a third tile
+  - [x] 11.4. Snow on sea ice
+  - [x] 11.5. Aquaplanet ice-albedo runs
+  - [x] 11.6. Ice-sheet surface on land
+  - [ ] 11.7. **Antarctic experiments**: clouds, the missing inversion and snow
+    insulation, one at a time (O-33).
+  - [ ] 11.8. **Earth run and close-out**: the accelerated run at 2.5k cells,
+    monthly ice extent per hemisphere, budgets, O-30's coastal cells again, and
+    the ocean-jump setting (O-37).
+- [ ] 12. **Ocean heat transport by currents** (PLAN §4.3):
+  - Ekman transport blending into Sverdrup near the equator, with the deep
+    layer's return flow and the upwelling it implies
+  - Gent–McWilliams eddy transport
+  - Wind-driven barotropic gyres carrying mixed-layer heat, solved per basin
+    (needs the ocean mask of O-11)
+  - Rotation-aware coefficients for other planets
+  - Tests: the Bhatnagar et al. 2026 aquaplanet (heat transport ~2–3 PW by
+    component, equatorial cold tongue, ice edge, against transport off); the
+    ocean's heat budget closes; western intensification in a closed basin
+- [ ] 13. **Multi-rate scheduling**: `dt` from the CFL limit and a design
+  maximum wind (O-13), rounded to divide the solar day; radiation every ~3 h and
+  ocean every 1–6 h (PLAN §4.6).
+- [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
+  with assertions on zonal-mean wind and temperature; grid-imprinting check in
+  long-run Held–Suarez, with a fix if visible (O-1).
+- [ ] 15. **Earth benchmark, part 1**, against a reference climatology, with a
+  tuning pass: trade winds and jets, the tropical rain belt and its migration,
+  subtropical highs, monsoons, deserts.
+- [ ] 16. **Performance pass**: target speed 2 (~340 steps/s) at the default
+  resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,
+  O-29).
 
 ## M3 — Hydrology, climate and vegetation
-- [ ] 0. **`.fmsmap` v0**: the container, planet settings, elevation, land and
-   optional vegetation ([FMSMAP.md](FMSMAP.md)); a heightmap-to-`.fmsmap` importer;
-   `fms-climate` runs from a file.
-- [ ] 1. **Downscaling**: interpolate climate-grid fields onto the fine grid, with a
-   lapse-rate correction for elevation.
-- [ ] 2. **Rolling statistics**: per-cell monthly temperature and precipitation means
-   and variances (Welford), averaged over multiple years.
-- [ ] 3. **Köppen–Geiger classification**, plus an agreement metric against the
-   Peel et al. 2007 Earth map.
-- [ ] 4. **Evolving vegetation**: a vegetation amount per land tile, starting from
-   the imported layer and following its layer state, moving towards what the
-   climate supports. It feeds back on albedo, roughness and soil water capacity.
-- [ ] 5. **Flow routing**: steepest-descent directions, priority-flood depression
-   filling, flow accumulation, river extraction above a threshold.
-- [ ] 6. **Lakes and basins**: lake water balance; endorheic basins and salt lakes;
-   lakes become water surfaces in the GCM.
-- [ ] 7. **Earth benchmark, part 2**: hit the Köppen agreement threshold; major rivers
-   and basins appear in plausible places.
-- [ ] 8. **Export**: climate results into `.fmsmap` (monthly climate, vegetation, ice,
-   rivers), passing through layers the climate doesn't understand.
+- [ ] 0. `.fmsmap` v0 ([FMSMAP.md](FMSMAP.md)), a heightmap importer, and
+  `fms-climate` runs from a file
+- [ ] 1. Downscaling onto the fine grid with a lapse-rate correction
+- [ ] 2. Rolling monthly temperature and precipitation statistics
+- [ ] 3. Köppen–Geiger classification, with agreement against Peel et al. 2007
+- [ ] 4. Evolving vegetation, feeding back on albedo, roughness and soil water
+- [ ] 5. Flow routing, depression filling, river extraction
+- [ ] 6. Lakes and basins; lakes become water surfaces in the GCM
+- [ ] 7. Earth benchmark, part 2: Köppen threshold; rivers and basins plausible
+- [ ] 8. Export climate results into `.fmsmap`
 
 ## M4 — Determinism, persistence and long runs
-- [ ] 1. **Determinism audit**:
-   - fixed-order reductions and pairwise summation
-   - a separate seeded RNG stream for each system
-   - test: bit-identical replay across different thread counts
-- [ ] 2. **Resume saves**: a climate-only versioned binary format with field tags and
-   migration hooks. Round-trip tests; mid-run save/load continues bit-identically.
-- [ ] 3. **Climatology learning**: per-cell, per-month mean, variance and
-   autocorrelation, collected during full-GCM runs.
-- [ ] 4. **Long runs**: alternate a few GCM years with a century or more of
-   vegetation, for runs of about 10,000 years (PLAN §4.7).
-- [ ] 5. **Spin-up**: accelerated spin-up (asynchronous ocean coupling) on a background
-   thread, with progress reporting and cancellation.
-- [ ] 6. **Validation**: an unstable drawn desert fades and a stable one persists;
-   long-run results match runs with the GCM stepped throughout, over shorter spans.
+- [ ] 1. Determinism audit: fixed-order reductions, per-system RNG streams,
+  bit-identical replay across thread counts (O-41)
+- [ ] 2. Versioned resume saves; mid-run save/load continues bit-identically
+- [ ] 3. Climatology learning during full-GCM runs
+- [ ] 4. Long runs: a few GCM years alternating with a century or more of
+  vegetation, to ~10,000 years (PLAN §4.7)
+- [ ] 5. Accelerated spin-up on a background thread, with progress and cancel
+- [ ] 6. Validation: unstable drawn deserts fade, stable ones persist; long runs
+  match GCM-stepped runs over shorter spans
 
 ## M5 — Viewer
 View only; the viewer code is shared with `fms-geo`.
-- [ ] 1. **App shell**: eframe + wgpu. The sim runs on its own thread and sends
-   double-buffered field snapshots to the UI over a channel.
-- [ ] 2. **Renderers**: globe (hex mesh, orbit camera) and flat equirectangular view.
-- [ ] 3. **Map mode framework**: colormaps and legends; every field automatically gets
-   a map mode; climate-grid fields are shown downscaled.
-- [ ] 4. **Contours**: marching triangles on the mesh, with configurable intervals.
-- [ ] 5. **Time controls**: play/pause, live speeds, starting a long run, date and
-   season HUD, sim-rate readout.
-- [ ] 6. **Inspector**: click to pick a cell; show current values and annual
-   temperature and precipitation graphs.
-- [ ] 7. **Live overlays**: wind particles, ocean current vectors, clouds and
-   precipitation, snow and sea-ice extent.
-- [ ] 8. **Planet panel**: shows the planet's settings, read-only.
-- [ ] 9. **Opening worlds**: open `.fmsmap` files and heightmaps, and resume runs.
-- [ ] 10. **CD pipeline**: a GitHub Actions workflow triggered by pushes to `main`.
-    It builds release binaries for macOS, Windows and Linux and publishes them as
-    a GitHub Release. Releases are cut on every push to `main` from M5 onwards.
-- [ ] 11. **Presets**: about a dozen shipped worlds, as `.fmsmap` files.
+- [ ] 1. App shell (eframe + wgpu), sim on its own thread
+- [ ] 2. Globe and equirectangular renderers
+- [ ] 3. Map modes, colormaps and legends for every field
+- [ ] 4. Contours
+- [ ] 5. Time controls and HUD
+- [ ] 6. Cell inspector with annual graphs
+- [ ] 7. Live overlays: wind, currents, clouds, precipitation, snow, sea ice
+- [ ] 8. Read-only planet panel
+- [ ] 9. Open `.fmsmap` files and heightmaps, resume runs
+- [ ] 10. CD: pushes to `main` build a GitHub Release for all three platforms
+- [ ] 11. About a dozen preset worlds
 
 ## Later
 - [ ] Port the hot loops to wgpu compute shaders
 - [ ] Tidal locking, moons, extreme obliquity
 - [ ] Orbital drift and ice sheets, for runs towards 100,000 years
-
-## Moved to other modules
-The earlier M6 and part of M7, kept here until those projects start
-(PLAN §1.1):
-- **`fms-editor`**: brush framework (picking in both views, falloff curves, undo
-  and redo as sparse diffs); sculpt brushes (raise, lower, smooth, flatten, noise);
-  water tools (set sea level, paint river, fill lake); drawing vegetation; a
-  blank-ocean generator and heightmap import.
-- **`fms-geo`**: a plate generator (Voronoi plates with Euler poles and crust types,
-  boundary classification, elevation synthesis, sea level from the ocean fraction);
-  time-stepped plate tectonics (Cortial et al. 2019 style); hydraulic and thermal
-  erosion.
-- **`fms-civ`**: ECS agents, soil fertility, aridity indices, resources from plate
-  and crust data, and the biome → typical climate table for maps with no climate
-  run.
