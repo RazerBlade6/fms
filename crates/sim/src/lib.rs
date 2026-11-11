@@ -25,7 +25,9 @@ use fms_sched::{Calendar, Scheduler, StepReport};
 
 pub use insolation::{DailyInsolation, Insolation};
 pub use probe::{Probe, ProbeError};
-pub use terrain::{BLANK_OCEAN_ELEVATION, HeightmapImport, TerrainFields};
+pub use terrain::{
+    BLANK_OCEAN_ELEVATION, HeightmapImport, SURFACE_SMOOTHING_PASSES, TerrainFields,
+};
 
 /// One of the two grids, with its precomputed geometry and point locator.
 pub struct Grid {

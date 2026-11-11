@@ -63,6 +63,13 @@ pub struct ClimateArgs {
     /// Keep the seasonal snow surface on land that stays snow-covered.
     #[arg(long)]
     no_ice_sheet: bool,
+    /// Land starting colder than this (K) starts as an ice sheet.
+    #[arg(long, default_value_t = LandParams::default().ice_sheet_start_temperature)]
+    ice_sheet_start_temperature: f64,
+    /// Smoothing passes over the terrain the atmosphere sees; 0 for the
+    /// plain cell means.
+    #[arg(long, default_value_t = fms_sim::SURFACE_SMOOTHING_PASSES)]
+    terrain_smoothing: usize,
     /// Specific humidity (kg/kg) below which low cloud thins; 0 for none.
     #[arg(long, default_value_t = CloudParams::default().freeze_dry_humidity)]
     freeze_dry_humidity: f64,
@@ -85,26 +92,29 @@ pub struct ClimateArgs {
     image: ImageArgs,
 }
 
-/// Writes the final year's mean of each field for every cell, to compare runs
-/// over a part of the map such as an ice sheet.
+/// Writes the final year's mean of each field for every cell, with the
+/// height of the terrain the atmosphere sees (m), to compare runs over a part
+/// of the map such as an ice sheet.
 fn write_annual_cells(
     path: &Path,
     centers: &[DVec3],
     land: &[f64],
+    height: &[f64],
     names: &[&str],
     means: &[Vec<f64>],
 ) -> Result<(), String> {
     let mut rows = format!(
-        "latitude_deg,longitude_deg,land_fraction,{}\n",
+        "latitude_deg,longitude_deg,land_fraction,surface_height_m,{}\n",
         names.join(",")
     );
     for (i, p) in centers.iter().enumerate() {
         let _ = write!(
             rows,
-            "{:.3},{:.3},{:.6}",
+            "{:.3},{:.3},{:.6},{:.1}",
             fms_math::asin(p.z / p.length()).to_degrees(),
             fms_math::atan2(p.y, p.x).to_degrees(),
             land[i],
+            height[i],
         );
         for mean in means {
             let _ = write!(rows, ",{:.6}", mean[i]);
@@ -153,6 +163,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             } else {
                 LandParams::default().ice_sheet_years
             },
+            ice_sheet_start_temperature: args.ice_sheet_start_temperature,
             ..LandParams::default()
         },
         moisture: MoistureParams {
@@ -328,12 +339,17 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
 
     // Start from the single column's equilibrium, at rest, with its
     // humidity.
+    let geopotential = world.surface_geopotential_smoothed(args.terrain_smoothing);
+    let height: Vec<f64> = geopotential
+        .iter()
+        .map(|phi| phi / planet_params.gravity)
+        .collect();
     let setup = build_model(
         &world,
         &args.dynamics,
         MAX_WIND,
         &CLIMATE_LEVELS,
-        world.surface_geopotential(),
+        geopotential,
     )?;
     let model = setup
         .model
@@ -529,6 +545,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &out.dir.join("annual_cells.csv"),
         mesh.cell_centers(),
         &land,
+        &height,
         &names,
         &means,
     )?;

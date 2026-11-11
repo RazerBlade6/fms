@@ -26,7 +26,7 @@ const PIXELS_PER_CELL_SPACING: f64 = 4.0;
 /// cells, ten bring the persistent σ-coordinate wind error from 5.7 to
 /// 0.87 m/s, near the 0.58 of forty, for 9% of the highest cell's height
 /// ([`smooth_height`]; `docs/OBSERVATIONS.md` O-30).
-const SURFACE_SMOOTHING_PASSES: usize = 10;
+pub const SURFACE_SMOOTHING_PASSES: usize = 10;
 
 /// Handles to the terrain fields.
 #[derive(Clone, Copy, Debug)]
@@ -183,12 +183,19 @@ impl World {
     /// mean surface height, smoothed so the σ-coordinate dynamics can carry
     /// it. Exactly zero on a world with no land.
     pub fn surface_geopotential(&self) -> Vec<f64> {
+        self.surface_geopotential_smoothed(SURFACE_SMOOTHING_PASSES)
+    }
+
+    /// [`surface_geopotential`](Self::surface_geopotential) with `passes`
+    /// smoothing passes instead of the default, for experiments; 0 is the
+    /// plain cell means.
+    pub fn surface_geopotential_smoothed(&self, passes: usize) -> Vec<f64> {
         let gravity = self.planet.params().gravity;
         smooth_height(
             &self.fields.read(self.core.terrain.surface_height),
             &self.climate.mesh,
             &self.climate.geometry,
-            SURFACE_SMOOTHING_PASSES,
+            passes,
         )
         .iter()
         .map(|z| gravity * z)

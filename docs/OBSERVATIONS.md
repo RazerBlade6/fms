@@ -175,10 +175,11 @@ Narrow straits make connectivity unreliable.
 ocean transport cool it further; M2.15 sets the final temperature.
 
 ### O-30: Terrain is smoothed, and spreads over coastal ocean
-*Watching; recheck at M2.11.8.* Ten passes cut the persistent σ-coordinate wind error on
-Earth at 10k cells from 5.7 to 0.87 m/s, and it doesn't grow with resolution. Terrain
-spreads onto all-ocean coastal cells (236 of 6802 above 100 m, 8 above 500 m), which run
-0.6–2 K colder. Pinning them at sea level is worse (1.18 m/s, and loses conservation).
+*Watching.* Ten passes cut the persistent σ-coordinate wind error on Earth at 10k cells
+from 5.7 to 0.87 m/s, and it doesn't grow with resolution. Terrain spreads onto all-ocean
+coastal cells (at 2.5k cells 92 above 100 m, at 10k 184), which run ~0.9 K colder. Pinning
+them at sea level is worse (1.18 m/s, and loses conservation). Fewer passes (M2.11.8, at
+2.5k): 3 give 1.39 m/s against 0.70, 1 gives 3.23 m/s, and none blows up over Tibet.
 
 ### O-31: Land has one soil layer
 *Watching.* No deep-ground store carries summer heat into winter. Revisit at M2.15 if
@@ -202,7 +203,10 @@ of 0.01 K (annual), ~1 K (seasonal) and 1.6 K over Greenland:
   warms and radiates down; a shallow inversion needs more layers;
 - ice-sheet skin conductance 7 → 1 W/m²/K (insulation): +0.5 K.
 
-Untested: terrain ~800 m too low at 2.5k cells.
+Terrain isn't the answer (M2.11.8): the region averages 1,860 m at 2.5k cells and 2,030 m
+at 10k, both ~237 K, and 1–3 smoothing passes cool it only 1–1.5 K. The ~224 K is the
+South Pole (2,835 m), while this mean includes the warmer ice shelves; a reference
+climatology (M2.15) is needed to measure the real gap.
 
 ### O-34: More rain on the lee of a ridge than the windward side
 *Scheduled: M2.15.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
@@ -214,14 +218,18 @@ contrast has the right sign in the Pacific Northwest and Himalaya, none in Patag
 *Scheduled: M2.12.* Only diffusion moves heat until then. Tests must not require Earth's
 ice extent or SSTs, and excess ice isn't a reason to retune. On aquaplanets the
 comparison with Bhatnagar et al.'s no-transport and diffusion-only cases holds in sign
-and rough size, with no hemispheric lock-in. Revisit with full transport on.
+and rough size, with no hemispheric lock-in. On Earth (2.5k cells, year 20) the seasons
+are in phase and summer minima are close (3.9 north, 4.4 south million km²), but winter
+peaks of ~20 million km² in each hemisphere are ~5 too large. Revisit with full
+transport on.
 
 ### O-37: The ocean jump barely speeds up the ice
-*Open: choose the jump setting before M2.11.8.* Against year 20 of a true-time tilted
-aquaplanet at 2.5k cells, the default (three 3-year jumps) is −0.33 K and leaves ice at
-6.0 and 7.7 million km² (target 4.2 and 4.0). Three 6-year jumps at the same cost: −0.05
-K, 4.7 and 5.3. No schedule helps without tilt. The default was validated without ice,
-so it needs an Earth check before changing.
+*Resolved at M2.11.8:* default kept. Against year 20 of true time at 2.5k
+cells, with freeze-dry: on the tilted aquaplanet the default (three 3-year jumps) is
+−0.26 K with southern ice 6.8 million km² (target 4.6), and three 6-year jumps −0.03 K
+and 6.2. On Earth the default is +0.44 K, 6-year jumps +0.66 K, and plain true time at
+year 6 +0.24 K. Jumps always bring the deep ocean closer. No schedule helps without
+tilt. Earth hasn't settled at year 20 either (−0.68 W/m² at the top).
 
 ### O-38: Perennial ice has no equilibrium in 20 years
 *Watching; revisit at M2.12.* On a no-tilt aquaplanet the poles never melt: snow piles
@@ -235,4 +243,6 @@ sheets, because Antarctica's pack melts out under seasonal albedo. So land start
 267 K starts as a sheet. Earth at 2.5k cells: Antarctica −11.4 K, Greenland −7.3 K, the
 planet −1.12 K, and snow-free land −0.64 K (noise ~0.1 K). The threshold was chosen on
 Earth and has little margin: the coldest northern lowland starts at 268.1 K. Two Tibetan
-cells are seeded too, and are melting away.
+cells are seeded too, and are melting away. At 265 K a Greenland edge cell and two on
+Ellesmere Island are lost; at 269 K the Antarctic Peninsula and Svalbard are gained, but
+so is interior Alaska (M2.11.8).
