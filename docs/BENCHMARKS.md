@@ -1,7 +1,6 @@
 # Benchmarks
 
-Criterion suites for the performance-critical building blocks. Run them locally:
-CI machines are too noisy for timing.
+Criterion suites for the performance-critical building blocks.
 
 ```sh
 cargo bench -p fms-grid --bench geo            # grids, geometry, transfers, point location
@@ -26,23 +25,23 @@ Taken on 2026-11-07 on the development Mac (Apple silicon), release profile,
 `--quick`. Sizes: f45 = 20,252 cells (default climate grid); f160 = 256,002 cells
 (default CLI terrain grid).
 
-| Benchmark | Time | Notes |
-|---|---|---|
-| `build/geodesic_f160` | 11.3 ms | Subdivision only |
-| `build/centroidal_f45` | 406 ms | Multilevel Lloyd to 1e-6 |
-| `build/geometry_f160` | 54.7 ms | Metric terms, TRiSK and Perot weights |
-| `build/hilbert_order_f160` | 89.0 ms | Renumbering and rebuilding adjacency |
-| `two_level_f160_to_f45/build_map` | 3.96 ms | |
-| `two_level_f160_to_f45/restrict_mean` | 155 µs | |
-| `two_level_f160_to_f45/restrict_sum` | 154 µs | |
-| `two_level_f160_to_f45/prolong` | 214 µs | |
-| `operators_f45/perot_reconstruction` | 149 µs | |
-| `locate_f160/cells_10k_points` | 636 µs | ~64 ns per point |
-| `locate_f160/triangles_10k_points` | 1.39 ms | |
-| `planet/insolation_20k` | 128 µs | Parallel |
-| `planet/daily_mean_20k` | 3.07 ms | Serial loop in the bench; the system runs it in parallel |
-| `planet/orbit_state` | 93 ns | Kepler solve |
-| `scheduler/step_20_systems` | 119 µs | 20 trivial systems in 2 stages; see [OBSERVATIONS.md](OBSERVATIONS.md) O-8 |
+| Benchmark                             | Time    | Notes                                                                      |
+| ------------------------------------- | ------- | -------------------------------------------------------------------------- |
+| `build/geodesic_f160`                 | 11.3 ms | Subdivision only                                                           |
+| `build/centroidal_f45`                | 406 ms  | Multilevel Lloyd to 1e-6                                                   |
+| `build/geometry_f160`                 | 54.7 ms | Metric terms, TRiSK and Perot weights                                      |
+| `build/hilbert_order_f160`            | 89.0 ms | Renumbering and rebuilding adjacency                                       |
+| `two_level_f160_to_f45/build_map`     | 3.96 ms |                                                                            |
+| `two_level_f160_to_f45/restrict_mean` | 155 µs  |                                                                            |
+| `two_level_f160_to_f45/restrict_sum`  | 154 µs  |                                                                            |
+| `two_level_f160_to_f45/prolong`       | 214 µs  |                                                                            |
+| `operators_f45/perot_reconstruction`  | 149 µs  |                                                                            |
+| `locate_f160/cells_10k_points`        | 636 µs  | ~64 ns per point                                                           |
+| `locate_f160/triangles_10k_points`    | 1.39 ms |                                                                            |
+| `planet/insolation_20k`               | 128 µs  | Parallel                                                                   |
+| `planet/daily_mean_20k`               | 3.07 ms | Serial loop in the bench; the system runs it in parallel                   |
+| `planet/orbit_state`                  | 93 ns   | Kepler solve                                                               |
+| `scheduler/step_20_systems`           | 119 µs  | 20 trivial systems in 2 stages; see [OBSERVATIONS.md](OBSERVATIONS.md) O-8 |
 
 ## Conditions
 
@@ -59,26 +58,25 @@ commits compared and the date.
 2,562 cells (k = 16), 30 model days per run, 3 runs each, median shown; the
 runs agreed to within 1.5%.
 
-**Conditions** (2026-11-08, 21:35–21:39 IST):
+**Conditions** (2026-11-08):
+
 - MacBook Pro, Apple M5 Pro: 15 cores (5 "Super", 10 "Performance"), 24 GB;
   all 15 used (rayon).
 - macOS 26.6.2 (25G83); rustc 1.99.1; release profile
   (`debug = "line-tables-only"`).
-- On AC power (battery 74%, charging), High Power mode (`pmset` powermode 2).
+- On AC power, High Power mode (`pmset` powermode 2).
 - Running: only Activity Monitor and the Ghostty terminal; memory-heavy apps
   closed.
-- CPU idle 98.2% before, 99.3% after (`top`). Memory: "just under 16 GB of
-  24 GB free" per Activity Monitor (reported by the user); `top` showed
-  9.4 GB unused (it excludes cached and inactive memory).
+- CPU idle 98.2% before, 99.3% after (`top`). Memory: 9.4 GB unused
 - Commits: step 9 `6692284`; step 9.5 `6dd3579` plus the benchmark example.
 
-| Configuration | Moist aquaplanet (dt 2057 s) | Held–Suarez, dry (dt 3086 s) |
-|---|---|---|
-| Step 9, 2 layers | 6.60 ms/step (3.6 days/s) | 2.75 ms/step (13.0 days/s) |
-| 9.5, 2 layers, step 9's reference | 7.31 (+11%) | 3.09 (+12%) |
-| 9.5, 2 layers (isothermal reference) | 7.41 (+12%) | 3.14 (+14%) |
-| 9.5, 3 layers (σ 0.4, 0.85) | 9.46 (×1.28 of 9.5's two) | 4.33 (×1.38) |
-| 9.5, 5 equal layers | 13.66 (×1.84) | 6.85 (×2.18) |
+| Configuration                        | Moist aquaplanet (dt 2057 s) | Held–Suarez, dry (dt 3086 s) |
+| ------------------------------------ | ---------------------------- | ---------------------------- |
+| Step 9, 2 layers                     | 6.60 ms/step (3.6 days/s)    | 2.75 ms/step (13.0 days/s)   |
+| 9.5, 2 layers, step 9's reference    | 7.31 (+11%)                  | 3.09 (+12%)                  |
+| 9.5, 2 layers (isothermal reference) | 7.41 (+12%)                  | 3.14 (+14%)                  |
+| 9.5, 3 layers (σ 0.4, 0.85)          | 9.46 (×1.28 of 9.5's two)    | 4.33 (×1.38)                 |
+| 9.5, 5 equal layers                  | 13.66 (×1.84)                | 6.85 (×2.18)                 |
 
 - The generalization costs ~12% at two layers with identical arithmetic
   (same results bit for bit): per-layer vectors, per-cell allocations in the
@@ -97,16 +95,16 @@ runs agreed to within 1.5%.
 the moist aquaplanet on the climate's four layers, median of 3 runs
 (2,562 cells: dt 2057 s, 15 days; 642 cells: dt 4114 s, 60 days).
 
-**Conditions** (2026-11-10, from 02:15 IST, unattended overnight run): the
-machine, macOS and rustc as above; on AC power (battery 95%, not charging),
+**Conditions** (2026-11-10): the
+machine, macOS and rustc as above; on AC power,
 High Power mode (`pmset` powermode 2), `caffeinate` active; nothing else
 running but the terminal and the agent driving the run; CPU idle 98.6%
 before and 98.4% after the baseline (`top -l 2`).
 
-| Commit | 2,562 cells, 8 threads | 15 threads | 1 thread | 642 cells, 4 threads | 1 thread |
-|---|---|---|---|---|---|
-| `775c84a` (baseline) | 11.19 ms/step | 11.63 | 35.53 | 6.37 | 10.85 |
-| `90259f9` (05:15 IST, same conditions, CPU idle 98.6% before and after) | 4.30 | 4.55 | 16.17 | 1.66 | 5.02 |
+| Commit                                                                  | 2,562 cells, 8 threads | 15 threads | 1 thread | 642 cells, 4 threads | 1 thread |
+| ----------------------------------------------------------------------- | ---------------------- | ---------- | -------- | -------------------- | -------- |
+| `775c84a` (baseline)                                                    | 11.19 ms/step          | 11.63      | 35.53    | 6.37                 | 10.85    |
+| `90259f9` (05:15 IST, same conditions, CPU idle 98.6% before and after) | 4.30                   | 4.55       | 16.17    | 1.66                 | 5.02     |
 
 ## Everyday conditions (M2.11.6)
 
@@ -126,10 +124,10 @@ count, with 22–23 GB in use. Commit `e2cc65d` plus the ice-sheet work of
 this step, which has no effect on the aquaplanet benchmark. The fourth Earth run
 has ice sheets; the first ran before the ice-sheet code was built in.
 
-| Job | Here | Quiet, plugged in (`90259f9`) |
-|---|---|---|
-| `bench_layers`, moist aquaplanet, 2,562 cells, median of 3 | 4.52, 4.52 and 4.93 ms/step (first two at the start of each pass, last after 35 minutes as the browser got busier) | 4.30 ms/step |
-| Earth, six years, inside the time loop | 596, 616, 621 and 633 s (155, 149, 148 and 145 steps/s; 6.5–6.9 ms/step) | not measured |
+| Job                                                        | Here                                                                                                               | Quiet, plugged in (`90259f9`) |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| `bench_layers`, moist aquaplanet, 2,562 cells, median of 3 | 4.52, 4.52 and 4.93 ms/step (first two at the start of each pass, last after 35 minutes as the browser got busier) | 4.30 ms/step                  |
+| Earth, six years, inside the time loop                     | 596, 616, 621 and 633 s (155, 149, 148 and 145 steps/s; 6.5–6.9 ms/step)                                           | not measured                  |
 
 - Everyday use cost 5–15% on the like-for-like benchmark. Only 8 of the 15
   cores are in use, which leaves the background work room.

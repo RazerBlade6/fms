@@ -10,3 +10,4 @@
 /docs/HISTORY.md
 # Python virtualenv for scripts/build_reference.py.
 /.venv
+docs/DEVELOPMENT.md

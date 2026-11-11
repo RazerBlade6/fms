@@ -1,9 +1,6 @@
 # References
 
 Papers, books and datasets cited in the code and docs, with their uses attached.
-Each DOI was checked against a publisher, repository or
-bibliographic record (November 2026); where no DOI exists or none could be
-confirmed, the entry says so.
 
 ## Grid and numerics
 

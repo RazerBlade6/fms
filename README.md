@@ -1,11 +1,26 @@
-# fms-climate
+# Fantasy Map Simulator (fms)
 
-A climate-centred simulator of theoretical planets, and part of the `fms` family of
-modules that exchange `.fmsmap` files. Give it a planet and its terrain. A simplified
-climate model then produces winds, ocean currents, weather, climate zones and
-vegetation, and runs them forward in time.
+A project centred around **generating, editing, simulating, and playing**
+with fictional or theoretical maps on theoretical (roughly earth-like) planets.
 
-Written in Rust (egui + wgpu). **Status:** early development (M1 and M1.5 complete; M2 in progress).
+Planets are assumed to be earth-like (so, earth-like atmospheric and lithic composition), and extreme
+planetary states (tidally-locked worlds, highly eccentric orbits, binary or trinary star systems, etc.)
+are not supported.
+
+Most other things are customizable.
+
+The project is divded into 4 modules:
+
+- `fms-editor`: A Rust GUI App for editing and designing custom planets and terrain. Not built.
+- `fms-geo`: A Geological/Tectonic plate simulator for generating physical and relief features,
+  continental drift, and probably more (IDK haven't designed it yet).
+- `fms-climate`: The atmospheric GCM + Vegetation + Hydrological model, generating biomes, weather, water
+  and more. Currently in progress.
+- `fms-civ`: A civilisation simulator, with factions, culture, religion, and probably more (Also not designed yet).
+
+Written in Rust (egui + wgpu).
+
+**Status:** Currently building `fms-climate`; M2 (the headless GCM) is complete, currently starting M3 (The Vegetation Layer)
 
 This code is licensed under the PolyForm Non-Commercial License; Free for personal, hobbyist or academic use.
 Commercial Use (for example, in a video game or a paid service) requires permission.
