@@ -130,4 +130,14 @@ View only; the viewer code is shared with `fms-geo`.
 ## Later
 - [ ] Port the hot loops to wgpu compute shaders
 - [ ] Tidal locking, moons, extreme obliquity
-- [ ] Orbital drift and ice sheets, for runs towards 100,000 years
+- [ ] Ice sheets and ice ages, for runs towards 100,000 years (after M2.15
+  and M4):
+  - [ ] Equilibrium ice worlds: surface mass balance replacing the snow pack
+    on ice sheets, shallow-ice flow, bedrock sinking, and the atmosphere's
+    surface height following the ice, alternated with the GCM until the
+    sheets settle
+  - [ ] Transient cycles: tilt, eccentricity and precession that vary over
+    time, and a rule tying CO₂ to ice volume
+  - [ ] Sea level following ice volume, with land fractions and the ocean
+    mask changing during a run
+  - [ ] Ice thickness as an `.fmsmap` layer
