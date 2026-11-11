@@ -307,5 +307,20 @@ one basin (the Mediterranean has 8 and is dropped); at 10,242 the Mediterranean
 and Hudson Bay join it. The Black Sea, Baltic, Red Sea and Caspian never have
 enough: they get Ekman, eddy and diffusive transport but no gyre. The world ocean
 borders 12–29 landmasses, each a separate coast for the streamfunction. Revisit
-when the gyre solver shows how small a gyre it resolves; an area rule wouldn't
+when the gyre solver shows how small a gyre it resolves (O-46); an area rule wouldn't
 move with resolution.
+
+### O-46: Gyres with every coast at Ψ = 0
+*Watching; M2.12.7.* With an analytic Earth-like wind the main gyres are in the right
+places, with western boundary currents: North Atlantic subtropical 11.9 Sv at 2,562
+cells and 13.1 Sv at 10,242, North Pacific 17.3 and 18.9, subpolar gyres −7 to −10,
+southern subtropical gyres −10 to −20. Because Antarctica and South America both hold
+Ψ = 0, nothing passes Drake Passage and the Southern Ocean becomes one gyre of 27–31 Sv
+with its boundary current east of the passage (57°S, ~50°W): spurious north–south flow
+there. Islands inside gyres (Madagascar, New Zealand, Japan) pin Ψ to zero too, and
+more of them appear at finer resolution. Strength rises 5–10% per doubling of
+resolution, because the upwind scheme's numerical friction is about as large as r at
+2,562 cells. In a closed box the interior is within 13–21% of Sverdrup balance at the
+default friction (mostly friction itself), 4–12% with a tenth of it. To settle in
+M2.12.7: what to do with the Southern Ocean gyre before it carries heat, and the
+overlap with the Ekman scheme's Sverdrup blend near the equator.

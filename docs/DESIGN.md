@@ -226,6 +226,19 @@ is coast if any of its three cells isn't wet, and a basin is a connected set of
 the other vertices, kept if it has at least 12. An aquaplanet is one basin with
 no coast.
 
+**Gyres** (`fms-ocean/gyres`), not yet used by the climate run (step 12.7). A steady
+Stommel balance for the mass-transport streamfunction Ψ (kg/s) on the vertices,
+`r∇²Ψ + β ∂Ψ/∂x = curl τ`, with Ψ = 0 on every coast, islands included, so there is
+no circumpolar current. Each basin that has a coast is solved separately; one with
+none, as on an aquaplanet, is skipped. The β term is in flux form (the flux across
+a dual edge is the difference of f between its two cells) and taken upwind, which
+keeps the western boundary current about one vertex spacing wide and adds a
+numerical friction of about βΔx/2. Friction r = 2e-6 s⁻¹. β follows the signed
+rotation, so a retrograde planet's boundary currents are on eastern coasts. The
+flow across an edge is the difference of Ψ between its two vertices, so it is
+exactly non-divergent and zero at coasts. The matrix and its ILU(0) factors are
+built once; each solve is BiCGSTAB to a relative residual of 1e-8, warm-started.
+
 ## Sea ice (`fms-ocean/ice`)
 
 Thermodynamic, after Codron (2012) and the authors' code. Each cell has one

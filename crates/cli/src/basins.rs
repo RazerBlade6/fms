@@ -1,5 +1,6 @@
 //! `fms-climate basins`: the world's sea mask and the ocean basins of the
-//! wind-driven gyres, as maps and tables, without running anything.
+//! wind-driven gyres, as maps and tables, without running anything; with
+//! `--gyres`, the gyres themselves for an idealized wind.
 
 use std::fmt::Write as _;
 use std::time::Instant;
@@ -8,10 +9,12 @@ use clap::Args;
 use fms_fields::{ColorScale, FieldSpec, Location};
 use fms_grid::coords::to_lat_lon;
 use fms_grid::{Operators, SphereMesh};
-use fms_ocean::{Basin, Basins};
+use fms_ocean::{Basin, Basins, GyreParams, Gyres};
 use fms_worldgen::SeaMask;
 use glam::DVec3;
 
+use crate::colormap::{Colormap, MISSING};
+use crate::render::{CellRaster, Legend, image_height, render, write_png};
 use crate::{ImageArgs, WorldArgs, build_world, ensure_dir, write_one};
 
 #[derive(Args)]
@@ -22,6 +25,15 @@ pub struct BasinsArgs {
     /// first (all of them go to `sea_bodies.csv`).
     #[arg(long, default_value_t = 40)]
     bodies: usize,
+    /// Also solve the wind-driven gyres for an idealized zonal wind stress,
+    /// the same in both hemispheres: `τ_x = cos φ · Σ a (g(φ) + g(−φ))`,
+    /// `g(φ) = exp(−((φ − φ₀)/σ)²)`, with trades (a = −0.062 N/m², φ₀ = 15°,
+    /// σ = 13°), westerlies (0.149, 48°, 12°) and polar easterlies (−0.097,
+    /// 72°, 10°): −0.03 N/m² at the equator, −0.06 at 15°, +0.10 at 47° and
+    /// −0.03 at 71°. Prints each basin's solve and writes
+    /// `ocean.gyre_streamfunction.png` (Sv) and `gyre_vertices.csv`.
+    #[arg(long)]
+    gyres: bool,
     #[command(flatten)]
     image: ImageArgs,
 }
@@ -228,6 +240,9 @@ pub fn run(args: BasinsArgs) -> Result<(), String> {
     let path = dir.join("basin_cells.csv");
     std::fs::write(&path, csv).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!("  -> {}, basins.csv", path.display());
+    if args.gyres {
+        gyres(&world, &ops, &basins, &args.image)?;
+    }
 
     // Maps: the mask, the land fraction and the basins.
     let mut world = world;
@@ -253,5 +268,163 @@ pub fn run(args: BasinsArgs) -> Result<(), String> {
     ] {
         write_one(&world, key, None, &args.image)?;
     }
+    Ok(())
+}
+
+/// The trades, westerlies and polar easterlies of `--gyres`: amplitude
+/// (N m⁻²), centre and width (degrees) of each Gaussian.
+const WINDS: [(f64, f64, f64); 3] = [
+    (-0.062, 15.0, 13.0),
+    (0.149, 48.0, 12.0),
+    (-0.097, 72.0, 10.0),
+];
+
+/// The curl (N m⁻³) at latitude `lat` (radians) of the idealized zonal stress
+/// `τ_x = cos φ · G(φ)` of `--gyres` on a planet of radius `r` (m):
+/// `−(1/(r cos φ)) ∂(τ_x cos φ)/∂φ = (2 sin φ · G − cos φ · ∂G/∂φ)/r`, finite
+/// at the poles.
+fn wind_curl(lat: f64, r: f64) -> f64 {
+    let (mut g, mut slope) = (0.0, 0.0);
+    for (a, centre, width) in WINDS {
+        let width = width.to_radians();
+        for centre in [centre.to_radians(), -centre.to_radians()] {
+            let x = (lat - centre) / width;
+            let e = a * fms_math::exp(-x * x);
+            g += e;
+            slope -= 2.0 * x / width * e;
+        }
+    }
+    (2.0 * fms_math::sin(lat) * g - fms_math::cos(lat) * slope) / r
+}
+
+/// `--gyres`: solve, print each basin and draw the streamfunction.
+fn gyres(
+    world: &fms_sim::World,
+    ops: &Operators,
+    basins: &Basins,
+    image: &ImageArgs,
+) -> Result<(), String> {
+    let (mesh, r) = (ops.mesh(), ops.radius());
+    let rotation = world.planet.rotation_rate();
+    let params = GyreParams::default();
+    let t = Instant::now();
+    let mut gyres = Gyres::new(ops, basins, rotation, params);
+    let built = t.elapsed().as_secs_f64();
+    let curl: Vec<f64> = mesh
+        .vertices()
+        .iter()
+        .map(|&p| wind_curl(to_lat_lon(p).0, r))
+        .collect();
+    let t = Instant::now();
+    gyres.solve(&curl);
+    let solved = t.elapsed().as_secs_f64();
+    println!(
+        "gyres: friction {:.1e} s-1, rotation {rotation:.4e} rad/s; matrices built in {:.1} ms, \
+         solved in {:.1} ms",
+        params.friction,
+        built * 1e3,
+        solved * 1e3
+    );
+    const SV: f64 = 1e9;
+    let psi = gyres.streamfunction();
+    println!(
+        "  {:>5} {:>8} {:>10} {:>9} {:>8} {:>16} {:>8} {:>16}",
+        "basin", "vertices", "iterations", "residual", "min Sv", "at", "max Sv", "at"
+    );
+    for (k, (basin, stats)) in basins.basins().iter().zip(gyres.stats()).enumerate() {
+        let Some(stats) = stats else {
+            println!(
+                "  {:>5} {:>8}  not solved: no coast",
+                k + 1,
+                basin.vertices.len()
+            );
+            continue;
+        };
+        let at = |&v: &u32| lat_lon(mesh.vertices()[v as usize]);
+        let by_psi = |a: &&u32, b: &&u32| psi[**a as usize].total_cmp(&psi[**b as usize]);
+        let low = basin
+            .vertices
+            .iter()
+            .min_by(by_psi)
+            .expect("a basin has vertices");
+        let high = basin
+            .vertices
+            .iter()
+            .max_by(by_psi)
+            .expect("a basin has vertices");
+        let ((low_lat, low_lon), (high_lat, high_lon)) = (at(low), at(high));
+        println!(
+            "  {:>5} {:>8} {:>10} {:>9.2e} {:>8.1} {:>16} {:>8.1} {:>16}{}",
+            k + 1,
+            basin.vertices.len(),
+            stats.iterations,
+            stats.residual,
+            psi[*low as usize] / SV,
+            format!("{low_lat:.1}, {low_lon:.1}"),
+            psi[*high as usize] / SV,
+            format!("{high_lat:.1}, {high_lon:.1}"),
+            if stats.converged {
+                ""
+            } else {
+                "  NOT CONVERGED"
+            }
+        );
+    }
+    let mut csv = String::from("vertex,latitude_deg,longitude_deg,basin,curl_n_m3,psi_sv\n");
+    for (v, &p) in mesh.vertices().iter().enumerate() {
+        let (lat, lon) = lat_lon(p);
+        let _ = writeln!(
+            csv,
+            "{v},{lat:.3},{lon:.3},{},{:e},{}",
+            basins.vertex_basin(v as u32).map_or(0, |b| b + 1),
+            curl[v],
+            psi[v] / SV
+        );
+    }
+    let path = image.out_dir.join("gyre_vertices.csv");
+    std::fs::write(&path, csv).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    println!("  -> {}", path.display());
+
+    // The map: each wet cell shows the mean of its vertices, land is grey.
+    let values: Vec<f64> = (0..mesh.n_cells())
+        .map(|c| {
+            let c = c as u32;
+            if !basins.is_wet(c) {
+                return f64::NAN;
+            }
+            let ring = mesh.cell_vertices(c);
+            ring.iter().map(|&v| psi[v as usize]).sum::<f64>() / ring.len() as f64 / SV
+        })
+        .collect();
+    let (min, max) = image.range.unwrap_or_else(|| {
+        let largest = values
+            .iter()
+            .filter(|v| v.is_finite())
+            .fold(0.0, |m: f64, v| m.max(v.abs()));
+        let largest = if largest > 0.0 { largest } else { 1.0 };
+        (-largest, largest)
+    });
+    let colormap = Colormap::new(fms_fields::ColorScale::Diverging, min, max);
+    let raster = CellRaster::new(&world.climate, image.width, false);
+    let legend = Legend {
+        title: "ocean.gyre_streamfunction (Sv), land grey",
+        subtitle: "",
+    };
+    let pixels = render(&raster, &values, &colormap, &legend, None);
+    let mut palette = *colormap.palette();
+    palette[MISSING as usize] = [150, 150, 150];
+    let path = image.out_dir.join("ocean.gyre_streamfunction.png");
+    write_png(
+        &path,
+        raster.width,
+        image_height(&raster),
+        &pixels,
+        &palette,
+    )
+    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    println!(
+        "ocean.gyre_streamfunction [{min:.1} .. {max:.1}] Sv -> {}",
+        path.display()
+    );
     Ok(())
 }

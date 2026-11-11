@@ -38,15 +38,18 @@
 //! as numbers and temperatures go out.
 //!
 //! The ocean's basins for the wind-driven gyres ([`Basins`]) are found when
-//! it is built; nothing uses them yet.
+//! it is built; nothing uses them yet. The gyres themselves ([`Gyres`]) can
+//! be solved on them, but the ocean doesn't own them yet.
 
 pub mod basins;
+pub mod gyres;
 mod ice;
 
 pub use basins::{Basin, Basins, MIN_BASIN_VERTICES, WET_OCEAN_FRACTION};
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
 use glam::DVec3;
+pub use gyres::{GyreParams, Gyres, SolveStats};
 pub use ice::{IceForcing, IceParams};
 use ice::{SeaIce, Water};
 use rayon::prelude::*;

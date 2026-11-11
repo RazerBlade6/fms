@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.6.**
+**Next: M2.12.7.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -72,7 +72,7 @@ a visual check.
     in PW by component, equatorial cold tongue, ice edge, against transport
     off
   - [x] 12.5. Ocean mask and basins (O-11)
-  - [ ] 12.6. Wind-driven gyre streamfunction per basin; western
+  - [x] 12.6. Wind-driven gyre streamfunction per basin; western
     intensification in a closed basin
   - [ ] 12.7. Gyre heat transport in the climate run
   - [ ] 12.8. Earth run and close-out

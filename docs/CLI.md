@@ -18,7 +18,7 @@ cargo build --release -p fms-climate
 | `fms-climate dump --all` | Same, for every field |
 | `fms-climate animate [-f NAME]` | Run and write `output/NAME.gif`; defaults to a year of `planet.daily_insolation` |
 | `fms-climate patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
-| `fms-climate basins` | Print the sea mask's bodies and the ocean's basins for the world's terrain; write `sea_bodies.csv`, `basins.csv`, `basin_cells.csv` and PNGs of `terrain.sea`, `terrain.land_fraction` and `ocean.basin` |
+| `fms-climate basins` | Print the sea mask's bodies and the ocean's basins for the world's terrain; write `sea_bodies.csv`, `basins.csv`, `basin_cells.csv` and PNGs of `terrain.sea`, `terrain.land_fraction` and `ocean.basin`; `--gyres` also solves the gyres for an analytic Earth-like zonal wind stress (trades, westerlies, polar easterlies, symmetric about the equator), prints per basin the solver iterations, residual and the min and max streamfunction in Sv with their positions, and writes `ocean.gyre_streamfunction.png` and `gyre_vertices.csv` |
 | `fms-climate probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
 | `fms-climate williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms-climate baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
