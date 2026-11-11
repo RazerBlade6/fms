@@ -7,6 +7,9 @@ vegetation, and runs them forward in time.
 
 Written in Rust (egui + wgpu). **Status:** early development (M1 and M1.5 complete; M2 in progress).
 
+This code is licensed under the PolyForm Non-Commercial License; Free for personal, hobbyist or academic use.
+Commercial Use (for example, in a video game or a paid service) requires permission.
+
 ```sh
 cargo test --workspace                             # run all tests
 cargo run --release -p fms-climate -- dump --all   # render every field to output/
