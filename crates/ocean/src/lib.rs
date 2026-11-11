@@ -45,11 +45,11 @@ pub mod basins;
 pub mod gyres;
 mod ice;
 
-pub use basins::{Basin, Basins, MIN_BASIN_VERTICES, WET_OCEAN_FRACTION};
+pub use basins::{Basin, Basins, CoastGroup, MIN_BASIN_VERTICES, WET_OCEAN_FRACTION};
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
 use glam::DVec3;
-pub use gyres::{GyreParams, Gyres, SolveStats};
+pub use gyres::{Component, GyreParams, Gyres, SolveStats, edge_stress};
 pub use ice::{IceForcing, IceParams};
 use ice::{SeaIce, Water};
 use rayon::prelude::*;

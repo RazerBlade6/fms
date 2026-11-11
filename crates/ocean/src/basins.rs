@@ -1,8 +1,9 @@
 //! Ocean basins on the climate mesh, for the wind-driven gyres.
 //!
-//! The gyres' streamfunction lives on the mesh's vertices, is held at zero on
-//! coasts and is solved in each basin separately; the flow across an edge is
-//! the difference of the streamfunction between its two vertices. Here:
+//! The gyres' streamfunction lives on the mesh's vertices, is one constant
+//! along each coast group and is solved for the interior vertices of the
+//! basins and those constants together; the flow across an edge is the
+//! difference of the streamfunction between its two vertices. Here:
 //!
 //! - a cell is **wet** if at least [`WET_OCEAN_FRACTION`] of it is ocean.
 //!   This binary mask is the gyres' alone: Ekman and eddy transport and
@@ -11,7 +12,15 @@
 //!   otherwise, so the flow across any edge with a dry cell is zero;
 //! - a **basin** is a connected set of interior vertices, joined through mesh
 //!   edges. Basins with fewer than [`MIN_BASIN_VERTICES`] are too small to
-//!   hold a gyre and are dropped: their vertices count as coast.
+//!   hold a gyre and are dropped: their vertices count as coast;
+//! - a **landmass** is a connected set of cells that aren't wet, joined
+//!   through shared edges;
+//! - a **coast group** is a set of vertices that aren't in a kept basin and
+//!   share one value of the streamfunction: those touching one landmass's
+//!   cells, with the vertices of every dropped basin bordering it. A dropped
+//!   basin bordering several landmasses joins them into one group, so a
+//!   channel too narrow to hold a kept basin is closed. A vertex touches at
+//!   most one landmass, as its three cells are pairwise neighbours.
 //!
 //! Everything is a function of the mesh and the land fraction, so it's fixed
 //! for a run.
@@ -41,6 +50,21 @@ pub struct Basin {
     pub landmasses: usize,
 }
 
+/// The vertices that share one value of the gyres' streamfunction: the
+/// coast of one or more landmasses, joined by the dropped basins between
+/// them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoastGroup {
+    /// The landmasses it holds, ascending, numbered as
+    /// [`Basins::cell_landmass`] numbers them.
+    pub landmasses: Vec<usize>,
+    /// Its vertices, ascending: those touching its landmasses' cells and
+    /// those of the dropped basins joining them.
+    pub vertices: Vec<VertexId>,
+    /// The area of its landmasses' cells (m²).
+    pub area: f64,
+}
+
 /// The ocean basins of one mesh and land fraction, largest first.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Basins {
@@ -49,6 +73,12 @@ pub struct Basins {
     wet: Vec<bool>,
     vertex_basin: Vec<Option<u32>>,
     cell_basin: Vec<Option<u32>>,
+    /// Per cell, its landmass; `None` for a wet cell.
+    cell_landmass: Vec<Option<u32>>,
+    /// Per landmass, its coast group.
+    landmass_group: Vec<u32>,
+    groups: Vec<CoastGroup>,
+    vertex_group: Vec<Option<u32>>,
 }
 
 impl Basins {
@@ -113,6 +143,8 @@ impl Basins {
         // Connected sets of interior vertices.
         let mut component = vec![NONE; n_vertices];
         let mut found: Vec<Basin> = Vec::new();
+        // The landmasses each found basin borders, in step with `found`.
+        let mut borders: Vec<Vec<u32>> = Vec::new();
         let r2 = ops.radius() * ops.radius();
         for start in 0..n_vertices {
             if !interior[start] || component[start] != NONE {
@@ -168,16 +200,98 @@ impl Basins {
                 touches_coast,
                 landmasses: lands.len(),
             });
+            borders.push(lands);
         }
 
-        found.sort_by(|a, b| {
+        let mut found: Vec<(Basin, Vec<u32>)> = found.into_iter().zip(borders).collect();
+        found.sort_by(|(a, _), (b, _)| {
             b.area
                 .total_cmp(&a.area)
                 .then(a.vertices[0].cmp(&b.vertices[0]))
         });
-        let (basins, dropped): (Vec<Basin>, Vec<Basin>) = found
+        let (kept, dropped): (Vec<_>, Vec<_>) = found
             .into_iter()
-            .partition(|b| b.vertices.len() >= min_vertices);
+            .partition(|(b, _)| b.vertices.len() >= min_vertices);
+        let basins: Vec<Basin> = kept.into_iter().map(|(b, _)| b).collect();
+
+        // Coast groups: landmasses joined through the dropped basins they
+        // border, by union–find, each set named by its lowest landmass.
+        let mut parent: Vec<u32> = (0..count).collect();
+        fn root(parent: &mut [u32], mut i: u32) -> u32 {
+            while parent[i as usize] != i {
+                parent[i as usize] = parent[parent[i as usize] as usize];
+                i = parent[i as usize];
+            }
+            i
+        }
+        for (_, lands) in &dropped {
+            for pair in lands.windows(2) {
+                let (a, b) = (root(&mut parent, pair[0]), root(&mut parent, pair[1]));
+                let (low, high) = (a.min(b), a.max(b));
+                parent[high as usize] = low;
+            }
+        }
+        let roots: Vec<u32> = (0..count).map(|l| root(&mut parent, l)).collect();
+        // Each vertex outside the kept basins: its landmass's set, or for a
+        // vertex of a dropped basin (all of whose cells are wet), the set of
+        // the landmasses that basin borders.
+        let mut vertex_root: Vec<Option<u32>> = (0..n_vertices)
+            .map(|v| {
+                let mut dry = mesh.triangles()[v]
+                    .iter()
+                    .filter(|&&c| !wet[c as usize])
+                    .map(|&c| landmass[c as usize]);
+                let first = dry.next()?;
+                debug_assert!(dry.all(|l| l == first), "a vertex touches one landmass");
+                Some(roots[first as usize])
+            })
+            .collect();
+        for (basin, lands) in &dropped {
+            for &v in &basin.vertices {
+                vertex_root[v as usize] = lands.first().map(|&l| roots[l as usize]);
+            }
+        }
+        let dropped: Vec<Basin> = dropped.into_iter().map(|(b, _)| b).collect();
+        let mut sets: Vec<u32> = roots.clone();
+        sets.sort_unstable();
+        sets.dedup();
+        let mut groups: Vec<CoastGroup> = sets
+            .iter()
+            .map(|&set| CoastGroup {
+                landmasses: (0..count as usize).filter(|&l| roots[l] == set).collect(),
+                vertices: Vec::new(),
+                area: 0.0,
+            })
+            .collect();
+        let set_index = |set: u32| sets.binary_search(&set).expect("a set's root is listed");
+        for c in 0..n_cells {
+            if !wet[c] {
+                let group = &mut groups[set_index(roots[landmass[c] as usize])];
+                group.area += geometry.cell_areas[c] * r2;
+            }
+        }
+        for (v, set) in vertex_root.iter().enumerate() {
+            if let Some(set) = set {
+                groups[set_index(*set)].vertices.push(v as VertexId);
+            }
+        }
+        // Largest first, a tie going to the lowest-numbered landmass.
+        groups.sort_by(|a, b| {
+            b.area
+                .total_cmp(&a.area)
+                .then(a.landmasses[0].cmp(&b.landmasses[0]))
+        });
+        let mut landmass_group = vec![NONE; count as usize];
+        let mut vertex_group = vec![None; n_vertices];
+        for (k, group) in groups.iter().enumerate() {
+            for &l in &group.landmasses {
+                landmass_group[l] = k as u32;
+            }
+            for &v in &group.vertices {
+                vertex_group[v as usize] = Some(k as u32);
+            }
+        }
+        let cell_landmass = landmass.iter().map(|&l| (l != NONE).then_some(l)).collect();
         let mut vertex_basin = vec![None; n_vertices];
         for (k, basin) in basins.iter().enumerate() {
             for &v in &basin.vertices {
@@ -203,6 +317,10 @@ impl Basins {
             wet,
             vertex_basin,
             cell_basin,
+            cell_landmass,
+            landmass_group,
+            groups,
+            vertex_group,
         }
     }
 
@@ -233,6 +351,37 @@ impl Basins {
     /// isn't wet or has no interior vertex in a kept basin.
     pub fn cell_basin(&self, cell: CellId) -> Option<usize> {
         self.cell_basin[cell as usize].map(|b| b as usize)
+    }
+
+    /// The landmass of `cell`, or `None` for a wet cell. Landmasses are
+    /// numbered in the order of their lowest cell.
+    pub fn cell_landmass(&self, cell: CellId) -> Option<usize> {
+        self.cell_landmass[cell as usize].map(|l| l as usize)
+    }
+
+    /// The number of landmasses.
+    pub fn n_landmasses(&self) -> usize {
+        self.landmass_group.len()
+    }
+
+    /// The coast groups, largest landmass area first, a tie going to the
+    /// one with the lowest-numbered landmass; a group's number is its index
+    /// here.
+    pub fn groups(&self) -> &[CoastGroup] {
+        &self.groups
+    }
+
+    /// The coast group of `vertex`, or `None` for a vertex of a kept basin
+    /// (or of a dropped basin bordering no land, which only a planet too
+    /// small for any basin has).
+    pub fn vertex_group(&self, vertex: VertexId) -> Option<usize> {
+        self.vertex_group[vertex as usize].map(|g| g as usize)
+    }
+
+    /// The coast group of `cell`'s landmass, or `None` for a wet cell.
+    pub fn cell_group(&self, cell: CellId) -> Option<usize> {
+        self.cell_landmass(cell)
+            .map(|l| self.landmass_group[l] as usize)
     }
 }
 
@@ -317,6 +466,7 @@ mod tests {
         let ocean = &b.basins()[0];
         assert!(!ocean.touches_coast);
         assert_eq!(ocean.landmasses, 0);
+        assert!(b.groups().is_empty() && b.n_landmasses() == 0);
         assert_eq!(ocean.vertices.len(), g.mesh.n_vertices());
         let sphere = 4.0 * std::f64::consts::PI * RADIUS * RADIUS;
         assert!((ocean.area / sphere - 1.0).abs() < 1e-12);
@@ -341,11 +491,13 @@ mod tests {
                 assert_eq!(b.cell_basin(c), None);
             }
         }
-        // Every vertex next to the continent is coast, and every other one
-        // is in the ocean.
+        // Every vertex next to the continent is coast, in its one group, and
+        // every other one is in the ocean.
+        assert_eq!(b.groups().len(), 1);
         for (v, cells) in g.mesh.triangles().iter().enumerate() {
             let coast = cells.iter().any(|&c| land[c as usize] > 0.0);
             assert_eq!(b.vertex_basin(v as VertexId).is_none(), coast);
+            assert_eq!(b.vertex_group(v as VertexId), coast.then_some(0));
         }
     }
 
@@ -451,12 +603,67 @@ mod tests {
         assert_eq!(tiny.vertices.len(), g.mesh.cell_vertices(middle).len());
         assert_eq!(tiny.landmasses, 1);
         assert!(tiny.vertices.iter().all(|&v| b.vertex_basin(v).is_none()));
+        assert!(
+            tiny.vertices
+                .iter()
+                .all(|&v| b.vertex_group(v) == b.cell_group(g.nearest(from_lat_lon(1.2, 0.0))))
+        );
         assert_eq!(b.cell_basin(middle), None);
         assert!(b.is_wet(middle));
         // Kept with a lower bar.
         let kept = Basins::with_min_vertices(&g.ops(), &land, 6);
         assert_eq!(kept.basins().len(), 2);
         assert_eq!(kept.cell_basin(middle), Some(1));
+    }
+
+    #[test]
+    fn a_dropped_basin_joins_the_landmasses_it_borders() {
+        // An island of one cell in a sea two cells wide, in a continent:
+        // the sea's ring of interior vertices borders both.
+        let g = Grid::new(16);
+        let middle = g.nearest(from_lat_lon(0.4, 2.0));
+        let mut land = g.land(|p| p.z > -0.3);
+        let ring: Vec<CellId> = g.mesh.cell_neighbors(middle).to_vec();
+        for &c in &ring {
+            for &d in g.mesh.cell_neighbors(c) {
+                land[d as usize] = 0.0;
+            }
+        }
+        land[middle as usize] = 1.0;
+        let continent = g.nearest(from_lat_lon(1.2, 0.0));
+        // Kept, the sea is a basin between two groups.
+        let kept = Basins::with_min_vertices(&g.ops(), &land, 6);
+        assert_eq!(kept.basins().len(), 2);
+        assert_eq!(kept.basins()[1].landmasses, 2);
+        assert_eq!(kept.groups().len(), 2);
+        assert_eq!(kept.n_landmasses(), 2);
+        assert_ne!(kept.cell_group(middle), kept.cell_group(continent));
+        assert_ne!(kept.cell_landmass(middle), kept.cell_landmass(continent));
+        // Dropped, it closes: one group holds both landmasses and the sea.
+        let b = Basins::with_min_vertices(&g.ops(), &land, 100);
+        assert_eq!(b.basins().len(), 1);
+        assert_eq!(b.dropped().len(), 1);
+        assert_eq!(b.groups().len(), 1);
+        let group = &b.groups()[0];
+        assert_eq!(group.landmasses.len(), 2);
+        assert_eq!(b.cell_group(middle), Some(0));
+        assert_eq!(b.cell_group(continent), Some(0));
+        assert_ne!(b.cell_landmass(middle), b.cell_landmass(continent));
+        assert!(
+            b.dropped()[0]
+                .vertices
+                .iter()
+                .all(|&v| b.vertex_group(v) == Some(0))
+        );
+        assert!(group.vertices.windows(2).all(|v| v[0] < v[1]));
+        // Its area is its land's.
+        let r2 = RADIUS * RADIUS;
+        let area: f64 = (0..g.mesh.n_cells())
+            .filter(|&c| !b.is_wet(c as CellId))
+            .map(|c| g.geometry.cell_areas[c] * r2)
+            .sum();
+        assert!((group.area / area - 1.0).abs() < 1e-12);
+        assert_eq!(b.cell_group(g.nearest(from_lat_lon(-1.2, 0.0))), None);
     }
 
     #[test]

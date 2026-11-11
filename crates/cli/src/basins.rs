@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use clap::Args;
 use fms_fields::{ColorScale, FieldSpec, Location};
+use fms_grid::CellId;
 use fms_grid::coords::to_lat_lon;
 use fms_grid::{Operators, SphereMesh};
 use fms_ocean::{Basin, Basins, GyreParams, Gyres};
@@ -30,8 +31,11 @@ pub struct BasinsArgs {
     /// `g(φ) = exp(−((φ − φ₀)/σ)²)`, with trades (a = −0.062 N/m², φ₀ = 15°,
     /// σ = 13°), westerlies (0.149, 48°, 12°) and polar easterlies (−0.097,
     /// 72°, 10°): −0.03 N/m² at the equator, −0.06 at 15°, +0.10 at 47° and
-    /// −0.03 at 71°. Prints each basin's solve and writes
-    /// `ocean.gyre_streamfunction.png` (Sv) and `gyre_vertices.csv`.
+    /// −0.03 at 71°, taken along each mesh edge's normal at its midpoint.
+    /// Prints each component's solve, the largest coast groups' streamfunction
+    /// and the flow through Drake Passage, and writes
+    /// `ocean.gyre_streamfunction.png` (Sv), `gyre_vertices.csv` and
+    /// `gyre_groups.csv`.
     #[arg(long)]
     gyres: bool,
     #[command(flatten)]
@@ -279,11 +283,9 @@ const WINDS: [(f64, f64, f64); 3] = [
     (-0.097, 72.0, 10.0),
 ];
 
-/// The curl (N m⁻³) at latitude `lat` (radians) of the idealized zonal stress
-/// `τ_x = cos φ · G(φ)` of `--gyres` on a planet of radius `r` (m):
-/// `−(1/(r cos φ)) ∂(τ_x cos φ)/∂φ = (2 sin φ · G − cos φ · ∂G/∂φ)/r`, finite
-/// at the poles.
-fn wind_curl(lat: f64, r: f64) -> f64 {
+/// `G(φ)` and `∂G/∂φ` (N m⁻² rad⁻¹) of the idealized zonal stress
+/// `τ_x = cos φ · G(φ)` of `--gyres`, at latitude `lat` (radians).
+fn wind_profile(lat: f64) -> (f64, f64) {
     let (mut g, mut slope) = (0.0, 0.0);
     for (a, centre, width) in WINDS {
         let width = width.to_radians();
@@ -294,10 +296,45 @@ fn wind_curl(lat: f64, r: f64) -> f64 {
             slope -= 2.0 * x / width * e;
         }
     }
+    (g, slope)
+}
+
+/// The curl (N m⁻³) at latitude `lat` (radians) of the idealized zonal stress
+/// `τ_x = cos φ · G(φ)` of `--gyres` on a planet of radius `r` (m):
+/// `−(1/(r cos φ)) ∂(τ_x cos φ)/∂φ = (2 sin φ · G − cos φ · ∂G/∂φ)/r`, finite
+/// at the poles. Only written out, for comparison: the solve takes the
+/// stress.
+fn wind_curl(lat: f64, r: f64) -> f64 {
+    let (g, slope) = wind_profile(lat);
     (2.0 * fms_math::sin(lat) * g - fms_math::cos(lat) * slope) / r
 }
 
-/// `--gyres`: solve, print each basin and draw the streamfunction.
+/// The idealized stress of `--gyres` along each mesh edge's normal (N m⁻²):
+/// `τ_x` at the edge point times its eastward unit vector's component along
+/// the normal.
+fn wind_stress(ops: &Operators) -> Vec<f64> {
+    let geometry = ops.geometry();
+    (0..ops.mesh().n_edges())
+        .map(|e| {
+            let p = geometry.edge_points[e];
+            let lat = to_lat_lon(p).0;
+            let east = DVec3::Z.cross(p).normalize_or_zero();
+            fms_math::cos(lat) * wind_profile(lat).0 * east.dot(geometry.edge_normals[e])
+        })
+        .collect()
+}
+
+/// The cell of `mesh` nearest `(lat, lon)` (degrees).
+fn nearest_cell(mesh: &SphereMesh, lat: f64, lon: f64) -> CellId {
+    let p = fms_grid::coords::from_lat_lon(lat.to_radians(), lon.to_radians());
+    let centres = mesh.cell_centers();
+    (0..centres.len())
+        .max_by(|&a, &b| centres[a].dot(p).total_cmp(&centres[b].dot(p)))
+        .expect("a mesh has cells") as CellId
+}
+
+/// `--gyres`: solve, print each component and the largest groups, and draw
+/// the streamfunction.
 fn gyres(
     world: &fms_sim::World,
     ops: &Operators,
@@ -310,59 +347,76 @@ fn gyres(
     let t = Instant::now();
     let mut gyres = Gyres::new(ops, basins, rotation, params);
     let built = t.elapsed().as_secs_f64();
-    let curl: Vec<f64> = mesh
-        .vertices()
-        .iter()
-        .map(|&p| wind_curl(to_lat_lon(p).0, r))
-        .collect();
+    let stress = wind_stress(ops);
     let t = Instant::now();
-    gyres.solve(&curl);
+    gyres.solve(&stress);
     let solved = t.elapsed().as_secs_f64();
     println!(
-        "gyres: friction {:.1e} s-1, rotation {rotation:.4e} rad/s; matrices built in {:.1} ms, \
-         solved in {:.1} ms",
+        "gyres: friction {:.1e} s-1, rotation {rotation:.4e} rad/s; {} coast groups; \
+         matrices built in {:.1} ms, solved in {:.1} ms",
         params.friction,
+        basins.groups().len(),
         built * 1e3,
         solved * 1e3
     );
     const SV: f64 = 1e9;
     let psi = gyres.streamfunction();
+    let group_psi = gyres.group_streamfunction();
     println!(
-        "  {:>5} {:>8} {:>10} {:>9} {:>8} {:>16} {:>8} {:>16}",
-        "basin", "vertices", "iterations", "residual", "min Sv", "at", "max Sv", "at"
+        "  {:>4} {:>6} {:>6} {:>8} {:>7} {:>10} {:>9} {:>8} {:>16} {:>8} {:>16}",
+        "comp",
+        "basins",
+        "groups",
+        "vertices",
+        "unknown",
+        "iterations",
+        "residual",
+        "min Sv",
+        "at",
+        "max Sv",
+        "at"
     );
-    for (k, (basin, stats)) in basins.basins().iter().zip(gyres.stats()).enumerate() {
+    for (k, (component, stats)) in gyres.components().iter().zip(gyres.stats()).enumerate() {
+        let vertices: usize = component
+            .basins
+            .iter()
+            .map(|&b| basins.basins()[b].vertices.len())
+            .sum();
+        let head = format!(
+            "  {:>4} {:>6} {:>6} {:>8}",
+            k + 1,
+            component.basins.len(),
+            component.groups.len(),
+            vertices
+        );
         let Some(stats) = stats else {
-            println!(
-                "  {:>5} {:>8}  not solved: no coast",
-                k + 1,
-                basin.vertices.len()
-            );
+            println!("{head}  not solved: no coast");
             continue;
         };
         let at = |&v: &u32| lat_lon(mesh.vertices()[v as usize]);
         let by_psi = |a: &&u32, b: &&u32| psi[**a as usize].total_cmp(&psi[**b as usize]);
-        let low = basin
-            .vertices
-            .iter()
-            .min_by(by_psi)
-            .expect("a basin has vertices");
-        let high = basin
-            .vertices
-            .iter()
-            .max_by(by_psi)
-            .expect("a basin has vertices");
-        let ((low_lat, low_lon), (high_lat, high_lon)) = (at(low), at(high));
+        let all = || {
+            component
+                .basins
+                .iter()
+                .flat_map(|&b| basins.basins()[b].vertices.iter())
+        };
+        let extremes = all().min_by(by_psi).zip(all().max_by(by_psi));
+        let extremes = extremes.map_or(String::new(), |(low, high)| {
+            let ((low_lat, low_lon), (high_lat, high_lon)) = (at(low), at(high));
+            format!(
+                " {:>8.1} {:>16} {:>8.1} {:>16}",
+                psi[*low as usize] / SV,
+                format!("{low_lat:.1}, {low_lon:.1}"),
+                psi[*high as usize] / SV,
+                format!("{high_lat:.1}, {high_lon:.1}"),
+            )
+        });
         println!(
-            "  {:>5} {:>8} {:>10} {:>9.2e} {:>8.1} {:>16} {:>8.1} {:>16}{}",
-            k + 1,
-            basin.vertices.len(),
+            "{head} {:>7} {:>10} {:>9.2e}{extremes}{}",
+            format!("{}+{}", component.vertex_unknowns, component.group_unknowns),
             stats.iterations,
             stats.residual,
-            psi[*low as usize] / SV,
-            format!("{low_lat:.1}, {low_lon:.1}"),
-            psi[*high as usize] / SV,
-            format!("{high_lat:.1}, {high_lon:.1}"),
             if stats.converged {
                 ""
             } else {
@@ -370,20 +424,85 @@ fn gyres(
             }
         );
     }
-    let mut csv = String::from("vertex,latitude_deg,longitude_deg,basin,curl_n_m3,psi_sv\n");
+
+    // The coast groups: Ψ, land area and the land's area-weighted centre.
+    let cell_areas = &world.climate.geometry.cell_areas;
+    let mut centres = vec![DVec3::ZERO; basins.groups().len()];
+    for (c, (&area, &p)) in cell_areas.iter().zip(mesh.cell_centers()).enumerate() {
+        if let Some(g) = basins.cell_group(c as CellId) {
+            centres[g] += area * p;
+        }
+    }
+    let mut csv = String::from(
+        "group,component,reference,psi_sv,land_km2,landmasses,vertices,latitude_deg,longitude_deg\n",
+    );
+    let shown = 10;
+    println!(
+        "  {:>5} {:>4} {:>9} {:>12} {:>10} {:>8} {:>8} {:>8}  (largest {shown} by land area)",
+        "group", "comp", "psi Sv", "land km2", "landmasses", "vertices", "lat", "lon"
+    );
+    for (k, group) in basins.groups().iter().enumerate() {
+        let (lat, lon) = lat_lon(centres[k].normalize_or_zero());
+        let component = gyres.group_component(k);
+        let reference = gyres.components()[component].reference == Some(k);
+        let _ = writeln!(
+            csv,
+            "{},{},{reference},{},{:.0},{},{},{lat:.2},{lon:.2}",
+            k + 1,
+            component + 1,
+            group_psi[k] / SV,
+            group.area / 1e6,
+            group.landmasses.len(),
+            group.vertices.len()
+        );
+        if k < shown {
+            println!(
+                "  {:>5} {:>4} {:>9.2} {:>12.0} {:>10} {:>8} {lat:>8.2} {lon:>8.2}{}",
+                k + 1,
+                component + 1,
+                group_psi[k] / SV,
+                group.area / 1e6,
+                group.landmasses.len(),
+                group.vertices.len(),
+                if reference { "  reference" } else { "" }
+            );
+        }
+    }
+    let path = image.out_dir.join("gyre_groups.csv");
+    std::fs::write(&path, csv).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+
+    // Drake Passage, for Earth-like terrain: Ψ of Antarctica's group less
+    // South America's is the eastward flow between them.
+    let group_at = |lat: f64, lon: f64| basins.cell_group(nearest_cell(mesh, lat, lon));
+    match (group_at(-80.0, 0.0), group_at(-15.0, -60.0)) {
+        (Some(south), Some(north)) if south != north => println!(
+            "  Drake Passage (diagnostic, Earth-like terrain only): group {} (land at 80S 0E) \
+             minus group {} (land at 15S 60W) = {:+.1} Sv, positive eastward",
+            south + 1,
+            north + 1,
+            (group_psi[south] - group_psi[north]) / SV
+        ),
+        (Some(_), Some(_)) => println!(
+            "  Drake Passage (diagnostic): the land at 80S 0E and at 15S 60W is one group: closed"
+        ),
+        _ => println!("  Drake Passage (diagnostic): no land at 80S 0E or at 15S 60W"),
+    }
+
+    let mut csv = String::from("vertex,latitude_deg,longitude_deg,basin,group,curl_n_m3,psi_sv\n");
     for (v, &p) in mesh.vertices().iter().enumerate() {
         let (lat, lon) = lat_lon(p);
         let _ = writeln!(
             csv,
-            "{v},{lat:.3},{lon:.3},{},{:e},{}",
+            "{v},{lat:.3},{lon:.3},{},{},{:e},{}",
             basins.vertex_basin(v as u32).map_or(0, |b| b + 1),
-            curl[v],
+            basins.vertex_group(v as u32).map_or(0, |g| g + 1),
+            wind_curl(lat.to_radians(), r),
             psi[v] / SV
         );
     }
     let path = image.out_dir.join("gyre_vertices.csv");
     std::fs::write(&path, csv).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    println!("  -> {}", path.display());
+    println!("  -> {}, gyre_groups.csv", path.display());
 
     // The map: each wet cell shows the mean of its vertices, land is grey.
     let values: Vec<f64> = (0..mesh.n_cells())
