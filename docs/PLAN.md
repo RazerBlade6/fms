@@ -144,22 +144,22 @@ land tiles. Built; see [DESIGN.md](DESIGN.md).
 
 ### 4.3 Ocean
 
-A dynamical slab after Codron (2012) and Bhatnagar et al. (2026), plus a
-wind-driven gyre. Where the paper and its code
-(`docs/sources/generic-pcm-r3423/`) differ, we follow the code.
+A dynamical slab after Codron (2012) and Bhatnagar et al. (2026), plus
+wind-driven gyres. Where the paper and its code
+(`docs/sources/generic-pcm-r3423/`) differ, we follow the code. Built; see
+[DESIGN.md](DESIGN.md). Heat moves as fluxes across cell edges, so the budget
+closes:
 
-The layers, diffusion and sea ice are built ([DESIGN.md](DESIGN.md)). Still to
-build (M2 step 12), all as fluxes across cell edges so the budget closes:
-
-- **Ekman transport** from the surface wind stress,
-  `M = (ετ − f k×τ)/(ε² + f²)`, blending into the Sverdrup transport of the
-  wind-stress curl near the equator, with the deep layer's return flow and the
-  vertical exchange it implies.
+- **Ekman transport** from the surface wind stress, blending into the Sverdrup
+  transport of the wind-stress curl near the equator, with the deep layer's
+  return flow and the vertical exchange it implies.
 - **Gent–McWilliams** eddy transport along the isotherm slope between layers.
-- **Gyres**: a barotropic Stommel–Munk streamfunction from the wind-stress curl,
-  β and friction over each basin, whose currents carry mixed-layer heat.
-- **Rotation**: cap the Sverdrup term for slow rotators; scale the eddy
-  coefficients with the deformation radius.
+- **Gyres**: a Stommel streamfunction from the wind-stress curl, β and linear
+  friction, with each landmass's value found by the island rule, carrying heat
+  in both layers. Stommel rather than Stommel–Munk: the grid can't resolve
+  either boundary layer, and linear friction needs no extra boundary condition.
+- **Rotation**: the Sverdrup term is capped for slow rotators; the eddy
+  coefficients scale with the deformation radius.
 
 Regional mixed-layer depths are a later refinement. Salinity only sets the
 freezing point: no density-driven overturning.

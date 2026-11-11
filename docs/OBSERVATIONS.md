@@ -219,13 +219,17 @@ waves. The scheme responds correctly to the wind it's given. At 10k cells on Ear
 contrast has the right sign in the Pacific Northwest and Himalaya, none in Patagonia.
 
 ### O-36: Too much sea ice is expected until M2 step 12
-*Scheduled: M2.12.* Only diffusion moves heat until then. Tests must not require Earth's
+*Resolved at M2.12.8.* Only diffusion moves heat until then. Tests must not require Earth's
 ice extent or SSTs, and excess ice isn't a reason to retune. On aquaplanets the
 comparison with Bhatnagar et al.'s no-transport and diffusion-only cases holds in sign
 and rough size, with no hemispheric lock-in. On Earth (2.5k cells, year 20) the seasons
 are in phase. Against NSIDC's area (O-42) the northern minimum is close (3.9 against 4.3
 million km²), but the southern is 4.4 against 2.4, and winter peaks of ~20 million km² are
 7 too large in the north and 6 in the south. Revisit with full transport on.
+With currents (Earth, 2,562 cells, year 9 of the spin-up preset) northern ice is closer
+to NSIDC: annual mean 10.7 against 9.4 M km² (13.4 before), winter peak 15.3 against
+13.3 (19.3 before), summer minimum 2.4 against 4.3 (3.7 before). But southern ice has
+almost gone; see O-47.
 
 ### O-37: The ocean jump barely speeds up the ice
 *Resolved at M2.11.8:* default kept. Against year 20 of true time at 2.5k
@@ -277,6 +281,11 @@ CERES radiation and cloud):
 Heat transport (M2.12) should warm the north and shrink the ice. Clouds, the subtropics'
 rain and the winds belong to M2.16's tuning pass; the bright clouds are likely the main
 reason the planet is cold.
+- After M2.12 (currents on, year 9 of the preset, so not the same spin-up as the year-20
+  figures above): global 287.89 K against 288.28 observed; RMS temperature 4.09 K (3.46
+  for the same-length run without currents), absorbed sunlight 27.5 W/m², rain still
+  +27%, albedo 0.330 against 0.291; 60-70°N -3.6 K, north of 70°N still -7 K. Details in
+  O-47.
 
 ### O-43: The ocean carries about a quarter of the paper's heat
 *Scheduled: M2.16.* On the tilted aquaplanet (642 cells, 20–40 years) the ocean's
@@ -289,7 +298,7 @@ edge moving from 57° to 67°. Same at 2,562 cells. Not tuned here: fix the wind
 (O-42).
 
 ### O-44: With currents the ocean takes decades to settle
-*Watching; M2.12.8, M2.13.5, M4.5.* The deep layer adjusts with an e-folding time of
+*Watching; M2.13.5, M2.16, M4.5.* The deep layer adjusts with an e-folding time of
 about 15–20 years: on the tilted aquaplanet in true time the top of the atmosphere is
 still +2 W/m² at year 20 and +0.8 at year 40. Jumping both layers overshoots the
 surface, because it extrapolates the mixed layer's fast response. The default with
@@ -300,6 +309,10 @@ tested on one planet at 642 cells, not on Earth or with land; the tropical deep 
 ends up to 1 K cold; and lasting sea ice isn't sped up, since water under ice is pinned
 at freezing (no-tilt ice is 20 million km² at year 10 against 12 at true-time year 30).
 On the still ocean a deep-only jump cools the deep layer, so that default is unchanged.
+On Earth at 2,562 cells the preset's year 9 is still drifting 0.1-0.2 K a year in global
+mean surface temperature (top of the atmosphere +0.08 W/m² with gyres, +0.31 without).
+A true-time run of ~40 years to check the preset on Earth is deferred to M2.16, after
+restart files (M2.13.5) and the performance pass (M2.15).
 
 ### O-45: Marginal seas are too small to be basins
 *Watching; M2.12.6.* A basin needs 12 interior vertices. Earth at 2,562 cells is
@@ -331,3 +344,17 @@ analytic wind (North Atlantic 4.9 Sv, North Pacific 6.2, Drake ~13-25) because t
 model's surface stress is weak (O-43). They carry at most +0.03 PW north and -0.09 PW
 south; global mean surface temperature changes by -0.05 K and southern sea ice from 1.45
 to 1.14 M km2. Run time +1%.
+
+### O-47: Currents overwarm the Southern Ocean
+*Scheduled: M2.16.* Earth at 2,562 cells, year 9, against the 6-year pre-transport run
+(`output/e_default`, older code and not settled, so differences under ~1 K are noise).
+With Ekman and eddy transport 50-80°S goes from +1-2 K to +6-9 K against ERA5, and
+Antarctic sea ice from a 19.7 M km² winter peak to 2.5-3.0 (observed 14.5), summer
+minimum 0.2 (observed 2.4). The tropics go from about right to -2 to -2.5 K near the
+equator. The ocean carries 0.73 PW south at 39°S, of which eddies are 0.58: not
+unrealistic in itself, so the pre-transport Southern Ocean was probably right for the
+wrong reason (clouds, O-42). 50-70°N warms 2-3 K, as wanted. The gyres add at most 0.03
+PW north and 0.09 south. Untested suspects: the eddy diffusivity (2000 m²/s, the
+paper's aquaplanet value), the missing barrier of the circumpolar current to eddy
+mixing, the deep-layer jump, and cloud brightness over the Southern Ocean. Tune with the
+winds (O-43) at M2.16.

@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.8.**
+**Next: M2.13.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -62,7 +62,7 @@ a visual check.
   - [x] 11.7. Antarctic experiments; freeze-dry low cloud adopted (O-33)
   - [x] 11.8. Earth run and close-out; terrain, jump and seeding defaults kept
   - [x] 11.9. Earth reference values (`reference/earth`) and a comparison script
-- [ ] 12. **Ocean heat transport by currents** (PLAN §4.3)
+- [x] 12. **Ocean heat transport by currents** (PLAN §4.3)
   - [x] 12.1. Ekman transport: wind stress from the atmosphere, mass fluxes
     across edges, the deep layer's return flow and upwelling
   - [x] 12.2. Sverdrup transport near the equator, limited for slow rotators
@@ -75,7 +75,7 @@ a visual check.
   - [x] 12.6. Wind-driven gyre streamfunction per basin; western
     intensification in a closed basin
   - [x] 12.7. Gyre heat transport in the climate run
-  - [ ] 12.8. Earth run and close-out
+  - [x] 12.8. Earth run and close-out
 - [ ] 13. **Multi-rate scheduling**: `dt` from the CFL limit and a design
   maximum wind (O-13), rounded to divide the solar day; radiation every ~3 h and
   ocean every 1–6 h (PLAN §4.6).

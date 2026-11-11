@@ -18,9 +18,12 @@ use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
-use fms_ocean::{EddyParams, EkmanParams, GyreParams, IceParams, JumpLayers, OceanParams};
+use fms_ocean::{
+    EddyParams, EkmanParams, GyreParams, IceParams, JumpLayers, OceanParams, WET_OCEAN_FRACTION,
+};
 use glam::DVec3;
 
+use crate::basins::write_gyre_map;
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
     DynamicsArgs, Fields, Output, Plan, SAMPLES_PER_DAY, build_model, describe, integrate, stepper,
@@ -790,8 +793,34 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let zonal = crate::layered_run::upper_and_lower(si.model(), climate.means());
     let zonal_physics: Vec<Vec<f64>> = means.iter().map(|m| lat_bands.mean(geometry, m)).collect();
 
-    // Annual-mean maps.
-    for (id, mean) in ids.iter().zip(&means) {
+    // Annual-mean maps. The gyres' fields are drawn on the cells wet for the
+    // gyres alone, centred on zero.
+    let gyre_maps = ["ocean.gyre_streamfunction", "ocean.gyre_heating"];
+    for ((id, mean), name) in ids.iter().zip(&means).zip(&names) {
+        if gyre_maps.contains(name) {
+            let wet_only: Vec<f64> = mean
+                .iter()
+                .zip(&land)
+                .map(|(&v, &f)| {
+                    if 1.0 - f >= WET_OCEAN_FRACTION {
+                        v
+                    } else {
+                        f64::NAN
+                    }
+                })
+                .collect();
+            let units = world.fields.meta(id.key()).spec.units;
+            write_gyre_map(
+                &world.climate,
+                &wet_only,
+                name,
+                units,
+                "FINAL-YEAR MEAN",
+                &args.image,
+                &out.dir,
+            )?;
+            continue;
+        }
         world.fields.write(*id).copy_from_slice(mean);
         write_map(
             &world,

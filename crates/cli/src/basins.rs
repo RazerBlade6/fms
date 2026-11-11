@@ -3,6 +3,7 @@
 //! `--gyres`, the gyres themselves for an idealized wind.
 
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::Instant;
 
 use clap::Args;
@@ -15,7 +16,7 @@ use fms_worldgen::SeaMask;
 use glam::DVec3;
 
 use crate::colormap::{Colormap, MISSING};
-use crate::render::{CellRaster, Legend, image_height, render, write_png};
+use crate::render::{CellRaster, Legend, format_value, image_height, render, write_png};
 use crate::{ImageArgs, WorldArgs, build_world, ensure_dir, write_one};
 
 #[derive(Args)]
@@ -515,24 +516,69 @@ fn gyres(
             ring.iter().map(|&v| psi[v as usize]).sum::<f64>() / ring.len() as f64 / SV
         })
         .collect();
-    let (min, max) = image.range.unwrap_or_else(|| {
-        let largest = values
-            .iter()
-            .filter(|v| v.is_finite())
-            .fold(0.0, |m: f64, v| m.max(v.abs()));
-        let largest = if largest > 0.0 { largest } else { 1.0 };
-        (-largest, largest)
-    });
-    let colormap = Colormap::new(fms_fields::ColorScale::Diverging, min, max);
-    let raster = CellRaster::new(&world.climate, image.width, false);
-    let legend = Legend {
-        title: "ocean.gyre_streamfunction (Sv), land grey",
-        subtitle: "",
+    write_gyre_map(
+        &world.climate,
+        &values,
+        "ocean.gyre_streamfunction",
+        "Sv",
+        "",
+        image,
+        &image.out_dir,
+    )
+}
+
+/// The share of wet cells whose size a gyre map's colours span; the rest
+/// saturate. Not higher: on Earth the circumpolar current is a tenth of the
+/// wet cells and four times the subtropical gyres.
+const GYRE_MAP_QUANTILE: f64 = 0.9;
+
+/// A diverging map of a gyre field, `<dir>/<name>.png`. `values` is NaN
+/// where a cell isn't wet ([`Basins::is_wet`]), drawn grey. Zero is white
+/// and the range symmetric: `image.range` if given, else ± the
+/// [`GYRE_MAP_QUANTILE`] quantile of the wet cells' |value|, beyond which the
+/// colours saturate, so one strong current doesn't wash out the rest.
+pub fn write_gyre_map(
+    grid: &fms_sim::Grid,
+    values: &[f64],
+    name: &str,
+    units: &str,
+    stamp: &str,
+    image: &ImageArgs,
+    dir: &Path,
+) -> Result<(), String> {
+    let mut sizes: Vec<f64> = values
+        .iter()
+        .filter(|v| v.is_finite())
+        .map(|v| v.abs())
+        .collect();
+    sizes.sort_by(f64::total_cmp);
+    let largest = sizes.last().copied().unwrap_or(0.0);
+    let (min, max, title) = match image.range {
+        Some((min, max)) => (min, max, format!("{name} ({units}), land grey")),
+        None => {
+            let k = ((GYRE_MAP_QUANTILE * sizes.len() as f64).ceil() as usize).max(1) - 1;
+            let cap = [sizes.get(k).copied().unwrap_or(0.0), largest, 1.0]
+                .into_iter()
+                .find(|&c| c > 0.0)
+                .unwrap_or(1.0);
+            let title = format!(
+                "{name} ({units}), land grey, range: {:.0}th percentile of magnitude (largest {})",
+                GYRE_MAP_QUANTILE * 100.0,
+                format_value(largest)
+            );
+            (-cap, cap, title)
+        }
     };
-    let pixels = render(&raster, &values, &colormap, &legend, None);
+    let colormap = Colormap::new(fms_fields::ColorScale::Diverging, min, max);
+    let raster = CellRaster::new(grid, image.width, false);
+    let legend = Legend {
+        title: &title,
+        subtitle: stamp,
+    };
+    let pixels = render(&raster, values, &colormap, &legend, None);
     let mut palette = *colormap.palette();
     palette[MISSING as usize] = [150, 150, 150];
-    let path = image.out_dir.join("ocean.gyre_streamfunction.png");
+    let path = dir.join(format!("{name}.png"));
     write_png(
         &path,
         raster.width,
@@ -542,7 +588,10 @@ fn gyres(
     )
     .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!(
-        "ocean.gyre_streamfunction [{min:.1} .. {max:.1}] Sv -> {}",
+        "{name} [{} .. {}], largest {}, land grey -> {}",
+        format_value(min),
+        format_value(max),
+        format_value(largest),
         path.display()
     );
     Ok(())

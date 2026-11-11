@@ -18,7 +18,7 @@ cargo build --release -p fms-climate
 | `fms-climate dump --all` | Same, for every field |
 | `fms-climate animate [-f NAME]` | Run and write `output/NAME.gif`; defaults to a year of `planet.daily_insolation` |
 | `fms-climate patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
-| `fms-climate basins` | Print the sea mask's bodies and the ocean's basins for the world's terrain; write `sea_bodies.csv`, `basins.csv`, `basin_cells.csv` and PNGs of `terrain.sea`, `terrain.land_fraction` and `ocean.basin`; `--gyres` also solves the gyres for an analytic Earth-like zonal wind stress (trades, westerlies, polar easterlies, symmetric about the equator) and prints per connected component the basins, landmass groups, unknowns, iterations, residual and min and max Ψ in Sv, the ten largest landmasses' Ψ, and the Drake Passage transport; it writes `ocean.gyre_streamfunction.png`, `gyre_vertices.csv` and `gyre_groups.csv` |
+| `fms-climate basins` | Print the sea mask's bodies and the ocean's basins for the world's terrain; write `sea_bodies.csv`, `basins.csv`, `basin_cells.csv` and PNGs of `terrain.sea`, `terrain.land_fraction` and `ocean.basin`; `--gyres` also solves the gyres for an analytic Earth-like zonal wind stress (trades, westerlies, polar easterlies, symmetric about the equator) and prints per connected component the basins, landmass groups, unknowns, iterations, residual and min and max Ψ in Sv, the ten largest landmasses' Ψ, and the Drake Passage transport; it writes `ocean.gyre_streamfunction.png` (zero is white, cells under half ocean are grey, and the colour range is capped at the 90th percentile of magnitude, the legend giving the largest value), `gyre_vertices.csv` and `gyre_groups.csv` |
 | `fms-climate probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
 | `fms-climate williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms-climate baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
@@ -319,7 +319,9 @@ Outputs in `output/climate/`:
   and their total (PW);
 - `ocean.basin.png`: the ocean's basins, written at the start;
 - `ocean.gyre_streamfunction.png` and `ocean.gyre_heating.png`: the gyre
-  streamfunction and the mean heating the gyres give each cell;
+  streamfunction and the mean heating the gyres give each cell (zero is white, cells
+  under half ocean are grey, and the colour range is capped at the 90th percentile of
+  magnitude; the legend gives the largest value);
 - final-year mean maps: `rad.surface_temperature`, `rad.outgoing_longwave`,
   `rad.absorbed_shortwave`, `atm.water_vapour`, `atm.precipitation`,
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,
