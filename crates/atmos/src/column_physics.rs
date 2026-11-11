@@ -1980,6 +1980,20 @@ impl Forcing for ColumnPhysics<'_> {
                     .collect(),
             ),
             field(
+                "ocean.basin",
+                "Ocean basin of the wind-driven gyres, numbered from 1 by area (0 where the cell is \
+                 not at least half ocean or has no vertex inside a basin)",
+                "1",
+                (0..self.land_fraction.len())
+                    .map(|i| {
+                        self.ocean
+                            .basins()
+                            .cell_basin(i as u32)
+                            .map_or(0.0, |b| b as f64 + 1.0)
+                    })
+                    .collect(),
+            ),
+            field(
                 "rad.surface_temperature",
                 "Surface temperature",
                 "K",

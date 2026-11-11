@@ -463,6 +463,20 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 .map_err(|e| e.to_string())?,
         );
     }
+    // The gyres' ocean basins, which are fixed: drawn once, at the start.
+    let basin_id = world
+        .fields
+        .register(
+            FieldSpec {
+                description: "Ocean basin of the wind-driven gyres, numbered from 1 by area \
+                              (0 where there is none)",
+                color_scale: ColorScale::Categorical,
+                persistent: false,
+                ..FieldSpec::new("ocean.basin", "", Location::CLIMATE_CELLS)
+            },
+            0.0,
+        )
+        .map_err(|e| e.to_string())?;
     let world = world;
 
     // Start from the single column's equilibrium, at rest, with its
@@ -528,6 +542,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 .ok_or_else(|| format!("the physics has no field {n}"))
         })
         .collect::<Result<_, _>>()?;
+    let basins = fields_now
+        .iter()
+        .find(|f| f.name == "ocean.basin")
+        .expect("the physics reports the ocean's basins")
+        .values
+        .clone();
     let ice_index = ["ocean.ice_fraction", "ocean.ice_thickness"].map(|n| {
         fields_now
             .iter()
@@ -595,6 +615,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let mut gained_start: Option<(u64, Vec<Vec<f64>>)> = None;
     std::fs::create_dir_all(&out.dir)
         .map_err(|e| format!("cannot create {}: {e}", out.dir.display()))?;
+    world.fields.write(basin_id).copy_from_slice(&basins);
+    write_map(&world, basin_id.key(), None, &out.dir, "FIXED", &args.image)?;
     let path = out.dir.join("monthly_zonal.csv");
     let file = std::fs::File::create(&path)
         .map_err(|e| format!("cannot create {}: {e}", path.display()))?;

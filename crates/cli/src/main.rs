@@ -15,10 +15,12 @@
 //! fms-climate baroclinic                              # two-layer core: storms on a sheared jet
 //! fms-climate held-suarez --climate-frequency 32      # dynamical-core benchmark, 1200 days
 //! fms-climate climate --climate-frequency 16 --co2 840  # radiative climate, final-year means
+//! fms-climate basins --heightmap earth.tif             # sea mask and ocean basins
 //! ```
 
 mod arrows;
 mod baroclinic;
+mod basins;
 mod chart;
 mod climate;
 mod colormap;
@@ -88,6 +90,10 @@ enum Command {
     /// a summary with the energy budget, and annual-mean maps to
     /// `output/climate/`.
     Climate(climate::ClimateArgs),
+    /// Write the world's sea mask, land fraction and ocean basins (the
+    /// gyres' domains) as maps, with tables of the bodies below sea level
+    /// and of the basins, without running anything.
+    Basins(basins::BasinsArgs),
 }
 
 #[derive(Args, Clone)]
@@ -254,6 +260,7 @@ fn main() -> ExitCode {
         Command::Baroclinic(args) => baroclinic::run(args),
         Command::HeldSuarez(args) => held_suarez::run(args),
         Command::Climate(args) => climate::run(args),
+        Command::Basins(args) => basins::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

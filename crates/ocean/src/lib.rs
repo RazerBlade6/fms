@@ -36,9 +36,14 @@
 //!
 //! The crate knows nothing about the atmosphere: fluxes and stresses come in
 //! as numbers and temperatures go out.
+//!
+//! The ocean's basins for the wind-driven gyres ([`Basins`]) are found when
+//! it is built; nothing uses them yet.
 
+pub mod basins;
 mod ice;
 
+pub use basins::{Basin, Basins, MIN_BASIN_VERTICES, WET_OCEAN_FRACTION};
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
 use glam::DVec3;
@@ -641,6 +646,7 @@ pub struct Ocean {
     /// Heat brought into each cell's column since the start by Ekman
     /// transport, eddy transport and diffusion (J per m² of ocean).
     transported: [Vec<f64>; 3],
+    basins: Basins,
 }
 
 impl Ocean {
@@ -825,12 +831,19 @@ impl Ocean {
             overturning: Overturning::new(n),
             diffusion_heating: vec![0.0; n],
             transported: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
+            basins: Basins::new(ops, land_fraction),
         }
     }
 
     /// The parameters.
     pub fn params(&self) -> &OceanParams {
         &self.params
+    }
+
+    /// The basins of the wind-driven gyres, from the mesh and the land
+    /// fraction.
+    pub fn basins(&self) -> &Basins {
+        &self.basins
     }
 
     /// Temperature of each cell's mixed layer (K); meaningless where the
@@ -3020,5 +3033,39 @@ mod tests {
         ocean.transport(1800.0);
         assert!((0..grid.n()).all(|i| ocean.diffusion_heating(i) == 0.0));
         assert!((0..grid.n()).all(|i| ocean.transported_heat(i) == [0.0; 3]));
+    }
+
+    #[test]
+    fn building_the_basins_changes_nothing_bit_for_bit() {
+        // The whole ocean (Ekman, eddies, diffusion, convection and ice) on
+        // coasts under a rough wind, hashed: pinned before the basins existed
+        // (M2.12.5). If this fails, first ask whether the change was meant to
+        // alter the ocean's results.
+        const BEFORE: u64 = 0xeffe_4cb2_19a0_8eb6;
+        let grid = Grid::new(16);
+        let mixed: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let mut ocean = Ocean::new(
+            OceanParams::default(),
+            &grid.ops(),
+            &coasts(grid.n()),
+            mixed,
+            ROTATION,
+        );
+        for _ in 0..20 {
+            ocean.set_wind_stress(rough_wind);
+            ocean.transport(1800.0);
+        }
+        let hash = ocean
+            .mixed_temperature()
+            .iter()
+            .chain(ocean.deep_temperature())
+            .chain(ocean.ekman_mass_flux())
+            .chain(ocean.eddy_mass_flux())
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, x| {
+                (h ^ x.to_bits()).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        assert_eq!(hash, BEFORE, "new hash: {hash:#018x}");
     }
 }

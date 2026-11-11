@@ -165,10 +165,12 @@ inhibition trigger, and an inversion diagnosed from the column.
 ## Climate and terrain
 
 ### O-11: Land below sea level counts as ocean
-*Watching.* Land and sea split at elevation 0; only the Caspian shows at climate
-resolution. The two-layer ocean doesn't need a mask. M2.12's gyres do: take the
-below-sea-level region connected to the open sea, leaving closed basins to hydrology.
-Narrow straits make connectivity unreliable.
+*Resolved at M2.12.5* by the sea mask: below-sea-level terrain is sea only in the
+world ocean or a body of at least 0.005% of the sphere. Left open: inlets cut off
+by straits narrower than a terrain cell become land if small (Sea of Marmara, Lake
+Maracaibo, the Gulf of Ob at coarse terrain), which moves at most a quarter of one
+climate cell; lake beds below sea level (Superior, Baikal) are land at height 0
+until lakes arrive (M3.6); and Lake Superior's bed is within 5% of the threshold.
 
 ### O-23: An ice-free aquaplanet runs warmer than Earth
 *Scheduled: M2.16.* The ice-free four-layer slab settles at 290.7 K. Ice and
@@ -298,3 +300,12 @@ tested on one planet at 642 cells, not on Earth or with land; the tropical deep 
 ends up to 1 K cold; and lasting sea ice isn't sped up, since water under ice is pinned
 at freezing (no-tilt ice is 20 million km² at year 10 against 12 at true-time year 30).
 On the still ocean a deep-only jump cools the deep layer, so that default is unchanged.
+
+### O-45: Marginal seas are too small to be basins
+*Watching; M2.12.6.* A basin needs 12 interior vertices. Earth at 2,562 cells is
+one basin (the Mediterranean has 8 and is dropped); at 10,242 the Mediterranean
+and Hudson Bay join it. The Black Sea, Baltic, Red Sea and Caspian never have
+enough: they get Ekman, eddy and diffusive transport but no gyre. The world ocean
+borders 12–29 landmasses, each a separate coast for the streamfunction. Revisit
+when the gyre solver shows how small a gyre it resolves; an area rule wouldn't
+move with resolution.

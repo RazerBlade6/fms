@@ -54,7 +54,11 @@ Only insolation runs through the scheduler so far. The climate run steps
 
 Heightmaps resample onto the fine grid as area-weighted means. Each climate cell
 gets the mean and spread of surface height, the mean slope and the land
-fraction. Surface height is `max(elevation, 0)`. The atmosphere sees it after
+fraction. A terrain cell is sea if it is at or below zero and its connected body
+of such cells is the world ocean (the largest) or covers at least 0.005% of the
+sphere (about 25,500 km² on Earth); smaller bodies below sea level are land. The
+Caspian and Black Sea stay water; the Qattara Depression and the Dead Sea are
+land (O-11). Surface height is `max(elevation, 0)`. The atmosphere sees it after
 ten conservative diffusion passes (O-30).
 
 ## Dynamical core (`fms-atmos`)
@@ -216,6 +220,11 @@ tests.
 The climate run writes the northward heat transport of each of these (Ekman,
 eddies, diffusion) across each latitude, in PW, from every step of the final
 year.
+
+**Basins**, for the gyres to come: a cell is wet if at least half ocean, a vertex
+is coast if any of its three cells isn't wet, and a basin is a connected set of
+the other vertices, kept if it has at least 12. An aquaplanet is one basin with
+no coast.
 
 ## Sea ice (`fms-ocean/ice`)
 

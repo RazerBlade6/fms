@@ -14,7 +14,7 @@ fn small_world() -> World {
 fn builds_registers_core_fields_and_steps() {
     let mut world = small_world();
     assert!(world.adjustments.is_empty());
-    assert_eq!(world.fields.len(), 12);
+    assert_eq!(world.fields.len(), 13);
     for name in [
         "geo.terrain_latitude",
         "geo.terrain_cell_area",
@@ -24,6 +24,7 @@ fn builds_registers_core_fields_and_steps() {
         "planet.daily_insolation",
         "terrain.elevation",
         "terrain.slope",
+        "terrain.sea",
         "terrain.land_fraction",
         "terrain.surface_height",
         "terrain.surface_height_stddev",

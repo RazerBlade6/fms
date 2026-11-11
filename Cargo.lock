@@ -340,6 +340,7 @@ dependencies = [
  "fms-ocean",
  "fms-planet",
  "fms-sim",
+ "fms-worldgen",
  "gif",
  "glam",
  "png",

@@ -10,7 +10,7 @@ use fms_grid::coords::{from_lat_lon, to_lat_lon};
 use fms_grid::spherical::polygon_moment;
 use fms_grid::{LloydOptions, MeshGeometry, SphereMesh, TwoLevelMap};
 use fms_worldgen::subgrid::{slope, surface_height};
-use fms_worldgen::{HeightmapError, LoadOptions, Raster, TerrainStats, load, resample};
+use fms_worldgen::{HeightmapError, LoadOptions, Raster, SeaMask, TerrainStats, load, resample};
 use glam::DVec3;
 use tiff::encoder::{TiffEncoder, colortype};
 use tiff::tags::Tag;
@@ -362,7 +362,8 @@ fn grids() -> Grids {
 
 fn stats(g: &Grids, elevation: &[f64]) -> TerrainStats {
     let s = slope(&surface_height(elevation), &g.fine, &g.geometry, RADIUS);
-    TerrainStats::compute(elevation, &s, &g.map)
+    let sea = SeaMask::new(elevation, &g.fine, &g.geometry.cell_areas);
+    TerrainStats::compute(elevation, &sea.sea, &s, &g.map)
 }
 
 #[test]

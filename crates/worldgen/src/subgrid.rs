@@ -3,19 +3,17 @@
 //! The atmosphere sits on the *surface height*: the land surface, or sea level
 //! over ocean (`max(elevation, 0)`). Each climate cell gets the area-weighted
 //! mean of that over its terrain children, its spread (sub-grid orography, for
-//! drag and orographic rain), the mean slope, and the land fraction.
+//! drag and orographic rain), the mean slope, and the land fraction, from the
+//! sea mask ([`SeaMask`](crate::SeaMask)). Land below sea level, a dry
+//! depression, counts as land, but its surface height is still sea level.
 
 use fms_grid::{MeshGeometry, SphereMesh, TwoLevelMap};
 use rayon::prelude::*;
 
-/// Surface height (m): the land surface, or sea level (0) over ocean.
+/// Surface height (m): the land surface, or sea level (0) wherever the
+/// elevation is below it, sea or dry depression.
 pub fn surface_height(elevation: &[f64]) -> Vec<f64> {
     elevation.par_iter().map(|&z| z.max(0.0)).collect()
-}
-
-/// Whether a terrain cell is land: above sea level.
-pub fn is_land(elevation: f64) -> bool {
-    elevation > 0.0
 }
 
 /// Magnitude of the surface-height gradient in each cell (m per m), from the
@@ -85,9 +83,10 @@ pub struct TerrainStats {
 }
 
 impl TerrainStats {
-    /// Aggregate terrain-grid `elevation` and its `slope` (from [`slope`]) to
-    /// the climate grid.
-    pub fn compute(elevation: &[f64], slope: &[f64], map: &TwoLevelMap) -> Self {
+    /// Aggregate terrain-grid `elevation`, its sea mask (`sea`, from
+    /// [`SeaMask`](crate::SeaMask)) and its `slope` (from [`slope`]) to the
+    /// climate grid.
+    pub fn compute(elevation: &[f64], sea: &[bool], slope: &[f64], map: &TwoLevelMap) -> Self {
         let n = map.n_coarse();
         let restrict = |fine: &[f64]| {
             let mut coarse = vec![0.0; n];
@@ -95,10 +94,8 @@ impl TerrainStats {
             coarse
         };
         let surface = surface_height(elevation);
-        let land: Vec<f64> = elevation
-            .par_iter()
-            .map(|&z| if is_land(z) { 1.0 } else { 0.0 })
-            .collect();
+        assert_eq!(sea.len(), elevation.len(), "one sea flag per cell");
+        let land: Vec<f64> = sea.par_iter().map(|&s| if s { 0.0 } else { 1.0 }).collect();
 
         let surface_height = restrict(&surface);
         let mut variance = vec![0.0; n];
@@ -142,6 +139,30 @@ mod tests {
         let lowest = smooth.iter().copied().fold(f64::MAX, f64::min);
         assert!(peak < 3000.0, "peak {peak}");
         assert!(lowest >= 0.0, "lowest {lowest}");
+    }
+
+    #[test]
+    fn the_idealized_continents_land_fraction_is_the_old_rules_bit_for_bit() {
+        // Every cell below sea level is in the world ocean, so the mask is
+        // `elevation <= 0` and the land fraction what `elevation > 0` gave.
+        let (coarse, _) = grid();
+        let (fine, _) = SphereMesh::centroidal(32, LloydOptions::default());
+        let fine_geometry = MeshGeometry::new(&fine);
+        let map = TwoLevelMap::new(&coarse, &fine, &fine_geometry.cell_areas);
+        let elevation = crate::Continent::default().elevation(fine.cell_centers());
+        let sea = crate::SeaMask::new(&elevation, &fine, &fine_geometry.cell_areas);
+        let s = slope(&surface_height(&elevation), &fine, &fine_geometry, 6.371e6);
+        let stats = TerrainStats::compute(&elevation, &sea.sea, &s, &map);
+        let old: Vec<f64> = elevation
+            .iter()
+            .map(|&z| if z > 0.0 { 1.0 } else { 0.0 })
+            .collect();
+        let mut expected = vec![0.0; coarse.n_cells()];
+        map.restrict_mean(&old, &mut expected);
+        assert!(stats.land_fraction.iter().any(|&f| f > 0.0 && f < 1.0));
+        for (got, want) in stats.land_fraction.iter().zip(&expected) {
+            assert_eq!(got.to_bits(), want.clamp(0.0, 1.0).to_bits());
+        }
     }
 
     #[test]

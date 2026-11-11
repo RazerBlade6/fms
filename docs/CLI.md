@@ -18,6 +18,7 @@ cargo build --release -p fms-climate
 | `fms-climate dump --all` | Same, for every field |
 | `fms-climate animate [-f NAME]` | Run and write `output/NAME.gif`; defaults to a year of `planet.daily_insolation` |
 | `fms-climate patterns` | Write analytic test fields to `output/patterns/`: solid-body and Rossby–Haurwitz winds, vorticity, stream function and an edge scalar. Checks that rendering of edge, vertex and vector fields is right |
+| `fms-climate basins` | Print the sea mask's bodies and the ocean's basins for the world's terrain; write `sea_bodies.csv`, `basins.csv`, `basin_cells.csv` and PNGs of `terrain.sea`, `terrain.land_fraction` and `ocean.basin` |
 | `fms-climate probe --lat LAT --lon LON -f NAME [-f NAME …]` | Record fields at one location over time; write a CSV and a line chart to `output/probe_<LOCATION>.{csv,png}` |
 | `fms-climate williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms-climate baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
@@ -121,7 +122,8 @@ The importer sets `terrain.elevation`. These fields are derived from it:
 | Field | Grid | Meaning |
 |---|---|---|
 | `terrain.slope` | terrain | Surface slope (m per m; the sea surface is flat) |
-| `terrain.land_fraction` | climate | Fraction of the cell above sea level |
+| `terrain.sea` | terrain | 1 where the cell is sea: at or below zero, in the world ocean or a body of at least 0.005% of the sphere |
+| `terrain.land_fraction` | climate | Fraction of the cell that is land (not sea, see `terrain.sea`) |
 | `terrain.surface_height` | climate | Mean surface height: land, or sea level over ocean |
 | `terrain.surface_height_stddev` | climate | Spread of surface height inside the cell (sub-grid mountains) |
 | `terrain.mean_slope` | climate | Mean slope of the terrain cells inside |
@@ -312,6 +314,7 @@ Outputs in `output/climate/`:
 - `ocean_heat_transport.csv` and `ocean_heat_transport.png`: northward ocean
   heat transport across each latitude by Ekman transport, eddies and diffusion,
   and their total (PW);
+- `ocean.basin.png`: the ocean's basins, written at the start;
 - final-year mean maps: `rad.surface_temperature`, `rad.outgoing_longwave`,
   `rad.absorbed_shortwave`, `atm.water_vapour`, `atm.precipitation`,
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,

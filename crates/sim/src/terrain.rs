@@ -1,5 +1,6 @@
 //! Terrain: elevation on the terrain grid, and the fields derived from it on
-//! both grids (slope, and the climate grid's sub-grid statistics).
+//! both grids (slope and the sea mask, and the climate grid's sub-grid
+//! statistics).
 //!
 //! Elevation is the saved state; everything else is recomputed by
 //! [`World::set_elevation`] whenever it changes.
@@ -9,7 +10,7 @@ use std::time::Instant;
 
 use fms_fields::{ColorScale, FieldError, FieldId, FieldRegistry, FieldSpec, Location};
 use fms_worldgen::subgrid::{slope, smooth_height, surface_height};
-use fms_worldgen::{Continent, HeightmapError, LoadOptions, TerrainStats};
+use fms_worldgen::{Continent, HeightmapError, LoadOptions, SeaMask, TerrainStats};
 
 use crate::World;
 
@@ -35,6 +36,9 @@ pub struct TerrainFields {
     pub elevation: FieldId<f64>,
     /// Surface slope of each terrain cell (m per m).
     pub slope: FieldId<f64>,
+    /// Whether each terrain cell is sea (1) or land (0), from [`SeaMask`]:
+    /// land below sea level away from the ocean is land.
+    pub sea: FieldId<f64>,
     /// Land fraction of each climate cell.
     pub land_fraction: FieldId<f64>,
     /// Mean surface height of each climate cell (m; sea level over ocean).
@@ -83,6 +87,19 @@ pub(crate) fn register(fields: &mut FieldRegistry) -> Result<TerrainFields, Fiel
                 Location::TERRAIN_CELLS,
             ),
             0.0,
+        )?,
+        sea: fields.register(
+            FieldSpec {
+                valid_range: Some((0.0, 1.0)),
+                color_scale: ColorScale::Categorical,
+                ..derived(
+                    "terrain.sea",
+                    "1 where the cell is sea, 0 where it is land (including land below sea level)",
+                    "",
+                    Location::TERRAIN_CELLS,
+                )
+            },
+            1.0,
         )?,
         land_fraction: fields.register(
             FieldSpec {
@@ -202,8 +219,8 @@ impl World {
         .collect()
     }
 
-    /// Recompute slope and the climate grid's terrain statistics from the
-    /// current elevation.
+    /// Recompute slope, the sea mask and the climate grid's terrain
+    /// statistics from the current elevation.
     pub(crate) fn update_terrain(&mut self) {
         let f = self.core.terrain;
         let elevation = self.fields.read(f.elevation).to_vec();
@@ -214,8 +231,17 @@ impl World {
             &self.terrain.geometry,
             radius,
         );
-        let stats = TerrainStats::compute(&elevation, &s, &self.two_level);
+        let sea = SeaMask::new(
+            &elevation,
+            &self.terrain.mesh,
+            &self.terrain.geometry.cell_areas,
+        )
+        .sea;
+        let stats = TerrainStats::compute(&elevation, &sea, &s, &self.two_level);
         self.fields.write(f.slope).copy_from_slice(&s);
+        for (out, &sea) in self.fields.write(f.sea).iter_mut().zip(&sea) {
+            *out = if sea { 1.0 } else { 0.0 };
+        }
         for (id, values) in [
             (f.land_fraction, &stats.land_fraction),
             (f.surface_height, &stats.surface_height),
@@ -224,5 +250,135 @@ impl World {
         ] {
             self.fields.write(id).copy_from_slice(values);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WorldConfig;
+    use fms_grid::coords::from_lat_lon;
+    use fms_worldgen::MIN_SEA_FRACTION;
+    use glam::DVec3;
+
+    fn world(terrain_frequency: u32, climate_frequency: u32, radius: f64) -> World {
+        let mut config = WorldConfig {
+            terrain_frequency,
+            climate_frequency,
+            ..WorldConfig::default()
+        };
+        config.planet.radius = radius;
+        World::new(config)
+    }
+
+    fn hash(values: &[f64]) -> u64 {
+        values.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, v| {
+            (h ^ v.to_bits()).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn the_blank_ocean_and_the_continent_are_as_before_the_sea_mask_bit_for_bit() {
+        // Hashes of `terrain.land_fraction` (blank ocean, then the idealized
+        // continent) and of the continent's other climate-grid statistics,
+        // taken before the sea mask existed, when land was `elevation > 0`.
+        const BEFORE: [(u32, u32, [u64; 5]); 2] = [
+            (
+                20,
+                8,
+                [
+                    0xb877_cbdc_903d_31ed,
+                    0x2518_e739_7557_d01c,
+                    0xdc91_5ce8_fa65_39a8,
+                    0xe9a2_232a_b0c9_0e50,
+                    0x013c_64ef_8368_c7ea,
+                ],
+            ),
+            (
+                64,
+                16,
+                [
+                    0xdc0e_1f65_c1aa_77ed,
+                    0xc7ae_3e7b_e31b_71ae,
+                    0x489c_6ced_db80_b77c,
+                    0xa377_8449_8eb2_d0d7,
+                    0x6ae5_2bdf_e449_0a2b,
+                ],
+            ),
+        ];
+        for (terrain, climate, before) in BEFORE {
+            let mut w = world(terrain, climate, 6.371e6);
+            let t = w.core.terrain;
+            assert!(w.fields.read(t.sea).iter().all(|&s| s == 1.0));
+            let blank = hash(&w.fields.read(t.land_fraction));
+            w.set_idealized_continent();
+            let mut now = vec![blank];
+            for id in [
+                t.land_fraction,
+                t.surface_height,
+                t.surface_height_stddev,
+                t.mean_slope,
+            ] {
+                now.push(hash(&w.fields.read(id)));
+            }
+            assert_eq!(now, before, "{terrain}/{climate}: {now:#018x?}");
+            let elevation = w.fields.read(t.elevation);
+            for (s, z) in w.fields.read(t.sea).iter().zip(elevation.iter()) {
+                assert_eq!(*s == 1.0, *z <= 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dry_depression_is_land_and_an_enclosed_sea_is_sea_on_any_planet() {
+        // At frequency 128 a terrain cell is about 6e-6 of the sphere: a
+        // depression of 0.4 of the threshold has a few cells and a sea of 4
+        // times it a few dozen. Both lie inside a continent covering the
+        // northern hemisphere.
+        let cap = |fraction: f64| fms_math::acos(1.0 - 2.0 * fraction);
+        let angle = |a: DVec3, b: DVec3| fms_math::atan2(a.cross(b).length(), a.dot(b));
+        let dry = from_lat_lon(0.6, 0.0);
+        let sea = from_lat_lon(0.6, 1.5);
+        let holes = [
+            (dry, cap(0.4 * MIN_SEA_FRACTION), -80.0),
+            (sea, cap(4.0 * MIN_SEA_FRACTION), -300.0),
+        ];
+        let mut masks = Vec::new();
+        for radius in [6.371e6, 3.39e6] {
+            let mut w = world(128, 8, radius);
+            let elevation = w
+                .terrain
+                .mesh
+                .cell_centers()
+                .iter()
+                .map(|&p| {
+                    if p.z < 0.0 {
+                        return -4000.0;
+                    }
+                    holes
+                        .iter()
+                        .find(|&&(c, r, _)| angle(p, c) <= r)
+                        .map_or(500.0, |h| h.2)
+                })
+                .collect();
+            w.set_elevation(elevation);
+            let t = w.core.terrain;
+            let elevation = w.fields.read(t.elevation).to_vec();
+            let mask = w.fields.read(t.sea).to_vec();
+            let cells = |depth: f64| {
+                (0..elevation.len())
+                    .filter(|&c| elevation[c] == depth)
+                    .collect::<Vec<_>>()
+            };
+            let (dry_cells, sea_cells) = (cells(-80.0), cells(-300.0));
+            assert!(dry_cells.len() >= 2 && sea_cells.len() >= 20);
+            assert!(dry_cells.iter().all(|&c| mask[c] == 0.0));
+            assert!(sea_cells.iter().all(|&c| mask[c] == 1.0));
+            // The depression's climate cell is all land.
+            let parent = w.two_level.parents()[dry_cells[0]] as usize;
+            assert!(w.fields.read(t.land_fraction)[parent] > 1.0 - 1e-12);
+            masks.push(mask);
+        }
+        assert_eq!(masks[0], masks[1]);
     }
 }

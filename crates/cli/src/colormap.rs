@@ -71,6 +71,10 @@ const LAND: Stops = &[
 /// hard colour boundary.
 const OCEAN_LEVELS: usize = LEVELS / 2;
 
+/// Categorical class 0, "none" (land under a basin label, say).
+const NO_CLASS: [u8; 3] = [225, 225, 225];
+
+/// Categorical classes from 1 on, cycling.
 const CATEGORICAL: &[[u8; 3]] = &[
     [31, 119, 180],
     [255, 127, 14],
@@ -125,7 +129,8 @@ impl Colormap {
                     LAND,
                     (i - OCEAN_LEVELS) as f64 / (LEVELS - OCEAN_LEVELS - 1) as f64,
                 ),
-                ColorScale::Categorical => CATEGORICAL[i % CATEGORICAL.len()],
+                ColorScale::Categorical if i == 0 => NO_CLASS,
+                ColorScale::Categorical => CATEGORICAL[(i - 1) % CATEGORICAL.len()],
             };
         }
         palette[MISSING as usize] = [255, 0, 255];
@@ -155,9 +160,13 @@ impl Colormap {
             return MISSING;
         }
         let t = match self.scale {
-            // Integer classes cycle through the palette.
+            // Class 0 is "none"; the others cycle through the palette.
             ColorScale::Categorical => {
-                return (v.round().rem_euclid(CATEGORICAL.len() as f64)) as u8;
+                let class = v.round();
+                if class == 0.0 {
+                    return 0;
+                }
+                return 1 + ((class - 1.0).rem_euclid(CATEGORICAL.len() as f64)) as u8;
             }
             // Below sea level uses the ocean half, at or above it the land half.
             ColorScale::Elevation => return self.elevation_index(v),
@@ -186,7 +195,7 @@ impl Colormap {
         match self.scale {
             ColorScale::Elevation => self.elevation_index(self.min + t * (self.max - self.min)),
             ColorScale::Categorical => {
-                ((t * CATEGORICAL.len() as f64) as usize).min(CATEGORICAL.len() - 1) as u8
+                ((t * (CATEGORICAL.len() + 1) as f64) as usize).min(CATEGORICAL.len()) as u8
             }
             _ => (t.clamp(0.0, 1.0) * (LEVELS - 1) as f64).round() as u8,
         }
@@ -229,6 +238,17 @@ mod tests {
         let c = Colormap::new(ColorScale::Categorical, 0.0, 30.0);
         assert_eq!(c.index(3.0), 3);
         assert_eq!(c.index(23.0), 3);
+    }
+
+    #[test]
+    fn categorical_class_zero_is_its_own_colour() {
+        let c = Colormap::new(ColorScale::Categorical, 0.0, 30.0);
+        assert_eq!(c.index(0.0), 0);
+        assert_eq!(c.index(1.0), 1);
+        assert_eq!(c.index(21.0), 1);
+        let none = c.palette()[0];
+        assert!((1..=CATEGORICAL.len()).all(|i| c.palette()[i] != none));
+        assert_eq!(c.palette()[1], CATEGORICAL[0]);
     }
 
     #[test]
