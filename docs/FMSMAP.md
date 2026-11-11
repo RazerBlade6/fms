@@ -35,10 +35,18 @@ Each layer records:
 | Written by | The module that wrote it, and its version |
 | State | Locked, initial or absent (below) |
 | Computed from | Optional: the layers a derived layer was computed from, each with a content hash |
+| Terrain | Optional: a content hash of the `terrain.elevation` the layer was made for |
 
 *Computed from* lets a module tell that a derived layer is stale. `fms-editor`
 uses it to flag climate layers after the terrain under them is edited
 ([editor/PLAN.md](editor/PLAN.md) §3.4).
+
+*Terrain* lets a module tell that a layer no longer sits on the land under it. A
+module that changes terrain in place (erosion) updates it on the layers that
+still fit. A module that moves terrain (`fms-geo` with tectonics) leaves it,
+first stamping any layer that lacks one with the terrain it arrived on. Readers
+warn about or ignore a layer whose *Terrain* does not match
+([geo/PLAN.md](geo/PLAN.md) §6.3).
 
 ## Layer states
 
@@ -55,6 +63,10 @@ climate doesn't support it. Someone who wants a world exactly as drawn takes it
 from `fms-editor` straight to `fms-civ`, without running a simulation; locked
 exists for cases where only some layers should change. States apply to whole
 layers.
+
+The CO₂ planet setting also carries a state, locked or initial (default),
+because `fms-geo` can evolve it ([geo/PLAN.md](geo/PLAN.md) §5.3). `fms-geo`
+also rewrites the ocean-fraction setting to match the terrain it exports.
 
 ## Rules for modules
 
@@ -85,6 +97,21 @@ each is built.
 
 Vector objects, undo history and other editing data stay in the editor's
 project file, not here.
+
+## Layers decided for `fms-geo`
+
+Settled in [geo/PLAN.md](geo/PLAN.md); names and encodings are fixed when each
+is built.
+
+| Layer | Notes |
+|---|---|
+| Plates | Plate id and plate velocity |
+| Crust | Type, age and thickness; boundary type |
+| Rock types | One fixed list of about 8–10 classes shared by the whole family, plus sediment thickness |
+| Volcanism and hotspots | Per-cell rasters |
+| Seismic hazard | Per-cell raster |
+
+Mineral resources are decided with `fms-civ`.
 
 ## Climate without a climate run
 

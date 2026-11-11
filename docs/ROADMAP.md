@@ -109,7 +109,8 @@ a visual check.
 - [ ] 2. Rolling monthly temperature and precipitation statistics
 - [ ] 3. Köppen–Geiger classification, with agreement against Peel et al. 2007
 - [ ] 4. Evolving vegetation, feeding back on albedo, roughness and soil water
-- [ ] 5. Flow routing, depression filling, river extraction
+- [ ] 5. Flow routing, depression filling, river extraction (routing in the
+  crate shared with `fms-geo`)
 - [ ] 6. Lakes and basins; lakes become water surfaces in the GCM
 - [ ] 7. Earth benchmark, part 2: Köppen threshold; rivers and basins plausible
 - [ ] 8. Export climate results into `.fmsmap`

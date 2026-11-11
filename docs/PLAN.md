@@ -35,14 +35,15 @@ simulates and passes the rest through. Coupling goes through files
 |---|---|---|
 | `fms-editor` | Make custom maps at any level of detail | GUI, edits |
 | `fms-climate` | This project: climate and hydrosphere | Viewer only |
-| `fms-geo` | Plate tectonics and erosion (design later) | Viewer only |
+| `fms-geo` | Plate tectonics and erosion | Viewer only |
 | `fms-civ` | Civilisation simulation and editing (design later) | GUI, edits |
 
 Typical paths: editor → geo → climate → civ, or editor (with biomes) → civ,
 which then uses a biome → typical-climate table and warns about it.
 
 All modules stay in this Cargo workspace until the format is stable.
-`fms-editor`'s design is in [editor/PLAN.md](editor/PLAN.md).
+`fms-editor`'s design is in [editor/PLAN.md](editor/PLAN.md), and `fms-geo`'s
+is in [geo/PLAN.md](geo/PLAN.md).
 
 ## 2. Key decisions
 
@@ -107,7 +108,9 @@ crates/
   viewer/       eframe/egui + wgpu renderer, map modes, inspector
 ```
 
-A crate for `.fmsmap` joins these in M3 step 0. Packages have an `fms-` prefix.
+A crate for `.fmsmap` joins these in M3 step 0. The flow-routing algorithms
+`hydro` needs go in a small crate shared with `fms-geo`
+([geo/PLAN.md](geo/PLAN.md) §4.3). Packages have an `fms-` prefix.
 The binaries are `fms-climate` and `fms-viewer`. The sim crates never depend on
 the viewer.
 

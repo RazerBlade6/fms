@@ -38,7 +38,7 @@ Painted climate layers (temperature, rainfall) are a stretch goal.
 | Starting a map | Blank ocean, heightmap, `.fmsmap`, or (after v1) a generated world |
 | Generator | Spherical noise shaped by a quick plate sketch; real tectonics is `fms-geo`'s |
 | Saving | Native project file; Export writes a baked `.fmsmap` |
-| Layer states | A lock toggle per layer, default initial, whole layers only |
+| Layer states | A lock toggle per layer, default initial, whole layers only; also a lock toggle for CO₂, which `fms-geo` can otherwise evolve ([../geo/PLAN.md](../geo/PLAN.md) §5.3) |
 | Rendering | Shared render crate, used by `fms-viewer` and `fms-editor` (§4) |
 
 ## 3. Data
@@ -116,3 +116,5 @@ Building starts no earlier than `fms-climate` M3 step 0, which creates the
   `fms-civ`) is decided in its design session.
 - **The biome list**: drafted when `fms-climate` reaches vegetation (M3 step
   4), so both modules agree on it.
+- **Plate drawing**: a tool that exports plate and crust layers; `fms-geo`
+  already reads them when present.
