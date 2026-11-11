@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.13.**
+**Next: M2.13.3.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -79,6 +79,12 @@ a visual check.
 - [ ] 13. **Multi-rate scheduling**: `dt` from the CFL limit and a design
   maximum wind (O-13), rounded to divide the solar day; radiation every ~3 h and
   ocean every 1–6 h (PLAN §4.6).
+  - [x] 13.1. Step divides the planet's solar day, at least 24 steps a day;
+    `--solar-day`, `--year-days`
+  - [x] 13.2. Radiation every whole number of steps, within 3 h and an eighth
+    of the day
+  - [ ] 13.3. Measure the ocean's cost; decide its interval
+  - [ ] 13.4. Close-out
 - [ ] 13.5. **Restart files**: save a spun-up state and start runs from it
   (a plain state dump; the versioned format is M4.2).
 - [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,

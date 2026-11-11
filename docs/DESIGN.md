@@ -76,7 +76,7 @@ Gravity-wave terms, linearized about an isothermal 300 K reference (or warmer if
 the start is), are treated implicitly. They split by vertical mode into one
 Helmholtz problem per layer, solved by Jacobi-preconditioned conjugate gradient
 to 1e-8. The step comes from a design maximum wind (120 m/s in the climate run)
-at Courant 0.6, rounded to divide a day. Forcing and diffusion are lagged a step.
+at Courant 0.6, rounded to divide the planet's solar day, with at least 24 steps a day. Forcing and diffusion are lagged a step.
 
 **Dissipation.** ∇⁴ hyperdiffusion on winds and θ at the strongest strength the
 step allows with a 2× margin (`τ` about 5 h at 20k cells). Kinetic energy that
@@ -91,7 +91,7 @@ violation or out-of-bounds pressure or θ, and writes a diagnostic dump.
 
 ## Column physics (`column_physics`)
 
-Surface fluxes and tiles update every step. Radiation runs every 3 h, with
+Surface fluxes and tiles update every step. Radiation runs every whole number of steps, the most within 3 h and an eighth of the solar day, with
 sunlight averaged over the coming interval and the latest moist physics' clouds.
 The atmosphere and tiles share the same stored fluxes and precipitation, so
 energy and water budgets close by construction, up to the time-stepping residual.

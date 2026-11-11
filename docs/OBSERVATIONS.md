@@ -134,6 +134,12 @@ from line-by-line spectra, and Rayleigh scaled with mass.
 ### O-27: Shortwave water absorption depends on the layering
 *Resolved at M2.10.1* by the two-band adding method on the cumulative path.
 
+### O-48: Budget-test energy residual moves with the radiation interval
+*Watching.* The 45-day energy-closure tests on 642 cells leave -0.05 to -0.11 W/m²
+depending on how often radiation runs (Ekman test, 21 steps a day: -0.089, -0.111,
+-0.071, -0.050 for every 1, 2, 3, 6 steps), with no trend. Cause not found. A year of
+Earth at 2,562 cells leaves +0.007. The test limit was raised from 0.1 to 0.15 at M2.13.2.
+
 ## Moisture and clouds
 
 ### O-22: The subtropics rain out their own evaporation

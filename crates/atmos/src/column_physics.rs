@@ -303,8 +303,39 @@ pub struct PhysicsParams {
     pub lapse_rate: f64,
     /// The single column's convective relaxation time (s).
     pub convection_time: f64,
-    /// Time between radiation calls (s).
+    /// Time between radiation calls (s), which sunlight is averaged over.
+    /// Radiation runs every whole number of steps nearest to this, so it
+    /// should be a multiple of the step: see
+    /// [`with_step`](PhysicsParams::with_step).
     pub radiation_interval: f64,
+}
+
+/// The longest time between radiation calls (s): clouds and temperatures
+/// change over a few hours whatever the length of the day.
+pub const MAX_RADIATION_INTERVAL: f64 = 3.0 * 3600.0;
+/// The fewest radiation calls in a solar day, so a short day still has a
+/// day and a night.
+pub const MIN_RADIATION_CALLS_PER_DAY: f64 = 8.0;
+
+/// The whole number of steps of `dt` seconds between radiation calls on a
+/// planet whose solar day is `solar_day` seconds: the most within
+/// [`MAX_RADIATION_INTERVAL`] and a
+/// [`MIN_RADIATION_CALLS_PER_DAY`]th of the day, and at least one.
+pub fn radiation_steps(dt: f64, solar_day: f64) -> u32 {
+    let longest = MAX_RADIATION_INTERVAL.min(solar_day / MIN_RADIATION_CALLS_PER_DAY);
+    // The margin keeps a step that divides the limit from rounding below it.
+    ((longest / dt * (1.0 + 1e-12)).floor() as u32).max(1)
+}
+
+impl PhysicsParams {
+    /// These parameters with the radiation interval set for steps of `dt`
+    /// seconds on a planet whose solar day is `solar_day` seconds: a whole
+    /// number of steps ([`radiation_steps`]), so sunlight is averaged over
+    /// exactly the time until the next call.
+    pub fn with_step(mut self, dt: f64, solar_day: f64) -> Self {
+        self.radiation_interval = f64::from(radiation_steps(dt, solar_day)) * dt;
+        self
+    }
 }
 
 /// Asynchronous spin-up of the ocean: `jumps` years, the first ending
@@ -864,7 +895,8 @@ pub struct ColumnPhysics<'a> {
     planet: &'a Planet,
     /// Model time (s since t = 0).
     time: f64,
-    next_radiation: f64,
+    /// Steps since the last radiation call.
+    since_radiation: u32,
     /// Land fraction of each cell.
     land_fraction: Vec<f64>,
     /// Sub-grid spread of each cell's surface height (m).
@@ -991,7 +1023,7 @@ impl<'a> ColumnPhysics<'a> {
             ops: *model.operators(),
             planet,
             time,
-            next_radiation: time,
+            since_radiation: 0,
             land_fraction,
             relief: vec![0.0; n],
             relief_slope: vec![DVec3::ZERO; n],
@@ -1521,7 +1553,7 @@ impl<'a> ColumnPhysics<'a> {
         self.radiation = all;
         self.clear = clear;
         self.tile_radiation = tiles;
-        self.next_radiation = self.time + self.params.radiation_interval;
+        self.since_radiation = 0;
     }
 }
 
@@ -1768,7 +1800,11 @@ impl Forcing for ColumnPhysics<'_> {
             self.next_year += self.planet.year_seconds();
             self.end_spin_up_year();
         }
-        let radiating = self.time >= self.next_radiation - 1e-6;
+        // Counted in steps: model time summed over a long run drifts by
+        // more than any fixed tolerance.
+        self.since_radiation += 1;
+        let every = (self.params.radiation_interval / dt).round().max(1.0) as u32;
+        let radiating = self.since_radiation >= every;
         if radiating && !self.prescribed {
             // Before the fluxes, so they and the next sunlight see the same
             // ice.

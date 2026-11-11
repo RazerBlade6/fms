@@ -85,6 +85,8 @@ and land ramps, with sea level as a hard boundary. Non-finite values are magenta
 | `--surface-pressure BAR` | 1.013 | Surface pressure, 0.1–10 bar |
 | `--obliquity DEG` | 23.44 | Axial tilt |
 | `--eccentricity E` | 0.0167 | Orbital eccentricity |
+| `--solar-day H` | 24 | Solar day, noon to noon, in hours, 4–240 |
+| `--year-days D` | 365.2422 | Length of the year in solar days, 20–5,000 |
 
 Values outside the ranges are clamped with a warning (PLAN §4.1).
 
@@ -301,6 +303,12 @@ first line of `summary.txt` records the schedule.
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion |
+
+In the layered runs (`climate`, `held-suarez`, `baroclinic`) a day is the planet's
+solar day. The step divides it, with at least 24 steps a day, and radiation runs every
+whole number of steps within 3 h and an eighth of the day. Rates in mm/day are per
+86,400 s on every planet. The first line of the description printed at the start
+(and kept in `summary.txt`) gives the steps per solar day and the radiation interval.
 
 Outputs in `output/climate/`:
 - `summary.txt`: final-year global means (surface temperature, absorbed

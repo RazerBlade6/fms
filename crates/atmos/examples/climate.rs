@@ -135,7 +135,14 @@ fn main() {
     } else {
         vec![surface_temperature; nc]
     };
-    let mut physics = ColumnPhysics::new(&model, &planet, params, 0.0, &state, start_surface);
+    let mut physics = ColumnPhysics::new(
+        &model,
+        &planet,
+        params.with_step(dt, planet.solar_day()),
+        0.0,
+        &state,
+        start_surface,
+    );
     if let Some(sst) = fixed_sst {
         physics = physics.with_prescribed_surface();
         println!("fixed SST: APE {sst:?}, perpetual equinox");

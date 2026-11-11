@@ -130,6 +130,12 @@ struct WorldArgs {
     /// Orbital eccentricity. Default: Earth's 0.0167.
     #[arg(long)]
     eccentricity: Option<f64>,
+    /// Solar day: noon to noon (hours, 4–240). Default: Earth's 24.
+    #[arg(long)]
+    solar_day: Option<f64>,
+    /// Year (solar days, 20–5,000). Default: Earth's 365.2422.
+    #[arg(long)]
+    year_days: Option<f64>,
 }
 
 #[derive(Args)]
@@ -290,6 +296,12 @@ fn build_world(args: &WorldArgs) -> Result<World, String> {
     }
     if let Some(eccentricity) = args.eccentricity {
         config.planet.eccentricity = eccentricity;
+    }
+    if let Some(hours) = args.solar_day {
+        config.planet.solar_day = hours * 3600.0;
+    }
+    if let Some(days) = args.year_days {
+        config.planet.year_days = days;
     }
     let mut world = World::new(config);
     eprintln!(

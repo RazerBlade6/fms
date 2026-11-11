@@ -534,6 +534,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &CLIMATE_LEVELS,
         geopotential,
     )?;
+    // Radiation every whole number of steps, within 3 h and an eighth of the day.
+    let params = params.with_step(setup.dt, setup.day);
     let model = setup
         .model
         .with_humidity_profile(params.radiation)
@@ -620,9 +622,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &model,
         &state,
         setup.dt,
-        (years * world.planet.year_seconds() / 86_400.0).round(),
+        (years * world.planet.year_seconds() / setup.day).round(),
         &format!(
-            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm; {}",
+            "; {} steps to the {:.4} h solar day, radiation every {} ({:.2} h); radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm; {}",
+            setup.steps_per_day,
+            setup.day / 3600.0,
+            fms_atmos::radiation_steps(setup.dt, setup.day),
+            params.radiation_interval / 3600.0,
             params.ocean.mixed_depth,
             params.ocean.deep_depth,
             currents(&params.ocean),

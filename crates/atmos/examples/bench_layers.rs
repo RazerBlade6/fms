@@ -89,7 +89,7 @@ fn main() {
             let physics = ColumnPhysics::new(
                 &model,
                 &planet,
-                params,
+                params.with_step(dt, planet.solar_day()),
                 0.0,
                 &state,
                 vec![ts; mesh.n_cells()],

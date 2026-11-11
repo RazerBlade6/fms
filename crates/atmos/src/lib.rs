@@ -35,7 +35,8 @@ pub mod williamson;
 pub use baroclinic::ShearedFlow;
 pub use climatology::{ZonalClimatology, ZonalMeans};
 pub use column_physics::{
-    ColumnPhysics, Equilibrium, OrographyParams, PhysicsParams, SingleColumn,
+    ColumnPhysics, Equilibrium, MAX_RADIATION_INTERVAL, MIN_RADIATION_CALLS_PER_DAY,
+    OrographyParams, PhysicsParams, SingleColumn, radiation_steps,
 };
 pub use diffusion::{Hyperdiffusion, HyperdiffusionOptions};
 pub use fms_ocean::{EARTH_ROTATION, EddyParams, EkmanParams, GyreParams, JumpLayers, OceanParams};

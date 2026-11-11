@@ -22,9 +22,17 @@ use crate::render::{format_value, write_gif, write_png};
 use crate::run_log::{Record, RunLog};
 use crate::{Frame, ImageArgs, capture, coord_label, ensure_dir, paint};
 
-pub const DAY: f64 = 86_400.0;
-/// Diagnostics samples per day.
+/// Diagnostics samples per solar day.
 pub const SAMPLES_PER_DAY: u64 = 4;
+/// The fewest steps in a solar day, however long a step the winds allow
+/// (PLAN §4.6): a short day keeps its day and night.
+pub const MIN_STEPS_PER_DAY: u64 = 24;
+
+/// The most steps of `dt_max` seconds or less that divide a solar day of
+/// `day` seconds: at least [`MIN_STEPS_PER_DAY`]. Returns the steps per day.
+pub fn steps_per_day(day: f64, dt_max: f64) -> u64 {
+    ((day / dt_max).ceil() as u64).max(MIN_STEPS_PER_DAY)
+}
 
 /// Layers, time step and dissipation options.
 #[derive(Args)]
@@ -50,11 +58,14 @@ pub struct DynamicsArgs {
     pub inviscid: bool,
 }
 
-/// A flat layered model on the world's climate grid, with its step.
+/// A flat layered model on the world's climate grid, with its step: a whole
+/// number of them to the planet's solar day.
 pub struct Setup<'w> {
     pub model: LayeredModel<'w>,
     pub dt: f64,
     pub steps_per_day: u64,
+    /// The planet's solar day (s), which every "day" of a run means.
+    pub day: f64,
 }
 
 /// The model and step for `args`, with `max_wind` as the design wind and
@@ -92,8 +103,9 @@ pub fn build_model<'w>(
         return Err("--max-wind must be positive".into());
     }
     let dt = LayeredSemiImplicit::stable_dt(&model, max_wind, 0.6);
-    let steps_per_day = (DAY / dt).ceil() as u64;
-    let dt = DAY / steps_per_day as f64;
+    let day = world.planet.solar_day();
+    let steps_per_day = steps_per_day(day, dt);
+    let dt = day / steps_per_day as f64;
     if !args.diffusion_order.is_multiple_of(2) || args.diffusion_order < 2 {
         return Err("--diffusion-order must be even and at least 2".into());
     }
@@ -123,6 +135,7 @@ pub fn build_model<'w>(
         model,
         dt,
         steps_per_day,
+        day,
     })
 }
 
@@ -296,7 +309,7 @@ pub struct Plan {
 }
 
 /// Run `si` to `plan.total`, checking every step. Samples the diagnostics
-/// [`SAMPLES_PER_DAY`] times a day (calling `on_sample` each time), records
+/// [`SAMPLES_PER_DAY`] times a solar day (calling `on_sample` each time), records
 /// the GIF frames, and at the end writes the GIF, `diagnostics.csv` and maps
 /// of the final state to `out.dir`. On a blow-up, writes the dump to
 /// `out.dir/blowup` and returns an error.
@@ -311,7 +324,8 @@ pub fn integrate(
 ) -> Result<RunLog, String> {
     ensure_dir(&out.dir)?;
     let dt = si.dt();
-    let per_day = (DAY / dt).round() as u64;
+    let day_seconds = world.planet.solar_day();
+    let per_day = (day_seconds / dt).round() as u64;
     let sample_every = (per_day / SAMPLES_PER_DAY).max(1);
     let key = fields.surface_pressure.key();
     let overlay = (!out.image.no_arrows).then_some(fields.wind_lower.key());
@@ -325,7 +339,7 @@ pub fn integrate(
         while *next < frame_count && si.steps() >= frame_step(*next) {
             fields.publish(world, si.state(), si.model());
             let mut frame = capture(world, key, overlay);
-            frame.stamp = format!("DAY {:.1}", si.steps() as f64 * dt / DAY);
+            frame.stamp = format!("DAY {:.1}", si.steps() as f64 * dt / day_seconds);
             frames.push(frame);
             *next += 1;
         }
@@ -337,7 +351,7 @@ pub fn integrate(
         .map_err(|b| format!("initial state is unhealthy: {b}"))?;
     log.push(Record {
         step: si.steps(),
-        day: si.steps() as f64 * dt / DAY,
+        day: si.steps() as f64 * dt / day_seconds,
         diagnostics: si.model().diagnostics(si.state()),
         budget: si.energy_budget(),
         health,
@@ -348,7 +362,7 @@ pub fn integrate(
     while si.steps() < plan.total {
         last_good.clone_from(si.state());
         si.step();
-        let day = si.steps() as f64 * dt / DAY;
+        let day = si.steps() as f64 * dt / day_seconds;
         let health = match si.check() {
             Ok(h) => h,
             Err(blow_up) => {
@@ -400,7 +414,7 @@ pub fn integrate(
         world,
         fields,
         &out.dir,
-        &format!("DAY {:.1}", si.steps() as f64 * dt / DAY),
+        &format!("DAY {:.1}", si.steps() as f64 * dt / day_seconds),
         out.image,
     )?;
     Ok(log)
@@ -494,7 +508,8 @@ fn write_dump(
     };
     let (lat, lon) = to_lat_lon(point);
     let dt = si.dt();
-    let day = si.steps() as f64 * dt / DAY;
+    let day_seconds = world.planet.solar_day();
+    let day = si.steps() as f64 * dt / day_seconds;
     let limits = si.limits();
     let mut report = String::new();
     let _ = writeln!(
@@ -553,7 +568,7 @@ fn write_dump(
         world,
         fields,
         dir,
-        &format!("LAST HEALTHY DAY {:.2}", day - dt / DAY),
+        &format!("LAST HEALTHY DAY {:.2}", day - dt / day_seconds),
         out.image,
     )
 }
@@ -565,4 +580,29 @@ pub fn stepper<'w>(
     dt: f64,
 ) -> LayeredSemiImplicit<'w> {
     LayeredSemiImplicit::new(model, state, dt, LayeredSemiImplicitOptions::default(), 0.5)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_step_divides_the_solar_day_with_at_least_24_steps() {
+        const HOUR: f64 = 3600.0;
+        // (solar day, longest stable step) → steps per day.
+        for (day, dt_max, steps) in [
+            (24.0 * HOUR, 2100.0, 42),
+            (24.0 * HOUR, 1800.0, 48),
+            // A short day: the floor, not the winds, sets the step.
+            (4.0 * HOUR, 2100.0, 24),
+            (240.0 * HOUR, 2100.0, 412),
+            (24.6 * HOUR, 1000.0, 89),
+        ] {
+            let n = steps_per_day(day, dt_max);
+            assert_eq!(n, steps, "{day} s day, {dt_max} s limit");
+            let dt = day / n as f64;
+            assert!(dt <= dt_max * (1.0 + 1e-12));
+            assert!(n >= MIN_STEPS_PER_DAY);
+        }
+    }
 }
