@@ -25,7 +25,7 @@ use crate::{Frame, ImageArgs, capture, coord_label, ensure_dir, paint};
 /// Diagnostics samples per solar day.
 pub const SAMPLES_PER_DAY: u64 = 4;
 /// The fewest steps in a solar day, however long a step the winds allow
-/// (PLAN §4.6): a short day keeps its day and night.
+/// (`docs/climate/PLAN.md` §4.6): a short day keeps its day and night.
 pub const MIN_STEPS_PER_DAY: u64 = 24;
 
 /// The most steps of `dt_max` seconds or less that divide a solar day of

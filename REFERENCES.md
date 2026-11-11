@@ -23,7 +23,7 @@ Papers, books and datasets cited in the code and docs, with their uses attached.
   Phys._ 310, 127–160.
   [doi:10.1016/j.jcp.2015.12.058](https://doi.org/10.1016/j.jcp.2015.12.058)
   — why the operators' errors don't converge at the pentagons
-  ([OBSERVATIONS.md](docs/OBSERVATIONS.md) O-1).
+  ([OBSERVATIONS.md](docs/climate/OBSERVATIONS.md) O-1).
 - **Skilling, J. (2004).** Programming the Hilbert curve. _AIP Conf. Proc._
   707, 381–387. (No DOI confirmed.) — the Hilbert-curve cell ordering.
 - **Zalesak, S. T. (1979).** Fully multidimensional flux-corrected transport

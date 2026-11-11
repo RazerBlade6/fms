@@ -7,7 +7,7 @@
 //! parallelizes those that don't conflict, so the result is always identical to
 //! running them one after another in the order they were added.
 //!
-//! See `docs/DESIGN.md` and `docs/PLAN.md` §4.6 for the design.
+//! See `docs/climate/DESIGN.md` and `docs/climate/PLAN.md` §4.6 for the design.
 
 mod clock;
 mod scheduler;

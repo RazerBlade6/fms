@@ -9,7 +9,7 @@ pub const SOLAR_CONSTANT_1AU: f64 = 1361.0;
 ///
 /// Values outside the supported ranges are clamped (with a warning) by
 /// [`Planet::new`](crate::Planet::new). The ranges keep the climate model
-/// numerically stable; see `docs/PLAN.md` §2.
+/// numerically stable; see `docs/climate/PLAN.md` §2.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlanetParams {
     /// Mean radius (m).
@@ -88,7 +88,7 @@ macro_rules! limit {
 }
 
 /// Supported ranges. Wide enough for most fantasy worlds; extremes such as
-/// tidal locking or 90° tilt are out of scope for now (`docs/ROADMAP.md`, Later).
+/// tidal locking or 90° tilt are out of scope for now (`docs/climate/ROADMAP.md`, Later).
 pub(crate) const LIMITS: &[Limit] = &[
     limit!(radius, 1.0e6, 2.0e7),
     limit!(gravity, 1.0, 30.0),

@@ -9,7 +9,7 @@
 //! equinox). The Sun's position uses *mean* solar time; the equation of time (a
 //! few minutes on Earth) is ignored.
 //!
-//! See `docs/PLAN.md` §4.1 for the design.
+//! See `docs/climate/PLAN.md` §4.1 for the design.
 
 mod orbit;
 mod params;

@@ -4,7 +4,7 @@
 //! (joined through shared edges) is the planet's largest, the world ocean,
 //! or covers at least [`MIN_SEA_FRACTION`] of the sphere. Smaller bodies are
 //! dry land below sea level, like the Qattara Depression or Death Valley
-//! (`docs/OBSERVATIONS.md` O-11); hydrology may fill them later.
+//! (`docs/climate/OBSERVATIONS.md` O-11); hydrology may fill them later.
 //!
 //! The size rule, rather than connection to the ocean alone, is because real
 //! straits (the Bosporus, Gibraltar) are narrower than a terrain cell: the

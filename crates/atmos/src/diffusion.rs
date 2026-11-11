@@ -1,6 +1,6 @@
 //! Scale-selective hyperdiffusion `∇²ⁿ` for the layered model: the
 //! dissipation that stops the enstrophy cascade piling up at the grid scale
-//! (docs/OBSERVATIONS.md O-14).
+//! (docs/climate/OBSERVATIONS.md O-14).
 //!
 //! # Operators
 //!

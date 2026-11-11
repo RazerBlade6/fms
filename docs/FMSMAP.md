@@ -1,11 +1,11 @@
 # The `.fmsmap` file
 
 Every module in the `fms` family reads and writes `.fmsmap` files; they are the
-only way modules talk to each other (see [PLAN.md](PLAN.md) §1.1). A file holds
+only way modules talk to each other (see [PLAN.md](PLAN.md) §1). A file holds
 what other modules can use: a planet and its layers.
 
 **Status:** design. Version 0, with only the layers `fms-climate` needs, is built
-in M3 step 0 ([ROADMAP.md](ROADMAP.md)). The full layer
+in M3 step 0 ([ROADMAP.md](climate/ROADMAP.md)). The full layer
 list is decided when `fms-editor` starts. The binary layout is decided in M3
 step 0.
 

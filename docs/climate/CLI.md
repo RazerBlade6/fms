@@ -347,7 +347,7 @@ Outputs in `output/climate/`:
 To compare an Earth run with observations (temperature, rain, radiation, cloud, wind and sea
 ice, globally, by latitude and over a few regions), run
 `python3 scripts/compare_earth.py output/<run>`; see
-[reference/earth/SOURCES.md](../reference/earth/SOURCES.md).
+[reference/earth/SOURCES.md](../../reference/earth/SOURCES.md).
 
 A year takes about two minutes at 2.5k cells (`--climate-frequency 16`);
 cost grows with cells times steps, so the default 20k cells is far slower

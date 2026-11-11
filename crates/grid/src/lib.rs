@@ -4,7 +4,7 @@
 //! (12 pentagons, the rest hexagons) built by subdividing an icosahedron and
 //! optimizing it with Lloyd's algorithm. All geometry is on the unit sphere.
 //!
-//! See `docs/DESIGN.md` for the design.
+//! See `docs/climate/DESIGN.md` for the design.
 
 pub mod coords;
 pub mod geometry;

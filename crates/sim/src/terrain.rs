@@ -26,7 +26,7 @@ const PIXELS_PER_CELL_SPACING: f64 = 4.0;
 /// Smoothing passes for the terrain the atmosphere sees. On Earth at 10k
 /// cells, ten bring the persistent σ-coordinate wind error from 5.7 to
 /// 0.87 m/s, near the 0.58 of forty, for 9% of the highest cell's height
-/// ([`smooth_height`]; `docs/OBSERVATIONS.md` O-30).
+/// ([`smooth_height`]; `docs/climate/OBSERVATIONS.md` O-30).
 pub const SURFACE_SMOOTHING_PASSES: usize = 10;
 
 /// Handles to the terrain fields.

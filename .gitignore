@@ -5,9 +5,10 @@
 /data
 # Papers read for the design: cited in REFERENCES.md, not stored in git.
 /docs/*.pdf
+/docs/climate/*.pdf
 /docs/sources/
 # Archive of removed write-ups; not used in development.
-/docs/HISTORY.md
+/docs/climate/HISTORY.md
 # Python virtualenv for scripts/build_reference.py.
 /.venv
 docs/DEVELOPMENT.md

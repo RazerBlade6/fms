@@ -13,7 +13,7 @@ rivers and lakes, and vegetation over time.
 
 - **Customizable planet**: radius, gravity, rotation, tilt, year length,
   eccentricity, luminosity, surface pressure, CO₂ and ocean fraction (§4.1).
-- **Imported worlds**: `.fmsmap` files ([FMSMAP.md](FMSMAP.md)), global
+- **Imported worlds**: `.fmsmap` files ([FMSMAP.md](../FMSMAP.md)), global
   heightmaps, and about a dozen presets.
 - **Emergent climates**: climate zones come out of the simulation. Frozen or
   uninhabitable worlds are valid results.
@@ -27,33 +27,16 @@ rivers and lakes, and vegetation over time.
 
 ### 1.1 The `fms` family
 
-Separate modules exchanging `.fmsmap` files. Each uses only the layers it
-simulates and passes the rest through. Coupling goes through files
-(geo → climate → geo). `fms-civ` reads the world and never changes it.
-
-| Module | Role | Interface |
-|---|---|---|
-| `fms-editor` | Make custom maps at any level of detail | GUI, edits |
-| `fms-climate` | This project: climate and hydrosphere | Viewer only |
-| `fms-geo` | Plate tectonics and erosion | Viewer only |
-| `fms-civ` | Civilisation simulation and editing | GUI, edits |
-
-Typical paths: editor → geo → climate → civ, or editor (with biomes) → civ,
-which then uses a biome → typical-climate table and warns about it.
-
-All modules stay in this Cargo workspace until the format is stable.
-`fms-editor`'s design is in [editor/PLAN.md](editor/PLAN.md), `fms-geo`'s is in
-[geo/PLAN.md](geo/PLAN.md), and `fms-civ`'s is in [civ/PLAN.md](civ/PLAN.md).
+`fms-climate` is one module of the `fms` family, described in
+[../PLAN.md](../PLAN.md) §1; modules exchange `.fmsmap` files only.
 
 ## 2. Key decisions
 
+The family-wide decisions (language, grid, determinism, portable math, `.fmsmap`
+and layer states) are in [../PLAN.md](../PLAN.md) §2.
+
 | Area | Decision |
 |---|---|
-| Language | Rust |
-| Platform | Desktop, cross-platform (macOS first) |
-| UI and rendering | `eframe`/`egui` panels + custom `wgpu` renderer, shared by view-only modules |
-| Geometry | Simulate on a sphere; flat maps are projections |
-| Sphere grid | Icosahedral geodesic grid (Voronoi hexagons + 12 pentagons) |
 | Climate fidelity | Simplified GCM with real fluid dynamics; weather emerges |
 | Atmosphere | Primitive equations on any number of σ layers; four by default, the bottom one a thin boundary layer |
 | Ocean | Two-layer dynamical slab with Ekman/Sverdrup, eddy and diffusive heat transport, wind-driven gyres, and thermodynamic sea ice |
@@ -66,11 +49,7 @@ All modules stay in this Cargo workspace until the format is stable.
 | Hydrology | Emergent: runoff routed into rivers, depressions become lakes |
 | Classification | Köppen–Geiger as a derived field; vegetation is simulated |
 | Planet range | Earth-like range + eccentricity; extremes clamped with warnings |
-| Determinism | Seeded RNG, fixed timestep, deterministic reductions, versioned saves |
-| Portable math | Transcendentals come from `libm` via `fms-math`, enforced by `clippy.toml` |
 | Validation | Earth benchmark + idealized planets, as regression tests |
-| Interchange | `.fmsmap` files with planet settings and named layers |
-| Layer states | Locked, initial (default) or absent, per layer |
 | First milestone | Headless GCM before any UI |
 
 ## 3. Architecture
@@ -110,7 +89,7 @@ crates/
 
 A crate for `.fmsmap` joins these in M3 step 0. The flow-routing algorithms
 `hydro` needs go in a small crate shared with `fms-geo`
-([geo/PLAN.md](geo/PLAN.md) §4.3). Packages have an `fms-` prefix.
+([geo/PLAN.md](../geo/PLAN.md) §4.3). Packages have an `fms-` prefix.
 The binaries are `fms-climate` and `fms-viewer`. The sim crates never depend on
 the viewer.
 
@@ -216,7 +195,7 @@ Terrain is not edited here.
 
 Each imported layer the climate could also simulate is locked, initial (default:
 started from, then free to evolve) or absent (generated). See
-[FMSMAP.md](FMSMAP.md).
+[FMSMAP.md](../FMSMAP.md).
 
 ### 4.10 Viewer
 

@@ -2,7 +2,7 @@
 //! aquaplanet (radiation, moisture, slab) or dry Held–Suarez, run for a few
 //! days and repeated, reporting each run and the median. Run one at a time on
 //! an idle machine and log the conditions with the numbers in
-//! `docs/BENCHMARKS.md`.
+//! `docs/climate/BENCHMARKS.md`.
 //!
 //! ```sh
 //! cargo run --release -p fms-atmos --example bench_layers -- \

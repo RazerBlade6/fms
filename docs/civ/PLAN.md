@@ -2,7 +2,7 @@
 
 The canonical design of `fms-civ`: what it is for and the decisions that shape
 it. Settled on 2026-11-12; nothing is built yet. The family it belongs to is in
-[../PLAN.md](../PLAN.md) §1.1, and the file format it reads and writes is in
+[../PLAN.md](../PLAN.md) §1, and the file format it reads and writes is in
 [../FMSMAP.md](../FMSMAP.md).
 
 `fms-civ` is where you put civilisations into a world and let them loose: draw

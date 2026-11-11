@@ -103,7 +103,7 @@ a visual check.
   migration, subtropical highs, monsoons, deserts.
 
 ## M3 — Hydrology, climate and vegetation
-- [ ] 0. `.fmsmap` v0 ([FMSMAP.md](FMSMAP.md)), a heightmap importer, and
+- [ ] 0. `.fmsmap` v0 ([FMSMAP.md](../FMSMAP.md)), a heightmap importer, and
   `fms-climate` runs from a file
 - [ ] 1. Downscaling onto the fine grid with a lapse-rate correction
 - [ ] 2. Rolling monthly temperature and precipitation statistics

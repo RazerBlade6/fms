@@ -9,7 +9,7 @@
 //! blow-up detection ([`safety`]) and external [`forcing`]: [`held_suarez`],
 //! or the radiation, moisture and surface of [`column_physics`].
 //!
-//! See `docs/DESIGN.md` for the design.
+//! See `docs/climate/DESIGN.md` for the design.
 
 pub mod baroclinic;
 pub mod climatology;

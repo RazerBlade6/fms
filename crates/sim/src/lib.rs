@@ -6,7 +6,7 @@
 //! insolation systems. Later milestones add the GCM, ocean,
 //! hydrology and climate systems here.
 //!
-//! See `docs/PLAN.md` §3 for the design.
+//! See `docs/climate/PLAN.md` §3 for the design.
 
 mod insolation;
 pub mod probe;

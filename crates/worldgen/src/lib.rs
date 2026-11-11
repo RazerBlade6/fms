@@ -6,7 +6,7 @@
 //! sea from the sea mask ([`SeaMask`]); and an idealized
 //! [`Continent`] for developing the land surface.
 //!
-//! See `docs/DESIGN.md` for the design.
+//! See `docs/climate/DESIGN.md` for the design.
 
 pub mod heightmap;
 pub mod idealized;

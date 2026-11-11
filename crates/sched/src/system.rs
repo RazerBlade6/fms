@@ -20,7 +20,7 @@ pub enum Rate {
     OnDemand,
 }
 
-/// Which speed tier(s) a system runs in (see `docs/PLAN.md` §4.6).
+/// Which speed tier(s) a system runs in (see `docs/climate/PLAN.md` §4.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tier {
     /// Speeds 1–2: the full GCM.

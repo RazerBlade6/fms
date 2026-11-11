@@ -33,13 +33,14 @@ cargo run -p fms-viewer                            # viewer (placeholder)
 
 ## Documentation
 
-- [Plan](docs/PLAN.md): the `fms` family, goals and key decisions
-- [Roadmap](docs/ROADMAP.md): milestones and progress
-- [Design](docs/DESIGN.md): how each subsystem works
-- [Equations](docs/EQUATIONS.tex): the model's equations in LaTeX, for review
+- [Plan](docs/PLAN.md): the `fms` family and its family-wide decisions
+- [Climate plan](docs/climate/PLAN.md): goals and key decisions of `fms-climate`
+- [Roadmap](docs/climate/ROADMAP.md): milestones and progress
+- [Design](docs/climate/DESIGN.md): how each subsystem works
+- [Equations](docs/climate/EQUATIONS.tex): the model's equations in LaTeX, for review
 - [`.fmsmap`](docs/FMSMAP.md): the file every module exchanges
-- [CLI](docs/CLI.md): the headless `fms-climate` runner and its image output
-- [Benchmarks](docs/BENCHMARKS.md): how to run them, and baseline numbers
+- [CLI](docs/climate/CLI.md): the headless `fms-climate` runner and its image output
+- [Benchmarks](docs/climate/BENCHMARKS.md): how to run them, and baseline numbers
 - [Development](docs/DEVELOPMENT.md): setup, git workflow, determinism rules, conventions
-- [Observations](docs/OBSERVATIONS.md): known limitations and ideas parked for later
+- [Observations](docs/climate/OBSERVATIONS.md): known limitations and ideas parked for later
 - [References](REFERENCES.md): the papers and data the design cites, with DOIs

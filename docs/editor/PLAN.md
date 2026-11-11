@@ -2,7 +2,7 @@
 
 The canonical design of `fms-editor`: what it is for and the decisions that
 shape it. Settled on 2026-11-11; nothing is built yet. The family it belongs to
-is in [../PLAN.md](../PLAN.md) §1.1, and the file format it writes is in
+is in [../PLAN.md](../PLAN.md) §1, and the file format it writes is in
 [../FMSMAP.md](../FMSMAP.md).
 
 `fms-editor` is the GUI for making and changing maps. Its first job is to

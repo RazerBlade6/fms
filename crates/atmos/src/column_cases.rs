@@ -8,7 +8,7 @@
 //! - [`dycoms`]: nocturnal marine stratocumulus off California, DYCOMS-II
 //!   RF01 (Stevens et al. 2005).
 //!
-//! Both are set up from those papers. See `docs/OBSERVATIONS.md` O-35.
+//! Both are set up from those papers. See `docs/climate/OBSERVATIONS.md` O-35.
 //!
 //! These cases resolve boundary-layer structure the model's few layers can't:
 //! a case's bottom layer holds a whole cloud-topped boundary layer, so only

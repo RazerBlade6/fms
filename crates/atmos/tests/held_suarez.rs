@@ -4,7 +4,7 @@
 //!
 //! The climate tests share one run (k = 16, 200 days of spin-up, then 250
 //! days of statistics). The full benchmark (1200 days at k = 32) is
-//! `fms-climate held-suarez`; see docs/CLI.md.
+//! `fms-climate held-suarez`; see docs/climate/CLI.md.
 
 use fms_atmos::column_physics::CLIMATE_LEVELS;
 use std::sync::OnceLock;

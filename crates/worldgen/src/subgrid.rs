@@ -36,7 +36,7 @@ pub fn slope(surface: &[f64], mesh: &SphereMesh, geometry: &MeshGeometry, radius
 /// A few grid-scale diffusion passes over a climate-grid `height` (any
 /// units), conserving its area mean: the terrain the σ-coordinate dynamics
 /// can carry. Steep cell-to-cell steps leave a persistent error in the
-/// pressure gradient (see `docs/OBSERVATIONS.md` O-30). Each pass diffuses
+/// pressure gradient (see `docs/climate/OBSERVATIONS.md` O-30). Each pass diffuses
 /// by a fixed fraction of the smallest cell's area, so the filter's width is
 /// a fixed number of cells at any resolution, and it is monotone: heights
 /// stay within their original range, and a flat surface stays exactly flat.

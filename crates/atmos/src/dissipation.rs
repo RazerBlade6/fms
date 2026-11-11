@@ -1,7 +1,7 @@
 //! Dissipative heating: kinetic energy that friction, mixing or diffusion
 //! removes from the winds, returned as heat, so total energy is conserved
 //! ([`crate::LayeredModel::energy_tendency`]) instead of leaking out of the
-//! planet ([OBSERVATIONS.md](../../../docs/OBSERVATIONS.md) O-21).
+//! planet ([OBSERVATIONS.md](../../../docs/climate/OBSERVATIONS.md) O-21).
 //!
 //! A wind tendency `δuₑ` of layer `k` changes the kinetic energy at rate
 //! `Aₑ δσₖ (p_a + p_b) uₑ δuₑ / g` (the exact derivative of the model's
