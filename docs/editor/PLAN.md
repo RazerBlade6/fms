@@ -32,7 +32,7 @@ Painted climate layers (temperature, rainfall) are a stretch goal.
 | Edit surface | Globe and flat projections, both views of the same sphere data |
 | Raster edits | Destructive, with a stroke-history undo |
 | Resolution | Grid frequency chosen per map; can be resampled up later |
-| Sea | Wherever elevation is below zero; a tool shifts global sea level |
+| Sea | Elevation at or below zero, in the world ocean or a body of at least 0.005% of the sphere; smaller hollows are land, as in `fms-climate`. A tool shifts global sea level |
 | Rivers and lakes | Never alter stored elevation; carved at export (§3.2) |
 | Biomes | One fixed list shared by the family, defined in `FMSMAP.md` |
 | Starting a map | Blank ocean, heightmap, `.fmsmap`, or (after v1) a generated world |
