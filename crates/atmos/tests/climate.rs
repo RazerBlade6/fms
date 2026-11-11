@@ -9,8 +9,9 @@ use fms_atmos::column_physics::{
 };
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
-    ColumnPhysics, EkmanParams, Forcing, Gas, HyperdiffusionOptions, LayeredModel,
-    LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, OceanParams, PhysicsParams,
+    ColumnPhysics, EARTH_ROTATION, EddyParams, EkmanParams, Forcing, Gas, HyperdiffusionOptions,
+    LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, OceanParams,
+    PhysicsParams,
 };
 use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
@@ -437,6 +438,36 @@ fn energy_and_water_close_with_ekman_transport() {
     );
     assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
     assert!(run.most_upwelling > 0.0, "the water never moved");
+}
+
+#[test]
+fn energy_and_water_close_with_eddy_transport() {
+    // Eddies and the wind move the default ocean together.
+    let params = PhysicsParams {
+        ocean: OceanParams {
+            ekman: Some(EkmanParams::default()),
+            eddies: Some(EddyParams::default()),
+            ..OceanParams::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let run = budget_run(&Planet::earth(), params, 45.0, continent_fraction);
+    eprintln!(
+        "energy residual {:+.5} W/m², water residual {:+.1e}, upwelling up to {:.1e} kg/m²/s",
+        run.energy, run.water, run.most_upwelling
+    );
+    assert!(
+        run.energy.abs() < 0.1,
+        "energy residual {} W/m²",
+        run.energy
+    );
+    assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
+}
+
+#[test]
+fn the_oceans_earth_turns_as_the_planets_does() {
+    // So that the eddy coefficients are exactly their Earth values on Earth.
+    assert_eq!(Planet::earth().rotation_rate(), EARTH_ROTATION);
 }
 
 /// The budgets of a run on [`CLIMATE_LEVELS`] at 642 cells.

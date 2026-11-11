@@ -1846,6 +1846,22 @@ impl Forcing for ColumnPhysics<'_> {
                     .collect(),
             ),
             field(
+                "ocean.eddy_heating",
+                "Heating of the ocean's two layers by eddy transport, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.eddy_heating(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.eddy_mixed_heating",
+                "Heating of the mixed layer by eddy transport, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.eddy_mixed_heating(i))
+                    .collect(),
+            ),
+            field(
                 "ocean.upwelling",
                 "Deep water welling up into the mixed layer (negative where it sinks), per unit area of ocean",
                 "kg m-2 s-1",

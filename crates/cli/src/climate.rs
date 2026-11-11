@@ -18,7 +18,7 @@ use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
-use fms_ocean::{EkmanParams, IceParams, OceanParams};
+use fms_ocean::{EddyParams, EkmanParams, IceParams, OceanParams};
 use glam::DVec3;
 
 use crate::chart::{self, Series, TimeAxis};
@@ -65,6 +65,10 @@ pub struct ClimateArgs {
     /// without it.
     #[arg(long)]
     no_ocean_sverdrup: bool,
+    /// Gent–McWilliams eddy transport: a flow in the mixed layer down the
+    /// slope of the isotherms, returned by the deep layer.
+    #[arg(long)]
+    ocean_eddies: bool,
     /// Give sea ice and its snow the albedo of open water, which turns off
     /// the ice-albedo feedback.
     #[arg(long)]
@@ -155,6 +159,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             sverdrup: !args.no_ocean_sverdrup,
             ..EkmanParams::default()
         }),
+        eddies: args.ocean_eddies.then(EddyParams::default),
         ice: OceanParams::default().ice.map(|ice| {
             if args.no_ice_albedo {
                 IceParams {
@@ -432,7 +437,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean{} and a {} m soil store, CO₂ {} ppm",
+            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean{}{} and a {} m soil store, CO₂ {} ppm",
             params.ocean.mixed_depth,
             params.ocean.deep_depth,
             match params.ocean.ekman {
@@ -441,6 +446,11 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 }
                 Some(_) => " with Ekman transport",
                 None => "",
+            },
+            if params.ocean.eddies.is_some() {
+                " with eddy transport"
+            } else {
+                ""
             },
             params.land.soil_depth,
             params.co2
