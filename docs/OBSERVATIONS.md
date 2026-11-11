@@ -205,8 +205,9 @@ of 0.01 K (annual), ~1 K (seasonal) and 1.6 K over Greenland:
 
 Terrain isn't the answer (M2.11.8): the region averages 1,860 m at 2.5k cells and 2,030 m
 at 10k, both ~237 K, and 1–3 smoothing passes cool it only 1–1.5 K. The ~224 K is the
-South Pole (2,835 m), while this mean includes the warmer ice shelves; a reference
-climatology (M2.15) is needed to measure the real gap.
+South Pole (2,835 m), while this mean includes the warmer ice shelves. Against NCEP
+(O-42) the region is +3.0 K, and about 0 K moved to NCEP's height (2,340 m; its mask
+and smooth terrain differ), so most of the "13 K" was the point comparison.
 
 ### O-34: More rain on the lee of a ridge than the windward side
 *Scheduled: M2.15.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
@@ -219,9 +220,9 @@ contrast has the right sign in the Pacific Northwest and Himalaya, none in Patag
 ice extent or SSTs, and excess ice isn't a reason to retune. On aquaplanets the
 comparison with Bhatnagar et al.'s no-transport and diffusion-only cases holds in sign
 and rough size, with no hemispheric lock-in. On Earth (2.5k cells, year 20) the seasons
-are in phase and summer minima are close (3.9 north, 4.4 south million km²), but winter
-peaks of ~20 million km² in each hemisphere are ~5 too large. Revisit with full
-transport on.
+are in phase. Against NSIDC's area (O-42) the northern minimum is close (3.9 against 4.3
+million km²), but the southern is 4.4 against 2.4, and winter peaks of ~20 million km² are
+7 too large in the north and 6 in the south. Revisit with full transport on.
 
 ### O-37: The ocean jump barely speeds up the ice
 *Resolved at M2.11.8:* default kept. Against year 20 of true time at 2.5k
@@ -246,3 +247,20 @@ Earth and has little margin: the coldest northern lowland starts at 268.1 K. Two
 cells are seeded too, and are melting away. At 265 K a Greenland edge cell and two on
 Ellesmere Island are lost; at 269 K the Antarctic Peninsula and Svalbard are gained, but
 so is interior Alaska (M2.11.8).
+
+### O-42: Earth against observations
+*Watching; M2.12, M2.15.* First comparison with 1991–2020 observations
+(`scripts/compare_earth.py`; year 20 of true time at 2.5k cells; NCEP skin temperature,
+GPCP rain, NSIDC ice area):
+- Global −1.4 K and rain +25% (3.37 against 2.69 mm/day). RMS over latitude and month
+  3.2 K and 1.1 mm/day.
+- North of 55°N −5 to −7 K, with seasons 9–17 K too wide. Greenland −6 K at 950 m
+  (NCEP 1,780 m). 40–60°S +1 to +3 K.
+- The subtropics are too wet: 3.1–3.7 mm/day at 20–31° against 1.8–2.3, the Sahara 3.9
+  against 0.2 and Tibet 5.0 against 1.3. The Amazon is too dry (4.4 against 6.3).
+- Antarctica: see O-33. Sea ice: see O-36.
+- The M2.11.8 runs change the RMS by at most 0.3 K. Less smoothing leaves Tibet 5–6 K
+  further below the reference at its height, so the defaults stand.
+
+Heat transport (M2.12) should warm the north and shrink the ice. The wet subtropics and
+deserts belong to M2.15. No radiation reference yet (CERES needs a login).

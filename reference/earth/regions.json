@@ -1,0 +1,16 @@
+{
+  "_note": "Boxes for regional means, shared by scripts/build_reference.py and scripts/compare_earth.py. Latitudes and longitudes in degrees (longitude -180 to 180); surface is land (land fraction > 0.5), ocean (≤ 0.5) or all.",
+  "Global": {"lat": [-90, 90], "lon": [-180, 180], "surface": "all"},
+  "Land": {"lat": [-90, 90], "lon": [-180, 180], "surface": "land"},
+  "Ocean": {"lat": [-90, 90], "lon": [-180, 180], "surface": "ocean"},
+  "Tropical ocean": {"lat": [-20, 20], "lon": [-180, 180], "surface": "ocean"},
+  "Southern Ocean": {"lat": [-65, -50], "lon": [-180, 180], "surface": "ocean"},
+  "Arctic Ocean": {"lat": [75, 90], "lon": [-180, 180], "surface": "ocean"},
+  "Antarctica >75S": {"lat": [-90, -75], "lon": [-180, 180], "surface": "land"},
+  "Antarctica >60S": {"lat": [-90, -60], "lon": [-180, 180], "surface": "land"},
+  "Greenland": {"lat": [62, 90], "lon": [-60, -20], "surface": "land"},
+  "Tibet": {"lat": [27, 40], "lon": [75, 100], "surface": "land"},
+  "Siberia": {"lat": [55, 70], "lon": [90, 140], "surface": "land"},
+  "Sahara": {"lat": [15, 30], "lon": [-15, 35], "surface": "land"},
+  "Amazon": {"lat": [-15, 5], "lon": [-75, -50], "surface": "land"}
+}

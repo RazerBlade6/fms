@@ -194,3 +194,24 @@ confirmed, the entry says so.
   11, 1633–1644.
   [doi:10.5194/hess-11-1633-2007](https://doi.org/10.5194/hess-11-1633-2007)
   — the Köppen–Geiger criteria and the Earth map to score against (M3).
+
+## Earth reference climatology
+
+Kept in `reference/earth` (see its SOURCES.md) and compared against by
+`scripts/compare_earth.py`.
+
+- **Kalnay, E., Kanamitsu, M., Kistler, R., et al. (1996).** The NCEP/NCAR
+  40-year reanalysis project. *Bull. Amer. Meteor. Soc.* 77, 437–471.
+  [doi:10.1175/1520-0477(1996)077<0437:TNYRP>2.0.CO;2](https://doi.org/10.1175/1520-0477(1996)077%3C0437:TNYRP%3E2.0.CO;2)
+  — monthly skin and 2 m temperature, 1991–2020 long-term means from NOAA PSL.
+- **Adler, R. F., Sapiano, M. R. P., Huffman, G. J., et al. (2018).** The
+  Global Precipitation Climatology Project (GPCP) monthly analysis (new
+  version 2.3) and a review of 2017 global precipitation. *Atmosphere* 9, 138.
+  [doi:10.3390/atmos9040138](https://doi.org/10.3390/atmos9040138)
+  — monthly precipitation, 1991–2020 long-term means from NOAA PSL.
+- **Fetterer, F., Knowles, K., Meier, W. & Savoie, M. (2002, updated
+  daily).** Sea Ice Index, Version 4 (G02135). National Snow and Ice Data
+  Center. [doi:10.7265/N5QJ7F7W](https://doi.org/10.7265/N5QJ7F7W) (the DOI
+  the v4 user guide gives for the series; no version-4 DOI confirmed)
+  — monthly sea-ice area and extent per hemisphere, and the Arctic pole-hole
+  sizes (user guide, Table 8).

@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.11.9.**
+**Next: M2.12.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -50,7 +50,7 @@ a visual check.
     - [x] 10.2.6. Sub-grid orographic rain and drag
     - [x] 10.2.7. Single-column BOMEX and DYCOMS cases
     - [x] 10.2.8. Earth run and close-out
-- [ ] 11. Two-layer slab ocean and sea ice
+- [x] 11. Two-layer slab ocean and sea ice
   - [x] 11.1. Two-layer ocean in `fms-ocean`, no ice
   - [x] 11.1.5. Early performance pass (2.6× at 2.5k cells)
   - [x] 11.1.6. Test tiers and a shorter ocean spin-up
@@ -61,9 +61,7 @@ a visual check.
   - [x] 11.6. Ice-sheet surface on land
   - [x] 11.7. Antarctic experiments; freeze-dry low cloud adopted (O-33)
   - [x] 11.8. Earth run and close-out; terrain, jump and seeding defaults kept
-  - [ ] 11.9. **Earth reference values**: global, zonal-mean, sea-ice and
-    regional values from cited sources, kept in the repo, and a script that
-    compares a run against them; re-score the M2.11.8 runs.
+  - [x] 11.9. Earth reference values (`reference/earth`) and a comparison script
 - [ ] 12. **Ocean heat transport by currents** (PLAN §4.3):
   - Ekman transport blending into Sverdrup near the equator, with the deep
     layer's return flow and the upwelling it implies

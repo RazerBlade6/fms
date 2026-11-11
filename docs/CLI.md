@@ -215,6 +215,9 @@ with two layers the lower gets friction at 0.3/day and the upper none.
 |---|---|---|
 | `--days D` | 1200 | Simulated days, including spin-up |
 | `--spinup D` | 200 | Days left out of the statistics |
+| `--ice-sheet-start-temperature K` | 267 | Land whose start temperature is below this begins as an ice sheet (O-39) |
+| `--terrain-smoothing N` | 10 | Smoothing passes over the terrain the atmosphere sees; 0 for plain cell means (unstable on Earth, O-33) |
+| `--freeze-dry-humidity Q` | 0.003 | Specific humidity (kg/kg) below which low cloud thins; 0 for none |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
 | `--movie-days D` | 30 | The GIF covers the last `D` days |
 | `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
@@ -275,6 +278,9 @@ of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check i
 | `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
 | `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
 | `--no-ice-sheet` | off | Land that stays snow-covered keeps seasonal snow's albedo and roughness |
+| `--ice-sheet-start-temperature K` | 267 | Land whose start temperature is below this begins as an ice sheet (O-39) |
+| `--terrain-smoothing N` | 10 | Smoothing passes over the terrain the atmosphere sees; 0 for plain cell means (unstable on Earth, O-33) |
+| `--freeze-dry-humidity Q` | 0.003 | Specific humidity (kg/kg) below which low cloud thins; 0 for none |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
@@ -297,12 +303,18 @@ Outputs in `output/climate/`:
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,
   `rad.shortwave_cloud_effect`, `rad.longwave_cloud_effect`, `land.ice_sheet`;
 - `annual_cells.csv`: final-year means of the mapped fields for every cell, with
-  its latitude, longitude and land fraction, to compare runs over part of the map;
+  its latitude, longitude, land fraction and the height the atmosphere sees, to
+  compare runs over part of the map;
 - `monthly_zonal.csv`: monthly zonal means over the whole run, with each
   band's share of the planet; ice cover and volume are per unit of the band's
   whole area;
 - `diagnostics.csv`, the surface-pressure GIF, maps of the final state, and
   the blow-up dump, as for `fms-climate baroclinic`.
+
+To compare an Earth run with 1991–2020 observations (temperature, rain and sea
+ice, globally, by latitude and over a few regions), run
+`python3 scripts/compare_earth.py output/<run>`; see
+[reference/earth/SOURCES.md](../reference/earth/SOURCES.md).
 
 A year takes about two minutes at 2.5k cells (`--climate-frequency 16`);
 cost grows with cells times steps, so the default 20k cells is far slower

@@ -8,3 +8,5 @@
 /docs/sources/
 # Archive of removed write-ups; not used in development.
 /docs/HISTORY.md
+# Python virtualenv for scripts/build_reference.py.
+/.venv
