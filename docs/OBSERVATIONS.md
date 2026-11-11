@@ -75,22 +75,22 @@ unknown fields.
 ## Performance
 
 ### O-8: Scheduler overhead is ~119 µs per step
-*Scheduled: M2.16.* 20 trivial systems in 2 stages, ~4% at speed 2. Options: cache
+*Scheduled: M2.15.* 20 trivial systems in 2 stages, ~4% at speed 2. Options: cache
 stage plans, or run tiny stages serially.
 
 ### O-12: Shallow-water steps are overhead-bound
-*Scheduled: M2.16.* About 70 µs per operator call, mostly thread scheduling. Options:
+*Scheduled: M2.15.* About 70 µs per operator call, mostly thread scheduling. Options:
 fuse operators into fewer passes, run stages over mesh partitions, precompute edge
 factors. M2.11.1.5 didn't reach operator fusion.
 
 ### O-13: Semi-implicit steps are long but expensive
-*Scheduled: M2.16.* 4.7–7.3× the explicit step, but only 1.35–1.9× faster in wall
+*Scheduled: M2.15.* 4.7–7.3× the explicit step, but only 1.35–1.9× faster in wall
 time, because CG iterations grow with Δt (~36 at 7×). Options: multigrid or Chebyshev
 preconditioning, looser tolerance (1e-6 halves iterations), fused iterations. Size the
 step from a design maximum wind: flows accelerate, and Williamson 5 blew up otherwise.
 
 ### O-29: The layered core is ~12% slower than the two-layer one
-*Scheduled: M2.16.* Likely per-cell small vectors and scratch copies. Plan: profile,
+*Scheduled: M2.15.* Likely per-cell small vectors and scratch copies. Plan: profile,
 then stack arrays of `MAX_LAYERS` and reuse buffers.
 
 ## Dynamics
@@ -113,7 +113,7 @@ hasn't been checked for a need. Revisit with more levels.
 ### O-26: Strong easterlies aloft at the equator
 *Watching.* About 26 m/s on the two-layer aquaplanet (Earth ~5), likely from no
 convective momentum transport. Doesn't visibly affect rain or temperature. Revisit if
-equatorial winds matter (M2.15).
+equatorial winds matter (M2.16).
 
 ## Radiation and energy
 
@@ -137,14 +137,14 @@ from line-by-line spectra, and Rayleigh scaled with mass.
 ## Moisture and clouds
 
 ### O-22: The subtropics rain out their own evaporation
-*Improved at M2.10.1; rest at M2.15.* At fixed APE CONTROL SSTs, 25° rains 2.5–2.9
+*Improved at M2.10.1; rest at M2.16.* At fixed APE CONTROL SSTs, 25° rains 2.5–2.9
 mm/day (Earth ~2). The circulation sets it, not the boundary layer: evaporation minus
 rain stays 1.2–1.4 mm/day in every experiment, the Hadley cell ends near 25°, and eddies
 carry water poleward across 15° at ¾ of the cell's return flow. Independent of
 resolution. Start with Hadley width and the tropical eddy moisture flux.
 
 ### O-24: The water cycle is too strong
-*Scheduled: M2.15.* The aquaplanet evaporates ~4.7 mm/day (Earth ~2.7–3). Downward
+*Scheduled: M2.16.* The aquaplanet evaporates ~4.7 mm/day (Earth ~2.7–3). Downward
 longwave at the surface rises ~8 W/m²/K (models ~6), mostly the window continuum.
 Options: a radiation sublayer in the boundary layer, or recalibrating the continuum.
 
@@ -152,14 +152,14 @@ Options: a radiation sublayer in the boundary layer, or recalibrating the contin
 *Accepted.* Bounds, albedos and emissivities are tuned to Earth-like cover (~0.62) and
 cloud effects (−70, +19 W/m²); the longwave effect is below Earth's +28. Cover is very
 sensitive to the formula, so cloud feedback isn't a prediction. Revisit if the response
-to CO₂ matters or M2.15 shows the pattern off; low stratocumulus would come first.
+to CO₂ matters or M2.16 shows the pattern off; low stratocumulus would come first.
 
 ### O-35: The column cases find two gaps at the inversion
 *Accepted; kept as ignored tests (`cargo gaps`).* BOMEX rains 11.8 mm/day (observed
 none) because Betts–Miller has no inhibition; this may be part of O-22. DYCOMS entrains
 41 mm/s against 3.8–5.9 from large-eddy runs, and has cover 0.31 instead of overcast,
 because extrapolating the layer above leaves 0.36 K of the real 8.5 K jump. BOMEX
-cover with deep convection off is 0.80 (large-eddy 0.13). Candidates at M2.15: an
+cover with deep convection off is 0.80 (large-eddy 0.13). Candidates at M2.16: an
 inhibition trigger, and an inversion diagnosed from the column.
 
 ## Climate and terrain
@@ -171,8 +171,8 @@ below-sea-level region connected to the open sea, leaving closed basins to hydro
 Narrow straits make connectivity unreliable.
 
 ### O-23: An ice-free aquaplanet runs warmer than Earth
-*Scheduled: M2.15.* The ice-free four-layer slab settles at 290.7 K. Ice and
-ocean transport cool it further; M2.15 sets the final temperature. With currents
+*Scheduled: M2.16.* The ice-free four-layer slab settles at 290.7 K. Ice and
+ocean transport cool it further; M2.16 sets the final temperature. With currents
 the tilted aquaplanet is heading for about 294 K.
 
 ### O-30: Terrain is smoothed, and spreads over coastal ocean
@@ -183,17 +183,17 @@ them at sea level is worse (1.18 m/s, and loses conservation). Fewer passes (M2.
 2.5k): 3 give 1.39 m/s against 0.70, 1 gives 3.23 m/s, and none blows up over Tibet.
 
 ### O-31: Land has one soil layer
-*Watching.* No deep-ground store carries summer heat into winter. Revisit at M2.15 if
+*Watching.* No deep-ground store carries summer heat into winter. Revisit at M2.16 if
 continental interiors are too extreme or too early. The 10.2.8 close-out wrote annual
 means only, so that comparison hasn't been made.
 
 ### O-32: Too little rain over the Amazon
-*Scheduled: M2.15.* About 3.4 mm/day at 10k cells (Earth 6 or more), and Borneo 4.4 (8 or
+*Scheduled: M2.16.* About 3.4 mm/day at 10k cells (Earth 6 or more), and Borneo 4.4 (8 or
 more). Going from 2.5k to 10k cells doesn't fix it. Dry-soil surface air is also still
 buoyant as if saturated, in `exchange`.
 
 ### O-33: The snow pack is simple
-*Watching; M2.15, M4.* No heat capacity or insulation, frost lands as liquid in the
+*Watching; M2.16, M4.* No heat capacity or insulation, frost lands as liquid in the
 bucket, rain passes through, and nothing limits the pack on ice sheets (1627 kg/m² mean
 after six years, 3013 at most). Antarctic land south of 75° is 236.9 K, still ~13 K above
 the ~224 K noted from memory. M2.11.7 tested one cause at a time, against twin-run noise
@@ -211,7 +211,7 @@ South Pole (2,835 m), while this mean includes the warmer ice shelves. Against E
 the "13 K" was the point comparison.
 
 ### O-34: More rain on the lee of a ridge than the windward side
-*Scheduled: M2.15.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
+*Scheduled: M2.16.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
 mm/day): low-level westerlies are only 1–3 m/s, so rain follows storms and stationary
 waves. The scheme responds correctly to the wind it's given. At 10k cells on Earth the
 contrast has the right sign in the Pacific Northwest and Himalaya, none in Patagonia.
@@ -241,7 +241,7 @@ thinner ice. A long-lived perennial world would need a snow limit or a thinner s
 used to pile up, but the cap hasn't opened.
 
 ### O-39: Ice sheets are seeded from the start temperature
-*Watching; M2.11.7, M2.11.8, M2.15, M4.* A year of full snow cover alone made almost no
+*Watching; M2.11.7, M2.11.8, M2.16, M4.* A year of full snow cover alone made almost no
 sheets, because Antarctica's pack melts out under seasonal albedo. So land starting below
 267 K starts as a sheet. Earth at 2.5k cells: Antarctica −11.4 K, Greenland −7.3 K, the
 planet −1.12 K, and snow-free land −0.64 K (noise ~0.1 K). The threshold was chosen on
@@ -251,7 +251,7 @@ Ellesmere Island are lost; at 269 K the Antarctic Peninsula and Svalbard are gai
 so is interior Alaska (M2.11.8).
 
 ### O-42: Earth against observations
-*Watching; M2.12, M2.15.* First comparison with observations (`scripts/compare_earth.py`;
+*Watching; M2.12, M2.16.* First comparison with observations (`scripts/compare_earth.py`;
 year 20 of true time at 2.5k cells; ERA5 temperature and wind, GPCP rain, NSIDC ice,
 CERES radiation and cloud):
 - Global −1.7 K and rain +25% (3.37 against 2.69 mm/day). RMS over latitude and month:
@@ -273,11 +273,11 @@ CERES radiation and cloud):
   and doubles the terrain wind error, so the defaults stand.
 
 Heat transport (M2.12) should warm the north and shrink the ice. Clouds, the subtropics'
-rain and the winds belong to M2.15's tuning pass; the bright clouds are likely the main
+rain and the winds belong to M2.16's tuning pass; the bright clouds are likely the main
 reason the planet is cold.
 
 ### O-43: The ocean carries about a quarter of the paper's heat
-*Scheduled: M2.15.* On the tilted aquaplanet (642 cells, 20–40 years) the ocean's
+*Scheduled: M2.16.* On the tilted aquaplanet (642 cells, 20–40 years) the ocean's
 transport peaks at 0.7–0.8 PW against Bhatnagar et al.'s 2.25–3.25. Eddies (0.5–0.65
 PW against ~0.7) and diffusion (under 0.2) are close; Ekman transport is ~0.4 PW. The
 wind stress is 4–5× weaker than Earth's (trades −0.011 to −0.014 N/m², westerlies

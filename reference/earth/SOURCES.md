@@ -60,7 +60,7 @@ needs numpy, netCDF4 and eccodes.
 - **The model's wind** in the comparison is its bottom layer's, about 1 km
   deep, which should be stronger than ERA5's 10 m wind.
 - **Not yet included:** surface energy fluxes, ERA5 cloud cover, winds and
-  temperatures aloft (ERA5 pressure levels, M2.15), and sea-level pressure in
+  temperatures aloft (ERA5 pressure levels, M2.16), and sea-level pressure in
   the model's output.
 - **CO₂.** The reference period's mean is about 380 ppm; the model's default is
   420 ppm, which is worth a few tenths of a kelvin.

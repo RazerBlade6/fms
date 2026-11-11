@@ -79,16 +79,18 @@ a visual check.
 - [ ] 13. **Multi-rate scheduling**: `dt` from the CFL limit and a design
   maximum wind (O-13), rounded to divide the solar day; radiation every ~3 h and
   ocean every 1–6 h (PLAN §4.6).
+- [ ] 13.5. **Restart files**: save a spun-up state and start runs from it
+  (a plain state dump; the versioned format is M4.2).
 - [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
   with assertions on zonal-mean wind and temperature; grid-imprinting check in
   long-run Held–Suarez, with a fix if visible (O-1).
-- [ ] 15. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
+- [ ] 15. **Performance pass**: target speed 2 (~340 steps/s) at the default
+  resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,
+  O-29).
+- [ ] 16. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
   winds and temperatures aloft, with a tuning pass: cloud brightness and
   albedo (O-42), trade winds and jets, the tropical rain belt and its
   migration, subtropical highs, monsoons, deserts.
-- [ ] 16. **Performance pass**: target speed 2 (~340 steps/s) at the default
-  resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,
-  O-29).
 
 ## M3 — Hydrology, climate and vegetation
 - [ ] 0. `.fmsmap` v0 ([FMSMAP.md](FMSMAP.md)), a heightmap importer, and
@@ -130,7 +132,7 @@ View only; the viewer code is shared with `fms-geo`.
 ## Later
 - [ ] Port the hot loops to wgpu compute shaders
 - [ ] Tidal locking, moons, extreme obliquity
-- [ ] Ice sheets and ice ages, for runs towards 100,000 years (after M2.15
+- [ ] Ice sheets and ice ages, for runs towards 100,000 years (after M2.16
   and M4):
   - [ ] Equilibrium ice worlds: surface mass balance replacing the snow pack
     on ice sheets, shallow-ice flow, bedrock sinking, and the atmosphere's
