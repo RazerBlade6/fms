@@ -241,7 +241,8 @@ the freezing point (271.35 K) at the base.
 
 `fms-climate climate` starts at rest from a radiative–convective equilibrium in
 hydrostatic balance with the terrain. The ocean starts shaped by the year's
-sunlight. By default years 2–4 end in a **jump**: each repeats that year's ocean
-change for three more, moving no temperature over 3 K, and at least two
-true-time years follow. Pinned tests turn jumps off. `--ocean-jumps 0` is the
-true-time check (O-37).
+sunlight. By default the ocean is **jumped** ahead. With currents the deep layer alone
+jumps, at the ends of years 4 and 7: each repeats that year's change for twenty
+more, moving no temperature over 3 K, and two true-time years follow (O-44).
+Without currents both layers jump at the ends of years 2–4, by three years each
+(O-37). Pinned tests turn jumps off. `--ocean-jumps 0` is the true-time check.

@@ -10,7 +10,7 @@ use fms_atmos::column_physics::{
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
     ColumnPhysics, EARTH_ROTATION, EddyParams, EkmanParams, Forcing, Gas, HyperdiffusionOptions,
-    LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, OceanParams,
+    JumpLayers, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, OceanParams,
     PhysicsParams,
 };
 use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
@@ -318,6 +318,49 @@ fn an_ocean_jump_moves_the_sea_and_stays_out_of_the_energy_budget() {
 }
 
 #[test]
+fn a_deep_ocean_jump_on_its_schedule_stays_out_of_the_energy_budget() {
+    let (planet, _) = Planet::new(PlanetParams {
+        year_days: 20.0,
+        ..PlanetParams::earth()
+    });
+    let params = |jumps| PhysicsParams {
+        spin_up: OceanSpinUp {
+            jumps,
+            layers: JumpLayers::Deep,
+            first_year: 3,
+            every: 2,
+            ..OceanSpinUp::default()
+        },
+        ..PhysicsParams::default()
+    };
+    // A 20-day year: measured over days 40–60, so the jump comes at the end
+    // of day 60, not at day 40 as by default.
+    let with = budget_run(&planet, params(1), 65.0, |_| 0.0);
+    let without = budget_run(&planet, params(0), 65.0, |_| 0.0);
+    eprintln!(
+        "residual {:+.5} W/m², without the jump {:+.5}; deep layer's largest step change {:.3} K at day {:.2}",
+        with.energy, without.energy, with.largest_deep_change, with.largest_deep_day
+    );
+    // Measured 0.88 K, against hundredths of a kelvin in a step.
+    assert!(
+        with.largest_deep_change > 0.05,
+        "largest deep step change {} K",
+        with.largest_deep_change
+    );
+    assert!(
+        (60.0..60.1).contains(&with.largest_deep_day),
+        "at day {}",
+        with.largest_deep_day
+    );
+    assert!(
+        (with.energy - without.energy).abs() < 0.03,
+        "{} against {}",
+        with.energy,
+        without.energy
+    );
+}
+
+#[test]
 fn energy_and_water_close_through_freezing_and_melting() {
     // A dim planet with fast seasons and a shallow sea, so that it freezes
     // and thaws within the run.
@@ -479,6 +522,9 @@ struct BudgetRun {
     /// The sea's largest change in one step (K), and its day.
     largest_change: f64,
     largest_day: f64,
+    /// The deep layer's largest change in one step (K), and its day.
+    largest_deep_change: f64,
+    largest_deep_day: f64,
     /// The least and most of the planet under ice (after the first day).
     least_ice: f64,
     most_ice: f64,
@@ -497,6 +543,8 @@ fn budget_run(
     let mut first = None;
     let mut last = None;
     let (mut previous, mut largest, mut when): (Option<Vec<f64>>, f64, f64) = (None, 0.0, 0.0);
+    let (mut previous_deep, mut largest_deep, mut when_deep): (Option<Vec<f64>>, f64, f64) =
+        (None, 0.0, 0.0);
     let (mut least_ice, mut most_ice) = (f64::INFINITY, 0.0f64);
     let mut most_sheet = 0.0f64;
     let mut most_upwelling = 0.0f64;
@@ -535,6 +583,18 @@ fn budget_run(
                 }
             }
             previous = Some(sea.clone());
+            let deep = field("ocean.deep_temperature");
+            if let Some(before) = &previous_deep {
+                let change = deep
+                    .iter()
+                    .zip(before)
+                    .map(|(a, b): (&f64, &f64)| (a - b).abs())
+                    .fold(0.0, f64::max);
+                if change > largest_deep {
+                    (largest_deep, when_deep) = (change, row.3 / DAY);
+                }
+            }
+            previous_deep = Some(deep.clone());
             let sheet = field("land.ice_sheet")
                 .iter()
                 .zip(&geometry.cell_areas)
@@ -575,6 +635,8 @@ fn budget_run(
         water: water / w1,
         largest_change: largest,
         largest_day: when,
+        largest_deep_change: largest_deep,
+        largest_deep_day: when_deep,
         least_ice,
         most_ice,
         most_sheet,

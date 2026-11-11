@@ -72,7 +72,7 @@
 use fms_grid::Operators;
 use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use fms_grid::zonal::east_north;
-use fms_ocean::{IceForcing, Ocean, OceanParams, OceanSnapshot};
+use fms_ocean::{IceForcing, JumpLayers, Ocean, OceanParams, OceanSnapshot};
 use fms_planet::Planet;
 use glam::DVec3;
 use rayon::prelude::*;
@@ -307,10 +307,12 @@ pub struct PhysicsParams {
     pub radiation_interval: f64,
 }
 
-/// Asynchronous spin-up of the ocean: at the end of each of the years after
-/// the first, up to `jumps` of them, the ocean's change over that whole year
-/// is repeated for `extra_years` more. Runs that report a climate need
-/// unaccelerated years after the last jump.
+/// Asynchronous spin-up of the ocean: `jumps` years, the first ending
+/// `first_year` years into the run and each next one `every` years after the
+/// last, end in a jump, which repeats the change of the `layers` over that
+/// whole year for `extra_years` more. The years between jumps run in true
+/// time. Runs that report a climate need unaccelerated years after the last
+/// jump.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OceanSpinUp {
     /// How many years end in a jump; 0 for none.
@@ -319,6 +321,13 @@ pub struct OceanSpinUp {
     pub extra_years: f64,
     /// Most any layer of any cell may change in one jump (K).
     pub limit: f64,
+    /// Which layers jump.
+    pub layers: JumpLayers,
+    /// The first year that ends in a jump, counting the run's first year
+    /// as 1; at least 1.
+    pub first_year: u32,
+    /// Years from one jump to the next; at least 1.
+    pub every: u32,
 }
 
 impl Default for OceanSpinUp {
@@ -327,7 +336,56 @@ impl Default for OceanSpinUp {
             jumps: 0,
             extra_years: 3.0,
             limit: 3.0,
+            layers: JumpLayers::Both,
+            first_year: 2,
+            every: 1,
         }
+    }
+}
+
+impl OceanSpinUp {
+    /// The spin-up for an ocean with currents: the deep layer, the slow
+    /// store, jumps 20 years at the ends of years 4 and 7, and the mixed
+    /// layer follows it. Year 4 is after the first years' transient and the
+    /// first ice has melted; two true-time years between the jumps let the
+    /// currents settle after the first, which a jump would otherwise
+    /// amplify.
+    pub fn with_currents() -> Self {
+        Self {
+            jumps: 2,
+            extra_years: 20.0,
+            limit: 3.0,
+            layers: JumpLayers::Deep,
+            first_year: 4,
+            every: 3,
+        }
+    }
+
+    /// The spin-up for an ocean without currents: both layers jump 3 years
+    /// at the ends of years 2, 3 and 4, mostly to hurry the mixed layer and
+    /// the ice.
+    pub fn still() -> Self {
+        Self {
+            jumps: 3,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the run's `year`th year (from 1) ends in a jump.
+    pub fn ends_in_jump(&self, year: u32) -> bool {
+        let Some(since) = year.checked_sub(self.first_year) else {
+            return false;
+        };
+        self.every > 0 && since % self.every == 0 && since / self.every < self.jumps
+    }
+
+    /// The year that ends in the last jump, or `None` without jumps.
+    pub fn last_jump_year(&self) -> Option<u32> {
+        (self.jumps > 0).then(|| {
+            (self.jumps - 1)
+                .saturating_mul(self.every)
+                .saturating_add(self.first_year)
+        })
     }
 }
 
@@ -819,6 +877,8 @@ pub struct ColumnPhysics<'a> {
     next_year: f64,
     /// The ocean at the start of the year being measured for a jump.
     year_start: Option<OceanSnapshot>,
+    /// Model years that have ended, while jumps remain.
+    years_ended: u32,
     jumps_done: u32,
     /// Heat the jumps have added to the ocean (J); not part of the budget.
     jumped: f64,
@@ -866,7 +926,8 @@ impl<'a> ColumnPhysics<'a> {
     /// (s) from `state` with surface temperatures `surface_temperature` (K).
     ///
     /// # Panics
-    /// If `state` is dry.
+    /// If `state` is dry, or the spin-up has jumps with a first year or a
+    /// spacing of 0.
     pub fn new(
         model: &LayeredModel<'a>,
         planet: &'a Planet,
@@ -891,7 +952,8 @@ impl<'a> ColumnPhysics<'a> {
     /// each cell; both tiles, and the soil, start at `surface_temperature`.
     ///
     /// # Panics
-    /// If `state` is dry, or a land fraction is outside 0–1.
+    /// If `state` is dry, a land fraction is outside 0–1, or the spin-up has
+    /// jumps with a first year or a spacing of 0.
     pub fn with_land(
         model: &LayeredModel<'a>,
         planet: &'a Planet,
@@ -908,6 +970,11 @@ impl<'a> ColumnPhysics<'a> {
         assert!(
             land_fraction.iter().all(|f| (0.0..=1.0).contains(f)),
             "land fractions must be within 0–1"
+        );
+        let spin_up = params.spin_up;
+        assert!(
+            spin_up.jumps == 0 || (spin_up.first_year >= 1 && spin_up.every >= 1),
+            "ocean jumps need a first year and a spacing of at least 1"
         );
         let ocean = Ocean::new(
             params.ocean,
@@ -937,6 +1004,7 @@ impl<'a> ColumnPhysics<'a> {
             ocean,
             next_year: time + planet.year_seconds(),
             year_start: None,
+            years_ended: 0,
             jumps_done: 0,
             jumped: 0.0,
             radiation: vec![Fluxes::default(); n],
@@ -969,6 +1037,10 @@ impl<'a> ColumnPhysics<'a> {
         }
         // Water that starts below freezing is ice from the start.
         physics.ocean.rearrange_ice();
+        // The first year is measured from here when it ends in a jump.
+        if params.spin_up.ends_in_jump(1) {
+            physics.year_start = Some(physics.ocean.snapshot());
+        }
         // Clouds for the first radiation call; radiation (clear sky) for the
         // first convection's stratosphere temperature.
         physics.radiate(state);
@@ -1021,17 +1093,20 @@ impl<'a> ColumnPhysics<'a> {
             .sum()
     }
 
-    /// A model year has ended: jump if a year has been measured, and start
-    /// measuring the next if any jumps remain.
+    /// A model year has ended: jump if it was measured, and start measuring
+    /// the next if that ends in a jump.
     fn end_spin_up_year(&mut self) {
         let spin_up = self.params.spin_up;
+        self.years_ended += 1;
         if let Some(start) = self.year_start.take() {
+            debug_assert!(spin_up.ends_in_jump(self.years_ended));
             let before = self.ocean_heat();
-            self.ocean.jump(&start, spin_up.extra_years, spin_up.limit);
+            self.ocean
+                .jump(&start, spin_up.extra_years, spin_up.limit, spin_up.layers);
             self.jumped += self.ocean_heat() - before;
             self.jumps_done += 1;
         }
-        if self.jumps_done < spin_up.jumps {
+        if spin_up.ends_in_jump(self.years_ended + 1) {
             self.year_start = Some(self.ocean.snapshot());
         }
     }
@@ -2653,6 +2728,58 @@ mod tests {
     use super::*;
 
     const GAS: Gas = Gas::EARTH_AIR;
+
+    /// The years among the first 30 that end in a jump.
+    fn jump_years(jumps: u32, first_year: u32, every: u32) -> Vec<u32> {
+        let spin_up = OceanSpinUp {
+            jumps,
+            first_year,
+            every,
+            ..OceanSpinUp::default()
+        };
+        (1..=30).filter(|&y| spin_up.ends_in_jump(y)).collect()
+    }
+
+    #[test]
+    fn the_spin_up_presets_jump_at_their_years() {
+        let jumps = |spin_up: OceanSpinUp| -> Vec<u32> {
+            (1..=30).filter(|&y| spin_up.ends_in_jump(y)).collect()
+        };
+        let currents = OceanSpinUp::with_currents();
+        assert_eq!(jumps(currents), [4, 7]);
+        assert_eq!(currents.layers, JumpLayers::Deep);
+        assert_eq!((currents.extra_years, currents.limit), (20.0, 3.0));
+        let still = OceanSpinUp::still();
+        assert_eq!(jumps(still), [2, 3, 4]);
+        assert_eq!(still.layers, JumpLayers::Both);
+        assert_eq!((still.extra_years, still.limit), (3.0, 3.0));
+        assert_eq!(OceanSpinUp::default().jumps, 0, "no jumps by default");
+    }
+
+    #[test]
+    fn ocean_jumps_end_the_scheduled_years() {
+        let default = OceanSpinUp::default();
+        assert_eq!((default.first_year, default.every), (2, 1));
+        assert_eq!(default.layers, JumpLayers::Both);
+        assert_eq!(jump_years(3, 2, 1), [2, 3, 4], "the default schedule");
+        assert_eq!(jump_years(0, 2, 1), [] as [u32; 0], "no jumps");
+        assert_eq!(jump_years(3, 4, 1), [4, 5, 6]);
+        assert_eq!(jump_years(3, 3, 2), [3, 5, 7]);
+        assert_eq!(jump_years(2, 1, 3), [1, 4]);
+        assert_eq!(jump_years(1, 5, 4), [5]);
+        let last = |jumps, first_year, every| {
+            OceanSpinUp {
+                jumps,
+                first_year,
+                every,
+                ..default
+            }
+            .last_jump_year()
+        };
+        assert_eq!(last(3, 2, 1), Some(4));
+        assert_eq!(last(3, 3, 2), Some(7));
+        assert_eq!(last(0, 2, 1), None);
+    }
 
     fn mixed_surface() -> TiledSurface {
         TiledSurface {

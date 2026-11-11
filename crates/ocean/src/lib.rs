@@ -272,6 +272,17 @@ pub struct OceanSnapshot {
     deep: Vec<f64>,
 }
 
+/// Which layers an [`Ocean::jump`] moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JumpLayers {
+    /// The mixed layer and the deep layer.
+    #[default]
+    Both,
+    /// The deep layer alone, the slow store; the mixed layer follows it in
+    /// a year or two.
+    Deep,
+}
+
 /// An edge between two cells that both have ocean.
 #[derive(Clone, Copy, Debug)]
 struct Link {
@@ -1151,11 +1162,13 @@ impl Ocean {
         }
     }
 
-    /// Spin-up only: repeat each layer's change since `from` for `periods`
-    /// more of the same span, moving no temperature by more than `limit` (K),
-    /// then overturn what that left unstable. Taken over a whole year, the
-    /// change has no seasonal part. It doesn't conserve heat, by design.
-    pub fn jump(&mut self, from: &OceanSnapshot, periods: f64, limit: f64) {
+    /// Spin-up only: repeat the change since `from` of the `layers` chosen
+    /// for `periods` more of the same span, moving no temperature by more
+    /// than `limit` (K), then overturn what that left unstable. Taken over a
+    /// whole year, the change has no seasonal part. It doesn't conserve heat,
+    /// by design. With [`JumpLayers::Deep`] the mixed layer changes only by
+    /// that overturning, and an ocean with no deep layer doesn't change.
+    pub fn jump(&mut self, from: &OceanSnapshot, periods: f64, limit: f64, layers: JumpLayers) {
         // No ice comes of a jump.
         let floor = self.params.ice.map_or(f64::NEG_INFINITY, |p| p.freezing);
         let extrapolate = |now: &mut [f64], then: &[f64]| {
@@ -1165,7 +1178,9 @@ impl Ocean {
                 }
             }
         };
-        extrapolate(&mut self.mixed, &from.mixed);
+        if layers == JumpLayers::Both {
+            extrapolate(&mut self.mixed, &from.mixed);
+        }
         if self.params.deep_depth > 0.0 {
             extrapolate(&mut self.deep, &from.deep);
             if self.params.convective_adjustment {
@@ -1901,7 +1916,7 @@ mod tests {
         let start = ocean.snapshot();
         ocean.mixed.fill(p.freezing);
         ocean.add_surface_heat(1.0, |_| -params.mixed_capacity());
-        ocean.jump(&start, 5.0, 10.0);
+        ocean.jump(&start, 5.0, 10.0, JumpLayers::Both);
         assert_eq!(ocean.mixed_temperature()[0], p.freezing);
     }
 
@@ -1918,7 +1933,7 @@ mod tests {
         let start = ocean.snapshot();
         let c = params.mixed_capacity();
         ocean.add_surface_heat(1.0, |i| if i == 1 { 2.0 * c } else { 0.5 * c });
-        ocean.jump(&start, 3.0, 3.0);
+        ocean.jump(&start, 3.0, 3.0, JumpLayers::Both);
         let mixed = ocean.mixed_temperature();
         assert_eq!(mixed[0], 290.0, "no ocean here");
         assert_eq!(mixed[1], 295.0, "2 K, plus 6 K limited to 3 K");
@@ -1936,10 +1951,100 @@ mod tests {
         let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![277.0; grid.n()], ROTATION);
         let start = ocean.snapshot();
         ocean.add_surface_heat(1.0, |_| -params.mixed_capacity());
-        ocean.jump(&start, 1.0, 10.0);
+        ocean.jump(&start, 1.0, 10.0, JumpLayers::Both);
         // A quarter of the water at 275 K, the rest at 277 K.
         assert_eq!(ocean.mixed_temperature()[0], 276.5);
         assert_eq!(ocean.deep_temperature()[0], 276.5);
+    }
+
+    /// Without diffusion, cell 0 land, mixed layer at 291 K and deep layer at
+    /// 285 K, and a snapshot of both.
+    fn layered(grid: &Grid) -> (Ocean, OceanSnapshot) {
+        let mut land = vec![0.0; grid.n()];
+        land[0] = 1.0;
+        let params = OceanParams {
+            diffusivity: 0.0,
+            ..OceanParams::default()
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![291.0; grid.n()], ROTATION);
+        ocean.deep.fill(285.0);
+        let start = ocean.snapshot();
+        (ocean, start)
+    }
+
+    #[test]
+    fn a_deep_jump_repeats_the_deep_change_within_its_limit() {
+        let grid = Grid::new(4);
+        let (mut ocean, start) = layered(&grid);
+        let c = ocean.params.mixed_capacity();
+        ocean.add_surface_heat(1.0, |_| 0.5 * c);
+        ocean.deep[1] += 0.5;
+        ocean.deep[2] += 2.0;
+        ocean.deep[3] -= 0.25;
+        ocean.jump(&start, 3.0, 3.0, JumpLayers::Deep);
+        let (mixed, deep) = (ocean.mixed_temperature(), ocean.deep_temperature());
+        assert_eq!((mixed[0], deep[0]), (291.0, 285.0), "no ocean here");
+        assert!(
+            mixed[1..].iter().all(|&t| t == 291.5),
+            "the mixed layer stays"
+        );
+        assert_eq!(deep[1], 287.0, "0.5 K, plus 3 × 0.5 K");
+        assert_eq!(deep[2], 290.0, "2 K, plus 6 K limited to 3 K");
+        assert_eq!(deep[3], 284.0, "−0.25 K, plus 3 × −0.25 K");
+        assert_eq!(deep[4], 285.0, "no change, none repeated");
+    }
+
+    #[test]
+    fn a_deep_jump_overturns_what_it_leaves_unstable() {
+        let grid = Grid::new(4);
+        let (mut ocean, start) = layered(&grid);
+        ocean.deep[1] += 3.0;
+        ocean.deep[2] += 2.0;
+        let before = total(&ocean);
+        ocean.jump(&start, 2.0, 10.0, JumpLayers::Deep);
+        // A deep layer jumped to 294 K overturns: a quarter of the water at
+        // 291 K, the rest at 294 K. One jumped to 291 K, as warm as the mixed
+        // layer, stays put.
+        assert_eq!(ocean.mixed_temperature()[1], 293.25);
+        assert_eq!(ocean.deep_temperature()[1], 293.25);
+        assert_eq!(ocean.mixed_temperature()[2], 291.0);
+        assert_eq!(ocean.deep_temperature()[2], 291.0);
+        // The heat added is the deep layer's jump; overturning keeps it.
+        let gained = total(&ocean) - before;
+        let capacity = ocean.params.deep_capacity();
+        let expected = 6.0 * capacity * ocean.area[1] + 4.0 * capacity * ocean.area[2];
+        assert!(
+            (gained / expected - 1.0).abs() < 1e-12,
+            "{gained} against {expected}"
+        );
+    }
+
+    #[test]
+    fn a_deep_jump_makes_no_water_below_freezing() {
+        let grid = Grid::new(4);
+        let (mut ocean, params) = iced(&grid, 0.2);
+        let freezing = params.ice.unwrap().freezing;
+        ocean.mixed.fill(280.0);
+        ocean.deep.fill(freezing + 1.25);
+        let start = ocean.snapshot();
+        ocean.deep.fill(freezing + 0.25);
+        ocean.jump(&start, 5.0, 10.0, JumpLayers::Deep);
+        assert!(ocean.deep_temperature().iter().all(|&t| t == freezing));
+        assert!(ocean.mixed_temperature().iter().all(|&t| t == 280.0));
+    }
+
+    #[test]
+    fn a_deep_jump_leaves_an_ocean_without_a_deep_layer_alone() {
+        let grid = Grid::new(4);
+        let land = vec![0.0; grid.n()];
+        let params = OceanParams::slab(10.0);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
+        let start = ocean.snapshot();
+        ocean.add_surface_heat(1.0, |_| params.mixed_capacity());
+        ocean.jump(&start, 3.0, 3.0, JumpLayers::Deep);
+        assert!(ocean.mixed_temperature().iter().all(|&t| t == 291.0));
+        ocean.jump(&start, 3.0, 3.0, JumpLayers::Both);
+        assert!(ocean.mixed_temperature().iter().all(|&t| t == 294.0));
     }
 
     #[test]

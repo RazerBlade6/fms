@@ -263,20 +263,24 @@ proportion to its land fraction a land tile, so a skin over a
 1 m soil heat store with a 150 mm bucket of soil water and a snow pack. A
 world with no land is an aquaplanet (see also O-22, O-24, O-25). The run starts at rest from a single-column radiative–convective
 equilibrium with its humidity, in hydrostatic balance with the terrain, and
-averages the final year. An ocean this deep takes a couple of decades to
-settle, so by default its temperatures start shaped by the year's sunlight and
-it jumps forward at the end of years 2 to 4, repeating each year's change for
-three more, before two years in true time. At 642 cells that is within 0.04 K
-of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check it.
-With currents the deep layer takes about 15–20 years to adjust, and the default
-jumps reach about year 12 of true time (O-44).
+averages the final year. The ocean takes decades to settle, so by default the
+run jumps the ocean ahead. With currents, the deep layer alone is moved: at the
+ends of years 4 and 7 its change over that year is repeated for 20 more, moving
+no temperature over 3 K, and two true-time years follow. On a tilted aquaplanet
+at 642 cells year 9 is within 0.3 K of year 40 of true time in every 10° band
+(O-44). Without currents both layers jump at the ends of years 2, 3 and 4, by
+three years each. Use `--ocean-jumps 0 --years 40` as the true-time check. The
+first line of `summary.txt` records the schedule.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--years Y` | 6 | Simulated years; statistics from the last one |
-| `--ocean-jumps N` | 3 | Years, from the second on, that end with an ocean jump; 0 for true time. `--years` must be at least N + 3 |
-| `--jump-years Y` | 3 | Years of the ocean's change added by each jump |
+| `--years Y` | 9, or 6 without currents | Simulated years; statistics from the last one |
+| `--ocean-jumps N` | 2, or 3 without currents | Years that end with an ocean jump; 0 for true time. At least two years must follow the last jump |
+| `--jump-years Y` | 20, or 3 without currents | Years of the ocean's change added by each jump |
 | `--jump-limit K` | 3 | Most any ocean temperature may change in one jump (K) |
+| `--jump-layers both\|deep` | deep, or both without currents | Which ocean layers a jump moves |
+| `--jump-first-year N` | 4, or 2 without currents | The first year that ends with a jump |
+| `--jump-every N` | 3, or 1 without currents | Years from one jump to the next |
 | `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean at Earth's rotation, m²/s; 0 for none. The paper's code uses 6250 without eddy transport |
 | `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
 | `--no-ocean-ekman` | off | Turn off Ekman transport: the wind-driven flow in the mixed layer, blending into Sverdrup transport near the equator, returned by the deep layer, with upwelling between |

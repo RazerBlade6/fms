@@ -287,10 +287,14 @@ edge moving from 57° to 67°. Same at 2,562 cells. Not tuned here: fix the wind
 (O-42).
 
 ### O-44: With currents the ocean takes decades to settle
-*Watching; M2.12.8, M4.5.* The deep layer adjusts with an e-folding time of about 15–20
-years: on the tilted aquaplanet the top of the atmosphere is still +2 W/m² at year 20
-and +0.8 at year 40. The default jumps (three of 3 years) reach about year 12 of true
-time and overshoot the surface each time, because they extrapolate the mixed layer's
-fast response; longer or more jumps do little better. Idea: jump the deep layer alone
-and let the mixed layer follow. Until then, runs that need equilibrium take 30–40 years
-of true time.
+*Watching; M2.12.8, M2.13.5, M4.5.* The deep layer adjusts with an e-folding time of
+about 15–20 years: on the tilted aquaplanet in true time the top of the atmosphere is
+still +2 W/m² at year 20 and +0.8 at year 40. Jumping both layers overshoots the
+surface, because it extrapolates the mixed layer's fast response. The default with
+currents now jumps the deep layer alone (20 years at the ends of years 4 and 7): year 9
+is then 293.68 K against 293.75 at true-time year 40, with every 10° band within 0.3 K.
+Jumping from year 2, or again in the year after a jump, extrapolates a transient. Open:
+tested on one planet at 642 cells, not on Earth or with land; the tropical deep layer
+ends up to 1 K cold; and lasting sea ice isn't sped up, since water under ice is pinned
+at freezing (no-tilt ice is 20 million km² at year 10 against 12 at true-time year 30).
+On the still ocean a deep-only jump cools the deep layer, so that default is unchanged.

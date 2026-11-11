@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use fms_atmos::column_physics::{
     CLIMATE_LEVELS, LATENT_HEAT, LandParams, OceanSpinUp, initial_state,
     initial_surface_temperature_by_latitude,
@@ -18,7 +18,7 @@ use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
-use fms_ocean::{EddyParams, EkmanParams, IceParams, OceanParams};
+use fms_ocean::{EddyParams, EkmanParams, IceParams, JumpLayers, OceanParams};
 use glam::DVec3;
 
 use crate::chart::{self, Series, TimeAxis};
@@ -38,19 +38,39 @@ const MAX_WIND: f64 = 120.0;
 pub struct ClimateArgs {
     #[command(flatten)]
     world: WorldArgs,
-    /// Simulated years; statistics come from the last one.
-    #[arg(long, default_value_t = 6.0)]
-    years: f64,
-    /// Years, from the second on, that end with the ocean jumping forward; 0
-    /// for a run in true time. Needs `--years` of at least this plus 3.
-    #[arg(long, default_value_t = 3)]
-    ocean_jumps: u32,
-    /// Years of the ocean's change added by each jump.
-    #[arg(long, default_value_t = OceanSpinUp::default().extra_years)]
-    jump_years: f64,
-    /// Most any ocean temperature may change in one jump (K).
-    #[arg(long, default_value_t = OceanSpinUp::default().limit)]
-    jump_limit: f64,
+    // The spin-up options' defaults depend on whether the ocean has
+    // currents (`preset`), so clap leaves them unset.
+    /// Simulated years; statistics come from the last one [default: 9 with
+    /// currents, 6 without].
+    #[arg(long)]
+    years: Option<f64>,
+    /// Years that end with the ocean jumping forward, from
+    /// `--jump-first-year` on, one every `--jump-every`; 0 for a run in true
+    /// time. Needs `--years` long enough for two years in true time after
+    /// the last jump [default: 2 with currents, 3 without].
+    #[arg(long)]
+    ocean_jumps: Option<u32>,
+    /// Years of the ocean's change added by each jump [default: 20 with
+    /// currents, 3 without].
+    #[arg(long)]
+    jump_years: Option<f64>,
+    /// Most any ocean temperature may change in one jump (K) [default: 3].
+    #[arg(long)]
+    jump_limit: Option<f64>,
+    /// Which ocean layers jump: `both`, or `deep` alone, the slow store, which
+    /// the mixed layer then follows [default: deep with currents, both
+    /// without].
+    #[arg(long, value_enum)]
+    jump_layers: Option<JumpLayersArg>,
+    /// The first year that ends with an ocean jump, counting the run's first
+    /// year as 1 [default: 4 with currents, 2 without].
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    jump_first_year: Option<u32>,
+    /// Years from one ocean jump to the next. The years between run in true
+    /// time, and each jump repeats only the change of the year it ends
+    /// [default: 3 with currents, 1 without].
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    jump_every: Option<u32>,
     /// Horizontal heat diffusivity of the ocean (m²/s); 0 for none. The
     /// paper's code uses 6250 when eddy transport is off.
     #[arg(long, default_value_t = OceanParams::default().diffusivity)]
@@ -113,6 +133,95 @@ pub struct ClimateArgs {
     image: ImageArgs,
 }
 
+/// `--jump-layers`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum JumpLayersArg {
+    /// The mixed layer and the deep layer.
+    Both,
+    /// The deep layer alone.
+    Deep,
+}
+
+impl From<JumpLayersArg> for JumpLayers {
+    fn from(layers: JumpLayersArg) -> Self {
+        match layers {
+            JumpLayersArg::Both => JumpLayers::Both,
+            JumpLayersArg::Deep => JumpLayers::Deep,
+        }
+    }
+}
+
+/// The default spin-up and run length (years) for an ocean with or without
+/// currents.
+fn preset(currents: bool) -> (OceanSpinUp, f64) {
+    if currents {
+        (OceanSpinUp::with_currents(), 9.0)
+    } else {
+        (OceanSpinUp::still(), 6.0)
+    }
+}
+
+impl ClimateArgs {
+    /// The spin-up and run length (years): the preset for an ocean with or
+    /// without `currents`, with each option given replacing its value.
+    fn spin_up(&self, currents: bool) -> (OceanSpinUp, f64) {
+        let (preset, years) = preset(currents);
+        let spin_up = OceanSpinUp {
+            jumps: self.ocean_jumps.unwrap_or(preset.jumps),
+            extra_years: self.jump_years.unwrap_or(preset.extra_years),
+            limit: self.jump_limit.unwrap_or(preset.limit),
+            layers: self.jump_layers.map_or(preset.layers, JumpLayers::from),
+            first_year: self.jump_first_year.unwrap_or(preset.first_year),
+            every: self.jump_every.unwrap_or(preset.every),
+        };
+        (spin_up, self.years.unwrap_or(years))
+    }
+}
+
+/// The spin-up, for the run's description.
+fn describe_spin_up(spin_up: &OceanSpinUp) -> String {
+    let Some(last) = spin_up.last_jump_year() else {
+        return "ocean spin-up: none (true time)".into();
+    };
+    let years: Vec<String> = (spin_up.first_year..=last)
+        .filter(|&y| spin_up.ends_in_jump(y))
+        .map(|y| y.to_string())
+        .collect();
+    let years = match years.split_last() {
+        Some((last, [])) => format!("the end of year {last}"),
+        Some((last, rest)) => format!("the ends of years {} and {last}", rest.join(", ")),
+        None => unreachable!("a spin-up with a last jump has jumps"),
+    };
+    let layers = match spin_up.layers {
+        JumpLayers::Both => "two-layer",
+        JumpLayers::Deep => "deep-layer",
+    };
+    format!(
+        "ocean spin-up: {} {layers} jump{} of {} years at {years}, at most {} K",
+        spin_up.jumps,
+        if spin_up.jumps == 1 { "" } else { "s" },
+        spin_up.extra_years,
+        spin_up.limit
+    )
+}
+
+/// Checks that a run of `years` leaves at least two years in true time
+/// after the last of the `spin_up`'s jumps.
+fn check_years(years: f64, spin_up: &OceanSpinUp) -> Result<(), String> {
+    let Some(last) = spin_up.last_jump_year() else {
+        return Ok(());
+    };
+    let least = u64::from(last) + 2;
+    if years < least as f64 {
+        return Err(format!(
+            "--years must be at least {least} with --ocean-jumps {} --jump-first-year {} --jump-every {}: \
+             the last jump ends year {last}, and two years in true time must follow it",
+            spin_up.jumps, spin_up.first_year, spin_up.every
+        ));
+    }
+    Ok(())
+}
+
 /// Writes the final year's mean of each field for every cell, with the
 /// height of the terrain the atmosphere sees (m), to compare runs over a part
 /// of the map such as an ice sheet.
@@ -146,19 +255,6 @@ fn write_annual_cells(
 }
 
 pub fn run(args: ClimateArgs) -> Result<(), String> {
-    if args.years <= 1.0 {
-        return Err("--years must be more than 1 (the last year is averaged)".into());
-    }
-    if args.ocean_jumps > 0 && args.years < f64::from(args.ocean_jumps) + 3.0 {
-        return Err(format!(
-            "--years must be at least {} with --ocean-jumps {}: one year to start and two after the last jump",
-            args.ocean_jumps + 3,
-            args.ocean_jumps
-        ));
-    }
-    let mut world = build_world(&args.world)?;
-    let fields = Fields::register(&mut world)?;
-    let planet_params = *world.planet.params();
     let radiation = PhysicsParams::default().radiation;
     let ocean = OceanParams {
         diffusivity: args.ocean_diffusivity,
@@ -182,6 +278,14 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         }),
         ..OceanParams::default()
     };
+    let (spin_up, years) = args.spin_up(ocean.has_currents());
+    if years <= 1.0 {
+        return Err("--years must be more than 1 (the last year is averaged)".into());
+    }
+    check_years(years, &spin_up)?;
+    let mut world = build_world(&args.world)?;
+    let fields = Fields::register(&mut world)?;
+    let planet_params = *world.planet.params();
     let params = PhysicsParams {
         ocean,
         land: LandParams {
@@ -201,11 +305,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ..MoistureParams::default()
         },
         co2: planet_params.co2_ppm,
-        spin_up: OceanSpinUp {
-            jumps: args.ocean_jumps,
-            extra_years: args.jump_years,
-            limit: args.jump_limit,
-        },
+        spin_up,
         ..PhysicsParams::default()
     };
     // Annual-mean maps of these of the physics' cell fields
@@ -458,21 +558,22 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &model,
         &state,
         setup.dt,
-        (args.years * world.planet.year_seconds() / 86_400.0).round(),
+        (years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm",
+            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm; {}",
             params.ocean.mixed_depth,
             params.ocean.deep_depth,
             currents(&params.ocean),
             params.land.soil_depth,
-            params.co2
+            params.co2,
+            describe_spin_up(&params.spin_up)
         ),
     );
     eprintln!("climate: {description}");
 
     let dt = setup.dt;
     let per_year = (world.planet.year_seconds() / dt).round() as u64;
-    let total = (args.years * per_year as f64).round() as u64;
+    let total = (years * per_year as f64).round() as u64;
     let stats_from = total - per_year;
     let movie_from =
         total.saturating_sub((args.movie_days * setup.steps_per_day as f64).round() as u64);
@@ -992,6 +1093,167 @@ mod tests {
                 ..default
             }),
             "with eddy transport"
+        );
+    }
+
+    #[test]
+    fn two_years_in_true_time_follow_the_last_jump() {
+        let spin_up = |jumps, first_year, every| OceanSpinUp {
+            jumps,
+            first_year,
+            every,
+            ..OceanSpinUp::default()
+        };
+        // The default schedule: jumps end years 2–4, so 6 years.
+        assert!(check_years(6.0, &spin_up(3, 2, 1)).is_ok());
+        let short = check_years(5.0, &spin_up(3, 2, 1)).unwrap_err();
+        assert!(short.contains("at least 6"), "{short}");
+        assert!(short.contains("ends year 4"), "{short}");
+        // As before: N + 3 years for N jumps from the second year on.
+        for n in 1..6 {
+            let years = f64::from(n + 3);
+            assert!(check_years(years, &spin_up(n, 2, 1)).is_ok());
+            assert!(check_years(years - 0.5, &spin_up(n, 2, 1)).is_err());
+        }
+        // Jumps ending years 3, 5 and 7 need 9 years; 4, 5 and 6 need 8.
+        assert!(check_years(9.0, &spin_up(3, 3, 2)).is_ok());
+        assert!(check_years(8.0, &spin_up(3, 3, 2)).is_err());
+        assert!(check_years(8.0, &spin_up(3, 4, 1)).is_ok());
+        assert!(check_years(7.0, &spin_up(3, 4, 1)).is_err());
+        // No jumps, no limit.
+        assert!(check_years(2.0, &spin_up(0, 2, 1)).is_ok());
+    }
+
+    /// The climate options parsed from `options`.
+    fn try_parse(options: &[&str]) -> Result<ClimateArgs, clap::Error> {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            climate: ClimateArgs,
+        }
+        let argv = std::iter::once("climate").chain(options.iter().copied());
+        Cli::try_parse_from(argv).map(|cli| cli.climate)
+    }
+
+    fn parse(options: &[&str]) -> ClimateArgs {
+        try_parse(options).unwrap()
+    }
+
+    #[test]
+    fn the_spin_up_defaults_to_the_preset_for_the_ocean() {
+        let none = parse(&[]);
+        assert_eq!(none.spin_up(true), (OceanSpinUp::with_currents(), 9.0));
+        assert_eq!(none.spin_up(false), (OceanSpinUp::still(), 6.0));
+        // The presets themselves.
+        let currents = OceanSpinUp::with_currents();
+        assert_eq!(
+            (currents.jumps, currents.first_year, currents.every),
+            (2, 4, 3)
+        );
+        let still = OceanSpinUp::still();
+        assert_eq!((still.jumps, still.first_year, still.every), (3, 2, 1));
+    }
+
+    #[test]
+    fn a_spin_up_option_replaces_only_its_own_value() {
+        let every = parse(&["--jump-every", "2"]);
+        let (spin_up, years) = every.spin_up(true);
+        assert_eq!(
+            spin_up,
+            OceanSpinUp {
+                every: 2,
+                ..OceanSpinUp::with_currents()
+            }
+        );
+        assert_eq!(years, 9.0);
+        let (spin_up, years) = every.spin_up(false);
+        assert_eq!(
+            spin_up,
+            OceanSpinUp {
+                every: 2,
+                ..OceanSpinUp::still()
+            }
+        );
+        assert_eq!(years, 6.0);
+        let both = parse(&["--jump-layers", "both", "--years", "12"]);
+        assert_eq!(
+            both.spin_up(true),
+            (
+                OceanSpinUp {
+                    layers: JumpLayers::Both,
+                    ..OceanSpinUp::with_currents()
+                },
+                12.0
+            )
+        );
+        let rest = parse(&[
+            "--jump-years",
+            "5",
+            "--jump-limit",
+            "1",
+            "--jump-first-year",
+            "3",
+        ]);
+        let (spin_up, _) = rest.spin_up(false);
+        assert_eq!(
+            (spin_up.extra_years, spin_up.limit, spin_up.first_year),
+            (5.0, 1.0, 3)
+        );
+        assert_eq!((spin_up.jumps, spin_up.every), (3, 1));
+        assert!(try_parse(&["--jump-every", "0"]).is_err());
+        assert!(try_parse(&["--jump-first-year", "0"]).is_err());
+    }
+
+    #[test]
+    fn no_ocean_jumps_is_true_time_for_the_years_given() {
+        let true_time = parse(&["--ocean-jumps", "0"]);
+        for currents in [true, false] {
+            let (spin_up, years) = true_time.spin_up(currents);
+            assert_eq!(spin_up.jumps, 0);
+            assert_eq!(spin_up.last_jump_year(), None);
+            assert_eq!(years, preset(currents).1);
+            assert!(check_years(2.0, &spin_up).is_ok());
+            assert_eq!(
+                describe_spin_up(&spin_up),
+                "ocean spin-up: none (true time)"
+            );
+        }
+        let (_, years) = parse(&["--ocean-jumps", "0", "--years", "20"]).spin_up(true);
+        assert_eq!(years, 20.0);
+    }
+
+    #[test]
+    fn both_presets_leave_two_true_time_years() {
+        for currents in [true, false] {
+            let (spin_up, years) = preset(currents);
+            assert!(check_years(years, &spin_up).is_ok());
+            assert!(check_years(years - 1.0, &spin_up).is_err());
+        }
+        // The currents' preset with a third jump, at year 10, needs 12.
+        let (spin_up, years) = parse(&["--ocean-jumps", "3"]).spin_up(true);
+        let error = check_years(years, &spin_up).unwrap_err();
+        assert!(error.contains("at least 12"), "{error}");
+    }
+
+    #[test]
+    fn the_description_names_the_spin_up() {
+        assert_eq!(
+            describe_spin_up(&OceanSpinUp::with_currents()),
+            "ocean spin-up: 2 deep-layer jumps of 20 years at the ends of years 4 and 7, at most 3 K"
+        );
+        assert_eq!(
+            describe_spin_up(&OceanSpinUp::still()),
+            "ocean spin-up: 3 two-layer jumps of 3 years at the ends of years 2, 3 and 4, at most 3 K"
+        );
+        let one = OceanSpinUp {
+            jumps: 1,
+            extra_years: 2.5,
+            ..OceanSpinUp::with_currents()
+        };
+        assert_eq!(
+            describe_spin_up(&one),
+            "ocean spin-up: 1 deep-layer jump of 2.5 years at the end of year 4, at most 3 K"
         );
     }
 }
