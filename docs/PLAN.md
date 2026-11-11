@@ -229,6 +229,16 @@ versioned binary format (planet, persistent fields, clock, RNG), with fields
 tagged by name and version for migration. Same save + same build = bit-identical
 sim on any thread count and any of macOS, Windows and Linux.
 
+**Restart files (M2.13.5).** State only, never settings: a restarted run builds
+the world, model, physics and ocean from the command line, then loads the saved
+arrays over the fresh state (every prognostic and held field of the stepper,
+physics, ocean and sea ice, with counters and budget totals; derived data is
+rebuilt). Hand-written little-endian binary, no new dependency: a header (magic,
+version, counts, grid hash, step), then named f64 arrays. Same grid, step and
+intervals: bit-for-bit continuation, held by a tier-2 test. Changed settings:
+warm start, reported as not exact; a different grid is refused. Written only at
+run end (`--save-restart`, `--restart`).
+
 ## 5. Validation
 
 - **Analytic**: insolation by latitude and season; energy balance with no
