@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.**
+**Next: M2.12.1.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -62,16 +62,20 @@ a visual check.
   - [x] 11.7. Antarctic experiments; freeze-dry low cloud adopted (O-33)
   - [x] 11.8. Earth run and close-out; terrain, jump and seeding defaults kept
   - [x] 11.9. Earth reference values (`reference/earth`) and a comparison script
-- [ ] 12. **Ocean heat transport by currents** (PLAN §4.3):
-  - Ekman transport blending into Sverdrup near the equator, with the deep
-    layer's return flow and the upwelling it implies
-  - Gent–McWilliams eddy transport
-  - Wind-driven barotropic gyres carrying mixed-layer heat, solved per basin
-    (needs the ocean mask of O-11)
-  - Rotation-aware coefficients for other planets
-  - Tests: the Bhatnagar et al. 2026 aquaplanet (heat transport ~2–3 PW by
-    component, equatorial cold tongue, ice edge, against transport off); the
-    ocean's heat budget closes; western intensification in a closed basin
+- [ ] 12. **Ocean heat transport by currents** (PLAN §4.3)
+  - [ ] 12.1. Ekman transport: wind stress from the atmosphere, mass fluxes
+    across edges, the deep layer's return flow and upwelling
+  - [ ] 12.2. Sverdrup transport near the equator, limited for slow rotators
+  - [ ] 12.3. Gent–McWilliams eddy transport; eddy coefficients that scale
+    with rotation
+  - [ ] 12.4. Aquaplanet runs against Bhatnagar et al. 2026: heat transport
+    in PW by component, equatorial cold tongue, ice edge, against transport
+    off
+  - [ ] 12.5. Ocean mask and basins (O-11)
+  - [ ] 12.6. Wind-driven gyre streamfunction per basin; western
+    intensification in a closed basin
+  - [ ] 12.7. Gyre heat transport in the climate run
+  - [ ] 12.8. Earth run and close-out
 - [ ] 13. **Multi-rate scheduling**: `dt` from the CFL limit and a design
   maximum wind (O-13), rounded to divide the solar day; radiation every ~3 h and
   ocean every 1–6 h (PLAN §4.6).
