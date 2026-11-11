@@ -34,6 +34,11 @@ Each layer records:
 | Version | The layer's own format version, for migration |
 | Written by | The module that wrote it, and its version |
 | State | Locked, initial or absent (below) |
+| Computed from | Optional: the layers a derived layer was computed from, each with a content hash |
+
+*Computed from* lets a module tell that a derived layer is stale. `fms-editor`
+uses it to flag climate layers after the terrain under them is edited
+([editor/PLAN.md](editor/PLAN.md) §3.4).
 
 ## Layer states
 
@@ -66,6 +71,20 @@ layers.
 | Planet settings | Yes | Header section |
 | `terrain.elevation` | Yes | m above sea level, on the terrain grid |
 | `land.vegetation` | No | Initial vegetation; generated if absent |
+
+## Layers decided for `fms-editor`
+
+Settled in [editor/PLAN.md](editor/PLAN.md); names and encodings are fixed when
+each is built.
+
+| Layer | Notes |
+|---|---|
+| Biomes | One fixed list of about 12–16 biomes shared by the whole family. `fms-climate` maps it to and from its vegetation, and `fms-civ`'s biome → climate table keys on it. The list is drafted at `fms-climate` M3 step 4 |
+| Rivers | Rasterised from the editor's drawn rivers. The exported elevation already has their channels cut |
+| Lakes | Rasterised from the editor's drawn lakes, with surface level. The exported elevation already has their basins cut |
+
+Vector objects, undo history and other editing data stay in the editor's
+project file, not here.
 
 ## Climate without a climate run
 

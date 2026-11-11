@@ -42,6 +42,7 @@ Typical paths: editor → geo → climate → civ, or editor (with biomes) → c
 which then uses a biome → typical-climate table and warns about it.
 
 All modules stay in this Cargo workspace until the format is stable.
+`fms-editor`'s design is in [editor/PLAN.md](editor/PLAN.md).
 
 ## 2. Key decisions
 
