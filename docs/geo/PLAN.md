@@ -256,7 +256,8 @@ Building starts no earlier than `fms-climate` M3 step 0, which creates the
 
 ## 10. Reserved for later
 
-- **Mineral resources**: decided in the `fms-civ` design session.
+- **Mineral resources**: they stay reserved because `fms-civ` v1 uses food only
+  ([../civ/PLAN.md](../civ/PLAN.md) §13).
 - **Other regimes**: stagnant-lid worlds, and the impact craters they would
   need.
 - **Coasts and reefs.**

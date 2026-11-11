@@ -48,6 +48,10 @@ first stamping any layer that lacks one with the terrain it arrived on. Readers
 warn about or ignore a layer whose *Terrain* does not match
 ([geo/PLAN.md](geo/PLAN.md) §6.3).
 
+A layer of ids (provinces, factions, cultures, religions) can carry a table
+giving each id a name and a colour; other modules show the names without
+understanding the layer ([civ/PLAN.md](civ/PLAN.md) §9.1).
+
 ## Layer states
 
 Each layer a module could also simulate says how that module should treat it:
@@ -111,7 +115,26 @@ is built.
 | Volcanism and hotspots | Per-cell rasters |
 | Seismic hazard | Per-cell raster |
 
-Mineral resources are decided with `fms-civ`.
+Mineral resources stay reserved; `fms-civ` v1 uses food only.
+
+## Layers decided for `fms-civ`
+
+Settled in [civ/PLAN.md](civ/PLAN.md); names and encodings are fixed when each
+is built.
+
+| Layer | Notes |
+|---|---|
+| Provinces | Id per cell, with a name table |
+| Factions | Id per cell, with names and colours |
+| Culture and religion | Majority per cell, with names and colours |
+| Population density | Per-cell raster |
+| Towns | The cell of each province's town |
+
+`fms-civ` also reads temperature and rainfall, rivers and lakes, and, for
+natural disasters, `fms-geo`'s volcanism and seismic-hazard layers and, from
+`fms-climate`, year-to-year swings in rain and temperature and storm and flood
+statistics, which `fms-climate` adds to its exports. All are optional; civ falls
+back on defaults and warns.
 
 ## Climate without a climate run
 
@@ -119,4 +142,5 @@ Mineral resources are decided with `fms-civ`.
 `fms-editor` with painted biomes and no climate layers, it falls back on a
 biome → typical climate lookup table, and warns that results may be exaggerated
 or wrong without real climate data. Running `fms-climate` briefly replaces the
-table's values with simulated ones.
+table's values with simulated ones. With neither climate layers nor biomes,
+`fms-civ` guesses from latitude and altitude and warns more strongly.

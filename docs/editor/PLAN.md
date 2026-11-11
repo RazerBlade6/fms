@@ -112,8 +112,9 @@ Building starts no earlier than `fms-climate` M3 step 0, which creates the
 ## 6. Reserved for later
 
 - **Cartography**: the vector model and project file must be able to hold
-  labels, borders and styling. Whether any of it belongs in `.fmsmap` (for
-  `fms-civ`) is decided in its design session.
+  labels, borders and styling. Political borders come from `fms-civ`'s layers
+  and name tables in `.fmsmap`; label placement and styling stay in the editor's
+  project file ([../civ/PLAN.md](../civ/PLAN.md) §9.1).
 - **The biome list**: drafted when `fms-climate` reaches vegetation (M3 step
   4), so both modules agree on it.
 - **Plate drawing**: a tool that exports plate and crust layers; `fms-geo`

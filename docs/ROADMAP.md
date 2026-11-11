@@ -113,7 +113,8 @@ a visual check.
   crate shared with `fms-geo`)
 - [ ] 6. Lakes and basins; lakes become water surfaces in the GCM
 - [ ] 7. Earth benchmark, part 2: Köppen threshold; rivers and basins plausible
-- [ ] 8. Export climate results into `.fmsmap`
+- [ ] 8. Export climate results into `.fmsmap`, including the variability,
+  storm and flood statistics `fms-civ` reads
 
 ## M4 — Determinism, persistence and long runs
 - [ ] 1. Determinism audit: fixed-order reductions, per-system RNG streams,

@@ -29,21 +29,21 @@ rivers and lakes, and vegetation over time.
 
 Separate modules exchanging `.fmsmap` files. Each uses only the layers it
 simulates and passes the rest through. Coupling goes through files
-(geo → climate → geo, or civ → climate).
+(geo → climate → geo). `fms-civ` reads the world and never changes it.
 
 | Module | Role | Interface |
 |---|---|---|
 | `fms-editor` | Make custom maps at any level of detail | GUI, edits |
 | `fms-climate` | This project: climate and hydrosphere | Viewer only |
 | `fms-geo` | Plate tectonics and erosion | Viewer only |
-| `fms-civ` | Civilisation simulation and editing (design later) | GUI, edits |
+| `fms-civ` | Civilisation simulation and editing | GUI, edits |
 
 Typical paths: editor → geo → climate → civ, or editor (with biomes) → civ,
 which then uses a biome → typical-climate table and warns about it.
 
 All modules stay in this Cargo workspace until the format is stable.
-`fms-editor`'s design is in [editor/PLAN.md](editor/PLAN.md), and `fms-geo`'s
-is in [geo/PLAN.md](geo/PLAN.md).
+`fms-editor`'s design is in [editor/PLAN.md](editor/PLAN.md), `fms-geo`'s is in
+[geo/PLAN.md](geo/PLAN.md), and `fms-civ`'s is in [civ/PLAN.md](civ/PLAN.md).
 
 ## 2. Key decisions
 
