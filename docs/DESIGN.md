@@ -206,6 +206,7 @@ nothing about the atmosphere. Heat moves by:
   flux, upstream of their sum;
 - horizontal diffusion in both layers at 2000 m²/s, as fluxes across edges, each
   opened by the smaller of its cells' ocean fractions;
+- gyres, below: the wind-driven flow round each basin, in both layers;
 - convective adjustment when the mixed layer is colder than the deep layer.
 
 The diffusivity and `κ` are Earth's. On another planet both are multiplied by
@@ -213,31 +214,41 @@ Earth's rotation rate over the planet's, at most 4.
 
 The deep layer starts at the mixed layer's temperature.
 `OceanParams::still()` is the ocean without currents (`--no-ocean-ekman
---no-ocean-eddies`), whose deep layer starts no warmer than 4 °C.
+--no-ocean-eddies --no-ocean-gyres`), whose deep layer starts no warmer than 4 °C.
 `OceanParams::slab(10.0)` is the old motionless 10 m slab, kept for pinned
 tests.
 
 The climate run writes the northward heat transport of each of these (Ekman,
-eddies, diffusion) across each latitude, in PW, from every step of the final
-year.
+eddies, gyres, diffusion) across each latitude, in PW, from every step of the final
+year. It also maps the gyre streamfunction and the heating each gyre gives
+(`ocean.gyre_streamfunction`, `ocean.gyre_heating`, `ocean.gyre_mixed_heating`,
+`ocean.gyre_heat_gained`).
 
-**Basins**, for the gyres to come: a cell is wet if at least half ocean, a vertex
+**Basins**, for the gyres: a cell is wet if at least half ocean, a vertex
 is coast if any of its three cells isn't wet, and a basin is a connected set of
 the other vertices, kept if it has at least 12. An aquaplanet is one basin with
 no coast.
 
-**Gyres** (`fms-ocean/gyres`), not yet used by the climate run (step 12.7). A steady
-Stommel balance for the mass-transport streamfunction Ψ (kg/s) on the vertices,
-`r∇²Ψ + β ∂Ψ/∂x = curl τ`, with Ψ = 0 on every coast, islands included, so there is
-no circumpolar current. Each basin that has a coast is solved separately; one with
-none, as on an aquaplanet, is skipped. The β term is in flux form (the flux across
-a dual edge is the difference of f between its two cells) and taken upwind, which
-keeps the western boundary current about one vertex spacing wide and adds a
-numerical friction of about βΔx/2. Friction r = 2e-6 s⁻¹. β follows the signed
-rotation, so a retrograde planet's boundary currents are on eastern coasts. The
-flow across an edge is the difference of Ψ between its two vertices, so it is
-exactly non-divergent and zero at coasts. The matrix and its ILU(0) factors are
-built once; each solve is BiCGSTAB to a relative residual of 1e-8, warm-started.
+**Gyres** (`fms-ocean/gyres`). A steady Stommel balance for the mass-transport
+streamfunction Ψ (kg/s) on the vertices, `r∇²Ψ + β ∂Ψ/∂x = curl τ`. Island rule:
+each landmass's Ψ is one unknown constant, and its equation is the sum of its
+vertices' equations (friction and β fluxes round it balance the wind's circulation
+round it). The largest landmass is the reference, Ψ = 0; basins too small to keep
+join the landmass they border; everything connected is one linear system, so the
+Southern Ocean has a circumpolar current. An ocean with no land (aquaplanet) has no
+gyre. The β term is in flux form (the flux across a dual edge is the difference of f
+between its two cells) and taken upwind, which keeps the western boundary current
+about one vertex spacing wide and adds a numerical friction of about βΔx/2. Friction
+r = 2e-6 s⁻¹. β follows the signed rotation, so a retrograde planet's boundary
+currents are on eastern coasts. The flow across an edge is the difference of Ψ
+between its two vertices, so it is exactly non-divergent and zero at coasts. The
+matrix and its ILU(0) factors are built once; each solve is BiCGSTAB, warm-started.
+In the climate run the solver sees a 30-day running mean of the wind stress and
+re-solves once a day. The flow is spread at one velocity over 700 m, so the mixed
+and deep layers carry 50/700 and 150/700 of it in the same direction. It is
+advected upstream together with Ekman and eddies, each layer upstream of its own net
+flux. The gyre adds no vertical exchange: Ekman's flux returns in the deep layer and
+sums to zero over depth, so the two don't count the same water twice.
 
 ## Sea ice (`fms-ocean/ice`)
 

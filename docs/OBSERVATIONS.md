@@ -310,17 +310,24 @@ borders 12–29 landmasses, each a separate coast for the streamfunction. Revisi
 when the gyre solver shows how small a gyre it resolves (O-46); an area rule wouldn't
 move with resolution.
 
-### O-46: Gyres with every coast at Ψ = 0
-*Watching; M2.12.7.* With an analytic Earth-like wind the main gyres are in the right
-places, with western boundary currents: North Atlantic subtropical 11.9 Sv at 2,562
-cells and 13.1 Sv at 10,242, North Pacific 17.3 and 18.9, subpolar gyres −7 to −10,
-southern subtropical gyres −10 to −20. Because Antarctica and South America both hold
-Ψ = 0, nothing passes Drake Passage and the Southern Ocean becomes one gyre of 27–31 Sv
-with its boundary current east of the passage (57°S, ~50°W): spurious north–south flow
-there. Islands inside gyres (Madagascar, New Zealand, Japan) pin Ψ to zero too, and
-more of them appear at finer resolution. Strength rises 5–10% per doubling of
-resolution, because the upwind scheme's numerical friction is about as large as r at
-2,562 cells. In a closed box the interior is within 13–21% of Sverdrup balance at the
-default friction (mostly friction itself), 4–12% with a tenth of it. To settle in
-M2.12.7: what to do with the Southern Ocean gyre before it carries heat, and the
-overlap with the Ekman scheme's Sverdrup blend near the equator.
+### O-46: Gyres: straits, the circumpolar current and weak winds
+*Watching; winds and gyre depth are for the Earth tuning step (M2.16).* Resolved in
+M2.12.7: the island rule replaced Ψ = 0 on every coast, removing the spurious closed
+Southern Ocean gyre (27-31 Sv). With the analytic Earth-like wind, at 2,562 and 10,242
+cells: Drake Passage 36.9 and 40.9 Sv eastward (observed 130-170; limited by friction and
+by how narrow the passage is on the grid; in a test channel a barrier with a 10 degree
+gap still passes 90-94% of the open flow), Indonesian throughflow 14.4 and 14.9 (observed
+~15), Bering 2.4 and 2.5 (observed ~1), North Atlantic gyre 12.0 and 13.2, North Pacific
+20.0 and 21.7. Strength rises 5-10% per doubling of resolution (upwind numerical
+friction is about r at 2,562 cells).
+
+Coarse-grid straits, from the half-ocean rule for wet cells: most of the Kuroshio passes
+through the Sea of Japan (~18 Sv; real ~2.5), ~2 Sv leaks through Central America, Cook
+Strait carries 13 Sv at 10,242 cells, and Madagascar is split at 2,562. In the climate
+run the strongest gyre heating anywhere (+64 W/m2) is in the East China Sea from this.
+
+In the Earth climate run (2,562 cells) the gyres are 2-5 times weaker than with the
+analytic wind (North Atlantic 4.9 Sv, North Pacific 6.2, Drake ~13-25) because the
+model's surface stress is weak (O-43). They carry at most +0.03 PW north and -0.09 PW
+south; global mean surface temperature changes by -0.05 K and southern sea ice from 1.45
+to 1.14 M km2. Run time +1%.

@@ -100,18 +100,37 @@ pub const TOLERANCE: f64 = 1e-8;
 /// Most BiCGSTAB iterations of one component's solve.
 pub const MAX_ITERATIONS: usize = 1000;
 
-/// The gyres' one parameter.
+/// The gyres' parameters: the solver's friction, and how the ocean
+/// ([`Ocean`](crate::Ocean)) feeds it the wind and spreads its flow over its
+/// layers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GyreParams {
     /// Stommel's linear bottom friction `r` (s⁻¹). The western boundary
     /// current is `r/β` wide, 100 km at 30° with the default; the mesh widens
     /// it to a vertex spacing or two (see the [module](self) documentation).
     pub friction: f64,
+    /// Depth the gyre's flow is spread over, at one velocity (m). The
+    /// ocean's mixed layer carries `mixed_depth / depth` of each edge's flow
+    /// and its deep layer `deep_depth / depth`, both the same way; the rest
+    /// flows below the model's ocean and carries no heat. The default, 700 m,
+    /// is about the depth of the wind-driven thermocline.
+    pub depth: f64,
+    /// E-folding time of the running mean of the wind's stress that the
+    /// solver sees (s): the gyres answer the wind of the last month or so,
+    /// not of the day.
+    pub averaging: f64,
+    /// Model time between two solves (s), each from the last solution.
+    pub interval: f64,
 }
 
 impl Default for GyreParams {
     fn default() -> Self {
-        Self { friction: 2e-6 }
+        Self {
+            friction: 2e-6,
+            depth: 700.0,
+            averaging: 30.0 * 86_400.0,
+            interval: 86_400.0,
+        }
     }
 }
 
@@ -991,7 +1010,11 @@ mod tests {
         // 0.079, 0.065 and 0.040.
         let error = |g: &Grid, friction: f64| {
             let basins = Basins::new(&g.ops(), &NORTH.land(g));
-            let mut gyres = Gyres::new(&g.ops(), &basins, OMEGA, GyreParams { friction });
+            let params = GyreParams {
+                friction,
+                ..GyreParams::default()
+            };
+            let mut gyres = Gyres::new(&g.ops(), &basins, OMEGA, params);
             let curl = NORTH.curl(g);
             gyres.solve(&NORTH.wind(g));
             let ll = g.vertex_lat_lon();

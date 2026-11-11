@@ -1937,6 +1937,22 @@ impl Forcing for ColumnPhysics<'_> {
                     .collect(),
             ),
             field(
+                "ocean.gyre_heating",
+                "Heating of the ocean's two layers by the wind-driven gyres, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.gyre_heating(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.gyre_mixed_heating",
+                "Heating of the mixed layer by the wind-driven gyres, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.gyre_mixed_heating(i))
+                    .collect(),
+            ),
+            field(
                 "ocean.diffusion_heating",
                 "Heating of the ocean's two layers by horizontal diffusion, per unit area of ocean",
                 "W m-2",
@@ -1972,6 +1988,15 @@ impl Forcing for ColumnPhysics<'_> {
                     .collect(),
             ),
             field(
+                "ocean.gyre_heat_gained",
+                "Heat the wind-driven gyres have brought into the ocean's two layers since the start, \
+                 per unit area of ocean",
+                "J m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.transported_heat(i)[3])
+                    .collect(),
+            ),
+            field(
                 "ocean.upwelling",
                 "Deep water welling up into the mixed layer (negative where it sinks), per unit area of ocean",
                 "kg m-2 s-1",
@@ -1991,6 +2016,16 @@ impl Forcing for ColumnPhysics<'_> {
                             .cell_basin(i as u32)
                             .map_or(0.0, |b| b as f64 + 1.0)
                     })
+                    .collect(),
+            ),
+            field(
+                "ocean.gyre_streamfunction",
+                "Streamfunction of the wind-driven gyres' depth-integrated flow as last solved, the \
+                 mean of the cell's vertices; water goes clockwise round a maximum (0 where the cell \
+                 is not at least half ocean); 1 Sv is 10^9 kg/s",
+                "Sv",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.gyre_streamfunction(i) / 1e9)
                     .collect(),
             ),
             field(

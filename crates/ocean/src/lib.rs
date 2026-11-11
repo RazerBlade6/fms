@@ -1,6 +1,7 @@
 //! The ocean: a two-layer slab after Codron (2012) and Bhatnagar et al.
 //! (2026) with sea ice ([`IceParams`]), wind-driven Ekman transport
-//! ([`EkmanParams`]) and Gent–McWilliams eddy transport ([`EddyParams`]).
+//! ([`EkmanParams`]), Gent–McWilliams eddy transport ([`EddyParams`]) and
+//! the wind-driven gyres ([`GyreParams`]).
 //!
 //! Each cell with any ocean has a mixed layer, which exchanges heat with the
 //! atmosphere, over a deep layer, which exchanges heat only with the mixed
@@ -18,6 +19,12 @@
 //!   and made up from below in the same way and in the same step. It
 //!   flattens the isotherms: heat moves towards the cold side at the surface
 //!   and the deep layer cools on the warm side.
+//! - **The gyres**, in the same step: Stommel's depth-integrated flow
+//!   ([`Gyres`]) under a running mean of the wind, solved once a model day,
+//!   spread evenly over [`GyreParams::depth`]. Both layers carry their share
+//!   of it the same way, and it has no divergence in either, so it moves
+//!   nothing between them. It needs coasts: an aquaplanet has none, and its
+//!   gyres stay at rest.
 //! - **Horizontal diffusion** in both layers, as a flux across every edge
 //!   between two cells that have ocean, so the ocean's heat is conserved to
 //!   round-off and none crosses a coast. An edge's opening is the smaller of
@@ -37,9 +44,18 @@
 //! The crate knows nothing about the atmosphere: fluxes and stresses come in
 //! as numbers and temperatures go out.
 //!
-//! The ocean's basins for the wind-driven gyres ([`Basins`]) are found when
-//! it is built; nothing uses them yet. The gyres themselves ([`Gyres`]) can
-//! be solved on them, but the ocean doesn't own them yet.
+//! **The gyres and Ekman transport don't count the same water twice.** The
+//! Ekman flux, with its Sverdrup blend near the equator, runs in the mixed
+//! layer and comes back in the deep layer, so over the depth it sums to
+//! zero: it is the overturning part of the wind-driven flow, and adds
+//! nothing to the depth-integrated transport. The gyre is that
+//! depth-integrated transport, Sverdrup's interior with its western boundary
+//! currents, so it adds to the Ekman flux cleanly: in the mixed layer the
+//! two together are the Ekman flow plus the mixed layer's share of the
+//! gyre.
+//!
+//! The ocean's basins ([`Basins`]) are found when it is built, and the
+//! gyres' matrices with them.
 
 pub mod basins;
 pub mod gyres;
@@ -74,12 +90,12 @@ pub struct OceanParams {
     /// Whether a mixed layer colder than the deep layer overturns.
     pub convective_adjustment: bool,
     /// The deep layer starts at the mixed layer's temperature, but, in an
-    /// ocean with neither Ekman nor eddy transport, no warmer than this (K).
-    /// Still water's deep layer can only lose heat, so a warmer start would
-    /// come back as a false warm spell. With currents the deep layer gains
-    /// heat where the mixed layer sinks and ends up far warmer than this
-    /// (about 288 K on Earth's aquaplanet), so the limit doesn't apply: it
-    /// cost the aquaplanet more than a decade of spin-up.
+    /// ocean without currents ([`has_currents`](Self::has_currents)), no
+    /// warmer than this (K). Still water's deep layer can only lose heat, so
+    /// a warmer start would come back as a false warm spell. With currents
+    /// the deep layer gains heat where the mixed layer sinks and ends up far
+    /// warmer than this (about 288 K on Earth's aquaplanet), so the limit
+    /// doesn't apply: it cost the aquaplanet more than a decade of spin-up.
     pub deep_start_limit: f64,
     /// Sea ice; `None` lets the water cool past freezing.
     pub ice: Option<IceParams>,
@@ -89,6 +105,8 @@ pub struct OceanParams {
     /// Gent–McWilliams eddy transport, which needs a deep layer; `None` for
     /// none.
     pub eddies: Option<EddyParams>,
+    /// The wind-driven gyres; `None` for none.
+    pub gyres: Option<GyreParams>,
     /// Whether the diffusivity and the eddy transport's coefficient grow on
     /// a planet that turns more slowly than Earth and shrink on a faster
     /// one, by [`eddy_scale`].
@@ -108,6 +126,7 @@ impl Default for OceanParams {
             ice: Some(IceParams::default()),
             ekman: Some(EkmanParams::default()),
             eddies: Some(EddyParams::default()),
+            gyres: Some(GyreParams::default()),
             rotation_scaling: true,
         }
     }
@@ -122,13 +141,26 @@ impl OceanParams {
         Self {
             ekman: None,
             eddies: None,
+            gyres: None,
             ..Self::default()
         }
     }
 
-    /// Whether any current moves the water: Ekman or eddy transport.
+    /// Whether any current moves the water: Ekman or eddy transport or the
+    /// gyres.
     pub fn has_currents(&self) -> bool {
-        self.ekman.is_some() || self.eddies.is_some()
+        self.ekman.is_some() || self.eddies.is_some() || self.gyres.is_some()
+    }
+
+    /// The shares of each mesh edge's gyre flow that the mixed and the deep
+    /// layer carry: each layer's depth over [`GyreParams::depth`], or over
+    /// the two layers' depth if the gyre's is less, so that they never sum
+    /// to more than the whole. Zero without gyres.
+    pub fn gyre_shares(&self) -> [f64; 2] {
+        self.gyres.map_or([0.0; 2], |g| {
+            let depth = g.depth.max(self.mixed_depth + self.deep_depth);
+            [self.mixed_depth / depth, self.deep_depth / depth]
+        })
     }
 
     /// A motionless slab of fresh water `depth` metres deep, with no deep
@@ -146,6 +178,7 @@ impl OceanParams {
             ice: None,
             ekman: None,
             eddies: None,
+            gyres: None,
             rotation_scaling: false,
         }
     }
@@ -315,18 +348,24 @@ const MAX_DIFFUSION_NUMBER: f64 = 0.5;
 /// step. Donor-cell advection is monotonic up to 1.
 const MAX_ADVECTION_NUMBER: f64 = 0.5;
 
+/// The wind's stress on the water, which Ekman transport and the gyres
+/// share.
+#[derive(Clone, Debug)]
+struct Wind {
+    /// Unit east and north vectors at each cell's centre; zero at a pole,
+    /// where east is undefined (as in `fms_grid::zonal::east_north`).
+    frames: Vec<[DVec3; 2]>,
+    /// Eastward and northward stress on each cell's water, per m² of its
+    /// ocean: the stress on open water times the share that is open (N m⁻²).
+    stress: Vec<[f64; 2]>,
+}
+
 /// What Ekman transport needs to turn the wind into mass fluxes.
 #[derive(Clone, Debug)]
 struct Ekman {
     friction: f64,
-    /// Unit east and north vectors at each cell's centre; zero at a pole,
-    /// where east is undefined (as in `fms_grid::zonal::east_north`).
-    frames: Vec<[DVec3; 2]>,
     /// One per link.
     faces: Vec<Face>,
-    /// Eastward and northward stress on each cell's water, per m² of its
-    /// ocean: the stress on open water times the share that is open (N m⁻²).
-    stress: Vec<[f64; 2]>,
     /// The stress's curl, for the Sverdrup blend.
     curl: Option<StressCurl>,
 }
@@ -387,16 +426,14 @@ impl Ekman {
     /// where an edge's curl is the mean of its two vertices'. Work per link
     /// and per vertex only, so the result doesn't depend on the thread
     /// count.
-    fn mass_flux(&mut self, links: &[Link], flux: &mut [f64]) {
+    fn mass_flux(&mut self, links: &[Link], wind: &Wind, flux: &mut [f64]) {
         let Self {
             friction: epsilon,
-            frames,
             faces,
-            stress,
             curl,
         } = self;
-        let (epsilon, frames, stress) = (*epsilon, &*frames, &*stress);
-        let link_stress = |link: &Link| link_stress(frames, stress, link);
+        let epsilon = *epsilon;
+        let link_stress = |link: &Link| link_stress(&wind.frames, &wind.stress, link);
         let Some(curl) = curl else {
             flux.par_iter_mut()
                 .with_min_len(MIN_CHUNK)
@@ -472,28 +509,131 @@ fn eddy_flux(
         });
 }
 
-/// The mass fluxes that overturn the ocean, by what drives them.
+/// The wind-driven gyres as the ocean runs them: the solver, the running
+/// mean of the wind it answers, and when it last solved.
+#[derive(Clone, Debug)]
+struct GyreFlow {
+    params: GyreParams,
+    solver: Gyres,
+    /// Whether any component has a coast and so is solved; not on an
+    /// aquaplanet, whose gyres stay at rest.
+    solved: bool,
+    /// Running mean of each cell's eastward and northward stress (N m⁻²,
+    /// per m² of its ocean), from zero.
+    mean: Vec<[f64; 2]>,
+    /// Model time since the last solve (s).
+    since: f64,
+    /// Solves so far.
+    solves: usize,
+    /// Each mesh edge's two cells, as the mesh orders them, and its unit
+    /// normal from `cells[0]` to `cells[1]` at the edge point.
+    edges: Vec<([u32; 2], DVec3)>,
+    /// Each mesh edge's mean stress along its normal (N m⁻²), what the
+    /// solver takes.
+    along: Vec<f64>,
+    /// Each cell's vertices: those of cell `c` are
+    /// `vertices[offsets[c]..offsets[c + 1]]`.
+    offsets: Vec<u32>,
+    vertices: Vec<u32>,
+}
+
+impl GyreFlow {
+    /// Advance the running mean of the wind by `dt` seconds and, each time
+    /// another [`GyreParams::interval`] has passed, solve for the
+    /// streamfunction and write the depth-integrated flow across each link
+    /// to `flux` (kg s⁻¹, from `cells[0]` to `cells[1]`). Work per cell and
+    /// per edge, then a serial solve, so the result doesn't depend on the
+    /// thread count.
+    fn step(&mut self, dt: f64, wind: &Wind, links: &[Link], flux: &mut [f64]) {
+        let weight = (dt / self.params.averaging).min(1.0);
+        self.mean
+            .par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(&wind.stress)
+            .for_each(|(mean, stress)| {
+                for (m, s) in mean.iter_mut().zip(stress) {
+                    *m += weight * (s - *m);
+                }
+            });
+        self.since += dt;
+        if self.since < self.params.interval {
+            return;
+        }
+        self.since %= self.params.interval;
+        self.solves += 1;
+        if !self.solved {
+            return;
+        }
+        // The two cells' mean stress vector along the edge's normal, as
+        // Ekman transport takes it (and `gyres::edge_stress`).
+        let (frames, mean) = (&wind.frames, &self.mean);
+        self.along
+            .par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(&self.edges)
+            .for_each(|(along, &(cells, normal))| {
+                let vector = |c: u32| {
+                    let ([east, north], [e, n]) = (frames[c as usize], mean[c as usize]);
+                    e * east + n * north
+                };
+                *along = (0.5 * (vector(cells[0]) + vector(cells[1]))).dot(normal);
+            });
+        self.solver.solve(&self.along);
+        for (flux, link) in flux.iter_mut().zip(links) {
+            *flux = self.solver.edge_flux(link.edge);
+        }
+        if cfg!(debug_assertions) {
+            // No divergence in any cell: the flow moves nothing between the
+            // layers.
+            let mut net = vec![(0.0f64, 0.0f64); self.offsets.len() - 1];
+            for (f, link) in flux.iter().zip(links) {
+                let [a, b] = link.cells.map(|c| c as usize);
+                net[a] = (net[a].0 + f, net[a].1 + f.abs());
+                net[b] = (net[b].0 - f, net[b].1 + f.abs());
+            }
+            for (c, (out, gross)) in net.iter().enumerate() {
+                debug_assert!(
+                    out.abs() <= 1e-12 * gross,
+                    "the gyre's flow diverges in cell {c}: {out} of {gross} kg/s"
+                );
+            }
+        }
+    }
+
+    /// The streamfunction at cell `c` (kg s⁻¹): the mean of its vertices'.
+    fn cell_streamfunction(&self, c: usize) -> f64 {
+        let ring = &self.vertices[self.offsets[c] as usize..self.offsets[c + 1] as usize];
+        let psi = self.solver.streamfunction();
+        ring.iter().map(|&v| psi[v as usize]).sum::<f64>() / ring.len() as f64
+    }
+}
+
+/// The mass fluxes that move the ocean's heat, by what drives them.
 const EKMAN: usize = 0;
 const EDDY: usize = 1;
+const GYRE: usize = 2;
 
-/// Two-layer advection by mass fluxes across links: the mixed layer carries
-/// each link's flux and the deep layer carries it back, and what the mixed
-/// layer's flow leaves a cell short of is made up from below. Holds what the
-/// latest call left, and its scratch. Arrays of two are indexed by
-/// [`EKMAN`] and [`EDDY`], then by layer, mixed first.
+/// Two-layer advection by mass fluxes across links. Ekman and eddy fluxes run
+/// in the mixed layer and the deep layer carries them back, and what the
+/// mixed layer's flow leaves a cell short of is made up from below; the
+/// gyre's flow runs the same way in both layers, each with its share, and
+/// has no divergence in either. Holds what the latest call left, and its
+/// scratch. Arrays are indexed by [`EKMAN`], [`EDDY`] and [`GYRE`] (the
+/// vertical exchange only by the first two), then by layer, mixed first.
 #[derive(Clone, Debug)]
 struct Overturning {
-    /// Net horizontal outflow of each cell's mixed-layer mass by each flux,
-    /// which the deep layer makes up (kg s⁻¹; positive is upwelling).
+    /// Net horizontal outflow of each cell's mixed-layer mass by Ekman and
+    /// eddy flux, which the deep layer makes up (kg s⁻¹; positive is
+    /// upwelling).
     rise: [Vec<f64>; 2],
     /// Mass leaving each cell's mixed and deep layer (kg s⁻¹).
     leaving: [Vec<f64>; 2],
     /// Heat convergence by each flux in each layer in the current sub-step,
     /// per unit of specific heat (kg K s⁻¹).
-    convergence: [[Vec<f64>; 2]; 2],
+    convergence: [[Vec<f64>; 2]; 3],
     /// Mean heating by each flux of each layer over the latest call (W per
     /// m² of ocean).
-    heating: [[Vec<f64>; 2]; 2],
+    heating: [[Vec<f64>; 2]; 3],
     /// Sub-steps the latest call took.
     steps: usize,
 }
@@ -504,48 +644,57 @@ impl Overturning {
         Self {
             rise: pair(),
             leaving: pair(),
-            convergence: [pair(), pair()],
-            heating: [pair(), pair()],
+            convergence: [pair(), pair(), pair()],
+            heating: [pair(), pair(), pair()],
             steps: 0,
         }
     }
 
-    /// Advect both layers for `dt` seconds by the sum of `fluxes`, the mixed
-    /// layer's mass fluxes across each link (kg s⁻¹, positive from
-    /// `cells[0]` to `cells[1]`), held fixed. Temperatures are taken
-    /// upstream of the net flow in each layer and in the vertical, as the
-    /// paper's code takes the vertical, and the step is split so that no
-    /// cell loses more than [`MAX_ADVECTION_NUMBER`] of either layer's mass
-    /// in one sub-step, which keeps every new temperature a mean of old
-    /// ones. Every flux moves heat between two stores, so `Σ area (H_m T_m +
-    /// H_d T_d)` is conserved to round-off, by each flux on its own. Serial
-    /// over links, so the result doesn't depend on the thread count.
+    /// Advect both layers for `dt` seconds by `fluxes`, held fixed: across
+    /// each link (kg s⁻¹, positive from `cells[0]` to `cells[1]`), the mixed
+    /// layer's Ekman and eddy fluxes, which the deep layer carries back, and
+    /// the gyre's depth-integrated flow, of which the layers carry `shares`
+    /// (mixed, deep) the same way. Temperatures are taken upstream of each
+    /// layer's own net flow and of the vertical exchange, as the paper's
+    /// code takes the vertical, and the step is split so that no cell loses
+    /// more than [`MAX_ADVECTION_NUMBER`] of either layer's mass in one
+    /// sub-step, which keeps every new temperature a mean of old ones. Every
+    /// flux moves heat between two stores, so `Σ area (H_m T_m + H_d T_d)` is
+    /// conserved to round-off, by each flux on its own. Serial over links, so
+    /// the result doesn't depend on the thread count.
     #[allow(clippy::too_many_arguments)] // Each is one of the ocean's fields.
     fn advect(
         &mut self,
         mixed: &mut [f64],
         deep: &mut [f64],
         links: &[Link],
-        fluxes: &[Vec<f64>; 2],
+        fluxes: &[Vec<f64>; 3],
+        shares: [f64; 2],
         area: &[f64],
         params: &OceanParams,
         dt: f64,
     ) {
+        // What each flux's mixed and deep layer carry, per kg s⁻¹ of it.
+        let layers = [[1.0, -1.0], [1.0, -1.0], shares];
+        // Each layer's net flux across link `l`. The deep layer's upstream
+        // cell on a tie is `cells[0]`, as when it carried only the return
+        // flow.
+        let net = |l: usize| -> [f64; 2] {
+            std::array::from_fn(|k| (0..3).map(|c| layers[c][k] * fluxes[c][l]).sum())
+        };
         for field in self.rise.iter_mut().chain(&mut self.leaving) {
             field.fill(0.0);
         }
         for (l, link) in links.iter().enumerate() {
             let [a, b] = link.cells.map(|c| c as usize);
-            for (rise, flux) in self.rise.iter_mut().zip(fluxes) {
+            for (rise, flux) in self.rise.iter_mut().zip(&fluxes[..2]) {
                 rise[a] += flux[l];
                 rise[b] -= flux[l];
             }
-            // The mixed layer leaves the cell `f` leaves; the deep layer,
-            // carrying `−f`, leaves the other.
-            let f = fluxes[EKMAN][l] + fluxes[EDDY][l];
-            let (upstream, downstream) = if f > 0.0 { (a, b) } else { (b, a) };
-            self.leaving[0][upstream] += f.abs();
-            self.leaving[1][downstream] += f.abs();
+            // Each layer leaves the cell its net flux leaves.
+            let [fm, fd] = net(l);
+            self.leaving[0][if fm > 0.0 { a } else { b }] += fm.abs();
+            self.leaving[1][if fd >= 0.0 { a } else { b }] += fd.abs();
         }
         // Mass per m² of ocean (kg m⁻²).
         let mass = [
@@ -559,9 +708,10 @@ impl Overturning {
                 let w = self.rise[EKMAN][i] + self.rise[EDDY][i];
                 let mixed_out = self.leaving[0][i] + (-w).max(0.0);
                 let deep_out = self.leaving[1][i] + w.max(0.0);
-                largest = largest
-                    .max(dt * mixed_out / (mass[0] * a))
-                    .max(dt * deep_out / (mass[1] * a));
+                largest = largest.max(dt * mixed_out / (mass[0] * a));
+                if mass[1] > 0.0 {
+                    largest = largest.max(dt * deep_out / (mass[1] * a));
+                }
             }
         }
         let steps = (largest / MAX_ADVECTION_NUMBER).ceil().max(1.0);
@@ -575,18 +725,15 @@ impl Overturning {
             }
             for (l, link) in links.iter().enumerate() {
                 let [a, b] = link.cells.map(|c| c as usize);
-                let f = fluxes[EKMAN][l] + fluxes[EDDY][l];
-                let (tm, td) = if f > 0.0 {
-                    (mixed[a], deep[b])
-                } else {
-                    (mixed[b], deep[a])
-                };
-                for ([mixed_in, deep_in], flux) in self.convergence.iter_mut().zip(fluxes) {
-                    let f = flux[l];
-                    mixed_in[a] -= f * tm;
-                    mixed_in[b] += f * tm;
-                    deep_in[a] += f * td;
-                    deep_in[b] -= f * td;
+                let [fm, fd] = net(l);
+                let tm = if fm > 0.0 { mixed[a] } else { mixed[b] };
+                let td = if fd >= 0.0 { deep[a] } else { deep[b] };
+                for (c, [mixed_in, deep_in]) in self.convergence.iter_mut().enumerate() {
+                    let [m, d] = layers[c].map(|share| share * fluxes[c][l]);
+                    mixed_in[a] -= m * tm;
+                    mixed_in[b] += m * tm;
+                    deep_in[a] -= d * td;
+                    deep_in[b] += d * td;
                 }
             }
             for (i, &a) in area.iter().enumerate() {
@@ -594,15 +741,19 @@ impl Overturning {
                     let w = self.rise[EKMAN][i] + self.rise[EDDY][i];
                     let t = if w > 0.0 { deep[i] } else { mixed[i] };
                     for (c, [mixed_in, deep_in]) in self.convergence.iter_mut().enumerate() {
-                        let w = self.rise[c][i];
-                        mixed_in[i] += w * t;
-                        deep_in[i] -= w * t;
+                        if c != GYRE {
+                            let w = self.rise[c][i];
+                            mixed_in[i] += w * t;
+                            deep_in[i] -= w * t;
+                        }
                         self.heating[c][0][i] += h * mixed_in[i] / a;
                         self.heating[c][1][i] += h * deep_in[i] / a;
                     }
-                    let [ekman, eddy] = &self.convergence;
-                    mixed[i] += h * (ekman[0][i] + eddy[0][i]) / (mass[0] * a);
-                    deep[i] += h * (ekman[1][i] + eddy[1][i]) / (mass[1] * a);
+                    let [ekman, eddy, gyre] = &self.convergence;
+                    mixed[i] += h * (ekman[0][i] + eddy[0][i] + gyre[0][i]) / (mass[0] * a);
+                    if mass[1] > 0.0 {
+                        deep[i] += h * (ekman[1][i] + eddy[1][i] + gyre[1][i]) / (mass[1] * a);
+                    }
                 }
             }
         }
@@ -635,20 +786,25 @@ pub struct Ocean {
     /// Heat convergence per cell, reused between steps.
     convergence: Vec<f64>,
     ice: Option<SeaIce>,
+    /// The wind's stress, with Ekman transport or the gyres.
+    wind: Option<Wind>,
     ekman: Option<Ekman>,
+    gyres: Option<GyreFlow>,
     /// What the planet's rotation multiplies the eddy coefficients by.
     eddy_scale: f64,
-    /// The mixed layer's mass fluxes across each link in the latest
-    /// [`transport`](Ocean::transport), by [`EKMAN`] and [`EDDY`] (kg s⁻¹,
-    /// positive from `cells[0]` to `cells[1]`).
-    mass_flux: [Vec<f64>; 2],
+    /// The mass fluxes across each link in the latest
+    /// [`transport`](Ocean::transport) (kg s⁻¹, positive from `cells[0]` to
+    /// `cells[1]`): the mixed layer's by [`EKMAN`] and [`EDDY`], and the
+    /// gyre's whole depth-integrated flow by [`GYRE`].
+    mass_flux: [Vec<f64>; 3],
     overturning: Overturning,
     /// Mean heating of each cell's column by diffusion over the latest
     /// [`transport`](Ocean::transport) (W per m² of ocean).
     diffusion_heating: Vec<f64>,
     /// Heat brought into each cell's column since the start by Ekman
-    /// transport, eddy transport and diffusion (J per m² of ocean).
-    transported: [Vec<f64>; 3],
+    /// transport, eddy transport, diffusion and the gyres (J per m² of
+    /// ocean).
+    transported: [Vec<f64>; 4],
     basins: Basins,
 }
 
@@ -662,7 +818,9 @@ impl Ocean {
     /// # Panics
     /// If the lengths differ from the mesh's cells, a land fraction is
     /// outside 0–1, the mixed layer has no depth, Ekman or eddy transport is
-    /// asked for without a deep layer, or Ekman transport without friction.
+    /// asked for without a deep layer, Ekman transport without friction, or
+    /// gyres without a positive depth, averaging time and interval (or
+    /// friction, as [`Gyres::new`]).
     pub fn new(
         params: OceanParams,
         ops: &Operators,
@@ -693,6 +851,12 @@ impl Ocean {
             params.eddies.is_none() || params.deep_depth > 0.0,
             "eddy transport needs a deep layer to return its flow"
         );
+        if let Some(gyres) = params.gyres {
+            assert!(
+                gyres.depth > 0.0 && gyres.averaging > 0.0 && gyres.interval > 0.0,
+                "the gyres need a depth, an averaging time and an interval"
+            );
+        }
         let r2 = ops.radius() * ops.radius();
         let open: Vec<f64> = land_fraction.iter().map(|f| 1.0 - f).collect();
         let area: Vec<f64> = (0..n)
@@ -732,8 +896,8 @@ impl Ocean {
             params.deep_start_limit
         };
         let deep = surface.iter().map(|t| t.min(limit).max(floor)).collect();
-        let ekman = params.ekman.map(|p| {
-            let frames = mesh
+        let wind = (params.ekman.is_some() || params.gyres.is_some()).then(|| Wind {
+            frames: mesh
                 .cell_centers()
                 .iter()
                 .map(|&x| {
@@ -745,7 +909,10 @@ impl Ocean {
                     let east = east / length;
                     [east, x.cross(east)]
                 })
-                .collect();
+                .collect(),
+            stress: vec![[0.0; 2]; n],
+        });
+        let ekman = params.ekman.map(|p| {
             let radius = ops.radius();
             let epsilon = p.friction;
             let faces = links
@@ -809,10 +976,35 @@ impl Ocean {
             });
             Ekman {
                 friction: epsilon,
-                frames,
                 faces,
-                stress: vec![[0.0; 2]; n],
                 curl,
+            }
+        });
+        let basins = Basins::new(ops, land_fraction);
+        let gyres = params.gyres.map(|p| {
+            let solver = Gyres::new(ops, &basins, rotation, p);
+            let mut offsets = vec![0];
+            let mut vertices = Vec::with_capacity(6 * n);
+            for c in 0..n as u32 {
+                vertices.extend_from_slice(mesh.cell_vertices(c));
+                offsets.push(vertices.len() as u32);
+            }
+            GyreFlow {
+                params: p,
+                solved: solver.stats().iter().any(Option::is_some),
+                solver,
+                mean: vec![[0.0; 2]; n],
+                since: 0.0,
+                solves: 0,
+                edges: mesh
+                    .edges()
+                    .iter()
+                    .zip(&geometry.edge_normals)
+                    .map(|(edge, &normal)| (edge.cells, normal))
+                    .collect(),
+                along: vec![0.0; mesh.n_edges()],
+                offsets,
+                vertices,
             }
         });
         Self {
@@ -825,16 +1017,18 @@ impl Ocean {
             } else {
                 1.0
             },
-            mass_flux: [vec![0.0; links.len()], vec![0.0; links.len()]],
+            mass_flux: std::array::from_fn(|_| vec![0.0; links.len()]),
             links,
             largest_rate,
             convergence: vec![0.0; n],
             ice: params.ice.map(|p| SeaIce::new(p, n)),
+            wind,
             ekman,
+            gyres,
             overturning: Overturning::new(n),
             diffusion_heating: vec![0.0; n],
-            transported: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
-            basins: Basins::new(ops, land_fraction),
+            transported: std::array::from_fn(|_| vec![0.0; n]),
+            basins,
         }
     }
 
@@ -886,17 +1080,16 @@ impl Ocean {
     }
 
     /// The wind's stress on each cell's open water, `stress(i)` eastward and
-    /// northward (N per m² of open water), for the Ekman transport of the
-    /// following [`transport`](Self::transport) calls. The ocean keeps it
-    /// scaled by the share of the cell's ocean that is open now. Does nothing
-    /// without Ekman transport.
+    /// northward (N per m² of open water), for the Ekman transport and the
+    /// gyres' running mean of the following [`transport`](Self::transport)
+    /// calls. The ocean keeps it scaled by the share of the cell's ocean that
+    /// is open now. Does nothing without Ekman transport or gyres.
     pub fn set_wind_stress(&mut self, stress: impl Fn(usize) -> [f64; 2] + Sync) {
-        let Some(ekman) = &mut self.ekman else {
+        let Some(wind) = &mut self.wind else {
             return;
         };
         let (area, ice) = (&self.area, self.ice.as_ref());
-        ekman
-            .stress
+        wind.stress
             .par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .enumerate()
@@ -911,11 +1104,17 @@ impl Ocean {
     }
 
     /// Move heat for `dt` seconds: Ekman transport under the latest
-    /// [wind stress](Self::set_wind_stress) together with eddy transport,
-    /// diffusion in both layers, then convective adjustment.
+    /// [wind stress](Self::set_wind_stress) together with eddy transport and
+    /// the gyres (whose running mean of the wind takes in the latest stress
+    /// first, and which are solved again once each
+    /// [`interval`](GyreParams::interval)), diffusion in both layers, then
+    /// convective adjustment.
     pub fn transport(&mut self, dt: f64) {
-        if let Some(ekman) = &mut self.ekman {
-            ekman.mass_flux(&self.links, &mut self.mass_flux[EKMAN]);
+        if let (Some(ekman), Some(wind)) = (&mut self.ekman, &self.wind) {
+            ekman.mass_flux(&self.links, wind, &mut self.mass_flux[EKMAN]);
+        }
+        if let (Some(gyres), Some(wind)) = (&mut self.gyres, &self.wind) {
+            gyres.step(dt, wind, &self.links, &mut self.mass_flux[GYRE]);
         }
         if let Some(eddies) = &self.params.eddies {
             eddy_flux(
@@ -928,12 +1127,13 @@ impl Ocean {
                 &mut self.mass_flux[EDDY],
             );
         }
-        if self.ekman.is_some() || self.params.eddies.is_some() {
+        if self.params.has_currents() {
             self.overturning.advect(
                 &mut self.mixed,
                 &mut self.deep,
                 &self.links,
                 &self.mass_flux,
+                self.params.gyre_shares(),
                 &self.area,
                 &self.params,
                 dt,
@@ -963,6 +1163,7 @@ impl Ocean {
                 self.ekman_heating(i),
                 self.eddy_heating(i),
                 self.diffusion_heating[i],
+                self.gyre_heating(i),
             ];
             for (total, q) in self.transported.iter_mut().zip(heating) {
                 total[i] += dt * q;
@@ -1000,13 +1201,13 @@ impl Ocean {
     }
 
     /// Heat brought into cell `i`'s column, both layers, since the ocean was
-    /// made, by Ekman transport, eddy transport and diffusion, in that order
-    /// (J per m² of its ocean), accumulated every
+    /// made, by Ekman transport, eddy transport, diffusion and the gyres, in
+    /// that order (J per m² of its ocean), accumulated every
     /// [`transport`](Self::transport). The difference over a span divided by
     /// its length is each one's mean heating, from every step. Convective
     /// adjustment moves heat only within a column, and the ocean jumps of
     /// spin-up aren't transport, so neither counts.
-    pub fn transported_heat(&self, i: usize) -> [f64; 3] {
+    pub fn transported_heat(&self, i: usize) -> [f64; 4] {
         std::array::from_fn(|k| self.transported[k][i])
     }
 
@@ -1048,6 +1249,59 @@ impl Ocean {
         self.overturning.heating[EDDY][0][i]
     }
 
+    /// Heating of cell `i`'s column, both layers, by the latest
+    /// [`transport`](Self::transport)'s gyres (W per m² of its ocean); zero
+    /// without them. Its integral over the ocean is zero.
+    pub fn gyre_heating(&self, i: usize) -> f64 {
+        let [mixed, deep] = &self.overturning.heating[GYRE];
+        mixed[i] + deep[i]
+    }
+
+    /// Heating of cell `i`'s mixed layer alone by the latest
+    /// [`transport`](Self::transport)'s gyres (W per m² of its ocean); zero
+    /// without them.
+    pub fn gyre_mixed_heating(&self, i: usize) -> f64 {
+        self.overturning.heating[GYRE][0][i]
+    }
+
+    /// The gyres' solver, with their streamfunction as last solved; `None`
+    /// without gyres.
+    pub fn gyres(&self) -> Option<&Gyres> {
+        self.gyres.as_ref().map(|g| &g.solver)
+    }
+
+    /// How many times the gyres have been solved: once each
+    /// [`interval`](GyreParams::interval) of model time, counting those an
+    /// ocean without coasts skips. Zero without gyres.
+    pub fn gyre_solves(&self) -> usize {
+        self.gyres.as_ref().map_or(0, |g| g.solves)
+    }
+
+    /// The running mean of the wind's stress on cell `i`'s water that the
+    /// gyres see, eastward and northward (N per m² of its ocean); zero
+    /// without gyres.
+    pub fn gyre_wind(&self, i: usize) -> [f64; 2] {
+        self.gyres.as_ref().map_or([0.0; 2], |g| g.mean[i])
+    }
+
+    /// The gyres' streamfunction at cell `i` (kg s⁻¹, positive where water
+    /// goes clockwise round it seen from outside the sphere): the mean of
+    /// its vertices', as last solved. Zero where the cell isn't wet
+    /// ([`Basins::is_wet`]) and without gyres.
+    pub fn gyre_streamfunction(&self, i: usize) -> f64 {
+        match &self.gyres {
+            Some(g) if self.basins.is_wet(i as u32) => g.cell_streamfunction(i),
+            _ => 0.0,
+        }
+    }
+
+    /// Sub-steps the latest [`transport`](Self::transport)'s advection took
+    /// to keep each layer's outflow under half its mass in every cell; 0
+    /// without currents.
+    pub fn advection_steps(&self) -> usize {
+        self.overturning.steps
+    }
+
     /// Deep water welling up into cell `i`'s mixed layer in the latest
     /// [`transport`](Self::transport), by Ekman and eddy transport together
     /// (kg per m² of its ocean per second; negative where the mixed layer
@@ -1081,6 +1335,15 @@ impl Ocean {
     /// transport.
     pub fn eddy_mass_flux(&self) -> &[f64] {
         &self.mass_flux[EDDY]
+    }
+
+    /// The gyres' whole depth-integrated mass flux across each link in the
+    /// latest [`transport`](Self::transport), in the order and sense of
+    /// [`ekman_mass_flux`](Self::ekman_mass_flux): the mixed and the deep
+    /// layer carry [`OceanParams::gyre_shares`] of it, the same way. Zero
+    /// without gyres, and across a link with a cell that isn't wet.
+    pub fn gyre_mass_flux(&self) -> &[f64] {
+        &self.mass_flux[GYRE]
     }
 
     /// The sea-ice parameters, if the ocean has ice.
@@ -1259,6 +1522,7 @@ fn diffuse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fms_grid::coords::to_lat_lon;
     use fms_grid::{LloydOptions, MeshGeometry, SphereMesh};
 
     const RADIUS: f64 = 6.371e6;
@@ -1320,9 +1584,10 @@ mod tests {
         assert_eq!(p.deep_capacity(), 1026.0 * 3994.0 * 150.0);
         // The paper's 8000 m²/s as its code applies it.
         assert_eq!(p.diffusivity, 8000.0 * 50.0 / (50.0 + 150.0));
-        // All of its heat transport, Case 7.
+        // All of its heat transport, Case 7, and our gyres.
         assert_eq!(p.ekman, Some(EkmanParams::default()));
         assert_eq!(p.eddies, Some(EddyParams::default()));
+        assert_eq!(p.gyres, Some(GyreParams::default()));
         assert!(p.convective_adjustment && p.has_currents());
         let still = OceanParams::still();
         assert!(!still.has_currents());
@@ -1331,9 +1596,16 @@ mod tests {
             OceanParams {
                 ekman: None,
                 eddies: None,
+                gyres: None,
                 ..p
             }
         );
+        let gyres_only = OceanParams {
+            gyres: Some(GyreParams::default()),
+            ..still
+        };
+        assert!(gyres_only.has_currents());
+        assert_eq!(still.gyre_shares(), [0.0; 2]);
     }
 
     #[test]
@@ -2582,10 +2854,10 @@ mod tests {
             ocean.set_wind_stress(rough_wind);
             ocean.transport(86_400.0);
         }
-        let ekman = ocean.ekman.as_ref().unwrap();
+        let (ekman, wind) = (ocean.ekman.as_ref().unwrap(), ocean.wind.as_ref().unwrap());
         let epsilon = ekman.friction;
         for (k, link) in ocean.links.iter().enumerate() {
-            let tau = link_stress(&ekman.frames, &ekman.stress, link);
+            let tau = link_stress(&wind.frames, &wind.stress, link);
             let face = &ekman.faces[k];
             let friction = (1.0 / epsilon * tau).dot(face.normal) * link.width;
             assert_eq!(ocean.mass_flux[EKMAN][k], friction, "link {k}");
@@ -2958,27 +3230,31 @@ mod tests {
         let start: Vec<f64> = (0..grid.n())
             .map(|i| 275.0 + 25.0 * scatter(i, 3))
             .collect();
+        let dt = 3600.0;
         let params = OceanParams {
             convective_adjustment: false,
             ice: None,
             ekman: Some(EkmanParams::default()),
             eddies: Some(EddyParams::default()),
+            gyres: Some(quick_gyres(dt)),
             ..OceanParams::default()
         };
+        // A continent, for the gyres, with rough coasts elsewhere.
+        let land = continent_coasts(&grid, &land);
         let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
-        let dt = 3600.0;
         let mut previous = (0..grid.n()).map(|i| ocean.heat(i)).collect::<Vec<_>>();
-        let mut expected = vec![[0.0; 3]; grid.n()];
+        let mut expected = vec![[0.0; 4]; grid.n()];
         for _ in 0..5 {
             ocean.set_wind_stress(rough_wind);
             ocean.transport(dt);
             let a = &ocean.area;
             let mut gross = 0.0;
-            for k in 0..3 {
+            for k in 0..4 {
                 let heating = |i: usize| match k {
                     0 => ocean.ekman_heating(i),
                     1 => ocean.eddy_heating(i),
-                    _ => ocean.diffusion_heating(i),
+                    2 => ocean.diffusion_heating(i),
+                    _ => ocean.gyre_heating(i),
                 };
                 let net: f64 = (0..grid.n()).map(|i| a[i] * heating(i)).sum();
                 let size: f64 = (0..grid.n()).map(|i| a[i] * heating(i).abs()).sum();
@@ -2991,8 +3267,10 @@ mod tests {
             // Together they are each column's change in heat.
             let mut worst = 0.0f64;
             for i in (0..grid.n()).filter(|&i| a[i] > 0.0) {
-                let heating =
-                    ocean.ekman_heating(i) + ocean.eddy_heating(i) + ocean.diffusion_heating(i);
+                let heating = ocean.ekman_heating(i)
+                    + ocean.eddy_heating(i)
+                    + ocean.diffusion_heating(i)
+                    + ocean.gyre_heating(i);
                 let change = (ocean.heat(i) - previous[i]) / dt;
                 worst = worst.max(a[i] * (change - heating).abs());
             }
@@ -3004,6 +3282,7 @@ mod tests {
                 e[0] += dt * ocean.ekman_heating(i);
                 e[1] += dt * ocean.eddy_heating(i);
                 e[2] += dt * ocean.diffusion_heating(i);
+                e[3] += dt * ocean.gyre_heating(i);
             }
         }
         // The running totals are each heating times the step, summed.
@@ -3018,7 +3297,7 @@ mod tests {
         let size: f64 = (0..grid.n())
             .map(|i| ocean.area[i] * ocean.transported_heat(i)[2].abs())
             .sum();
-        for k in 0..3 {
+        for k in 0..4 {
             assert!((total(k) / size).abs() < 1e-11, "{k}: {}", total(k));
         }
     }
@@ -3035,7 +3314,7 @@ mod tests {
         let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
         ocean.transport(1800.0);
         assert!((0..grid.n()).all(|i| ocean.diffusion_heating(i) == 0.0));
-        assert!((0..grid.n()).all(|i| ocean.transported_heat(i) == [0.0; 3]));
+        assert!((0..grid.n()).all(|i| ocean.transported_heat(i) == [0.0; 4]));
     }
 
     #[test]
@@ -3044,13 +3323,19 @@ mod tests {
         // coasts under a rough wind, hashed: pinned before the basins existed
         // (M2.12.5). If this fails, first ask whether the change was meant to
         // alter the ocean's results.
+        // Without the gyres (M2.12.7), which change it, as they should: this
+        // pins the Ekman and eddy transport through the gyres' rework of the
+        // advection.
         const BEFORE: u64 = 0xeffe_4cb2_19a0_8eb6;
         let grid = Grid::new(16);
         let mixed: Vec<f64> = (0..grid.n())
             .map(|i| 271.0 + 30.0 * scatter(i, 3))
             .collect();
         let mut ocean = Ocean::new(
-            OceanParams::default(),
+            OceanParams {
+                gyres: None,
+                ..OceanParams::default()
+            },
             &grid.ops(),
             &coasts(grid.n()),
             mixed,
@@ -3070,5 +3355,507 @@ mod tests {
                 (h ^ x.to_bits()).wrapping_mul(0x0000_0100_0000_01b3)
             });
         assert_eq!(hash, BEFORE, "new hash: {hash:#018x}");
+    }
+
+    /// Gyres that take each step's wind as it is and solve every step `dt`
+    /// long.
+    fn quick_gyres(dt: f64) -> GyreParams {
+        GyreParams {
+            averaging: dt,
+            interval: dt,
+            ..GyreParams::default()
+        }
+    }
+
+    /// Land within 30° of the prime meridian, pole to pole, and `rough`
+    /// elsewhere, with its whole-land cells turned to sea and its partial
+    /// ones at most 0.6 land: a continent for the gyres, and coasts with
+    /// partial cells, some of them not wet.
+    fn continent_coasts(grid: &Grid, rough: &[f64]) -> Vec<f64> {
+        grid.mesh
+            .cell_centers()
+            .iter()
+            .zip(rough)
+            .enumerate()
+            .map(|(i, (&p, &f))| {
+                let lon = to_lat_lon(p).1.to_degrees();
+                match i % 5 {
+                    _ if lon.abs() < 30.0 => 1.0,
+                    1 => 0.0,
+                    _ => 0.6 * f,
+                }
+            })
+            .collect()
+    }
+
+    /// Latitude and longitude of each cell (degrees).
+    fn lat_lon(grid: &Grid) -> Vec<(f64, f64)> {
+        grid.mesh
+            .cell_centers()
+            .iter()
+            .map(|&p| {
+                let (lat, lon) = to_lat_lon(p);
+                (lat.to_degrees(), lon.to_degrees())
+            })
+            .collect()
+    }
+
+    /// A box of ocean, 10° N to 50° N and 1° E to 61° E, about the North
+    /// Atlantic's subtropics, in a world of land (as in the gyres' tests).
+    fn ocean_box(grid: &Grid) -> Vec<f64> {
+        lat_lon(grid)
+            .iter()
+            .map(|&(lat, lon)| {
+                let inside = (10.0..=50.0).contains(&lat) && (1.0..=61.0).contains(&lon);
+                if inside { 0.0 } else { 1.0 }
+            })
+            .collect()
+    }
+
+    /// Trades and westerlies over the box, as stress on the water:
+    /// `τ_x = −0.1 cos(π (φ − 10°)/40°)` N m⁻², which drives one
+    /// anticyclonic gyre.
+    fn box_wind(grid: &Grid) -> Vec<[f64; 2]> {
+        lat_lon(grid)
+            .iter()
+            .map(|&(lat, _)| {
+                let theta = std::f64::consts::PI * (lat - 10.0) / 40.0;
+                [-0.1 * fms_math::cos(theta), 0.0]
+            })
+            .collect()
+    }
+
+    /// The two-layer ocean with only the gyres moving heat, solved every
+    /// step of `dt` from the step's wind.
+    fn gyres_only(dt: f64) -> OceanParams {
+        OceanParams {
+            diffusivity: 0.0,
+            convective_adjustment: false,
+            ice: None,
+            gyres: Some(quick_gyres(dt)),
+            ..OceanParams::still()
+        }
+    }
+
+    /// The box under its wind with warm water in the south of both layers,
+    /// after one step of `dt` with only the gyres moving heat.
+    fn gyre_box(grid: &Grid, dt: f64) -> Ocean {
+        let ll = lat_lon(grid);
+        let mixed: Vec<f64> = ll
+            .iter()
+            .map(|&(lat, _)| 300.0 - 0.4 * (lat - 10.0))
+            .collect();
+        let mut ocean = Ocean::new(
+            gyres_only(dt),
+            &grid.ops(),
+            &ocean_box(grid),
+            mixed,
+            ROTATION,
+        );
+        for (d, &(lat, _)) in ocean.deep.iter_mut().zip(&ll) {
+            *d = 285.0 - 0.2 * (lat - 10.0);
+        }
+        let wind = box_wind(grid);
+        ocean.set_wind_stress(|i| wind[i]);
+        ocean.transport(dt);
+        ocean
+    }
+
+    #[test]
+    fn the_gyre_carries_heat_poleward_along_the_western_coast() {
+        let grid = Grid::new(16);
+        let dt = 86_400.0;
+        let ll = lat_lon(&grid);
+        let before = {
+            let land = ocean_box(&grid);
+            let mixed: Vec<f64> = ll
+                .iter()
+                .map(|&(lat, _)| 300.0 - 0.4 * (lat - 10.0))
+                .collect();
+            let mut ocean = Ocean::new(gyres_only(dt), &grid.ops(), &land, mixed, ROTATION);
+            for (d, &(lat, _)) in ocean.deep.iter_mut().zip(&ll) {
+                *d = 285.0 - 0.2 * (lat - 10.0);
+            }
+            total(&ocean)
+        };
+        let ocean = gyre_box(&grid, dt);
+        assert_eq!(ocean.gyre_solves(), 1);
+        // Heat is conserved to round-off: measured below 1e-15 of it.
+        let drift = (total(&ocean) - before) / before;
+        assert!(drift.abs() < 1e-14, "relative drift {drift:e}");
+        // The heating sums to nothing over the ocean.
+        let a = &ocean.area;
+        let q = |which: &dyn Fn(f64, f64) -> bool| -> f64 {
+            (0..grid.n())
+                .filter(|&i| which(ll[i].0, ll[i].1))
+                .map(|i| a[i] * ocean.gyre_heating(i))
+                .sum()
+        };
+        let net = q(&|_, _| true);
+        let gross: f64 = (0..grid.n())
+            .map(|i| a[i] * ocean.gyre_heating(i).abs())
+            .sum();
+        assert!(
+            gross > 0.0 && (net / gross).abs() < 1e-12,
+            "{net} of {gross}"
+        );
+        // The boundary current runs north within a few degrees of the
+        // western coast, carrying warm water north: the coast warms and the
+        // interior, where the return flow runs south, cools, and the north
+        // of the basin gains what the south loses.
+        let (west, interior) = (
+            q(&|lat, lon| lon < 11.0 && lat > 15.0 && lat < 45.0),
+            q(&|lat, lon| lon > 21.0 && lat > 15.0 && lat < 45.0),
+        );
+        let north = q(&|lat, _| lat > 30.0);
+        eprintln!(
+            "western coast {:+.3e} W, interior {:+.3e} W, north of 30° N {:+.3e} W, of {gross:.3e} gross",
+            west, interior, north
+        );
+        assert!(west > 0.1 * gross, "{west} of {gross}");
+        assert!(interior < 0.0, "{interior}");
+        // Measured 0.45, −0.36 and 0.091 of the gross.
+        assert!(north > 0.05 * gross, "{north} of {gross}");
+        // The flow itself: north across 30° N in the western 10°.
+        let centers = grid.mesh.cell_centers();
+        let z0 = fms_math::sin(30f64.to_radians());
+        let northward = |lons: (f64, f64)| -> f64 {
+            ocean
+                .links
+                .iter()
+                .zip(ocean.gyre_mass_flux())
+                .map(|(link, f)| {
+                    let [a, b] = link.cells.map(|c| c as usize);
+                    let lon = ll[a].1;
+                    if !(lons.0..lons.1).contains(&lon) {
+                        return 0.0;
+                    }
+                    match (centers[a].z > z0, centers[b].z > z0) {
+                        (false, true) => *f,
+                        (true, false) => -f,
+                        _ => 0.0,
+                    }
+                })
+                .sum()
+        };
+        let (boundary, rest) = (northward((0.0, 11.0)), northward((11.0, 62.0)));
+        eprintln!(
+            "across 30° N: {:+.2} Sv in the west, {:+.2} Sv in the rest",
+            boundary / 1e9,
+            rest / 1e9
+        );
+        assert!(boundary > 5e9, "{boundary}");
+        // The basin is closed: what goes north comes back.
+        assert!(
+            (boundary + rest).abs() < 1e-6 * boundary,
+            "{} {}",
+            boundary,
+            rest
+        );
+    }
+
+    #[test]
+    fn a_uniform_ocean_is_not_heated_by_the_gyre() {
+        let grid = Grid::new(16);
+        let dt = 86_400.0;
+        let mut ocean = Ocean::new(
+            gyres_only(dt),
+            &grid.ops(),
+            &ocean_box(&grid),
+            vec![285.0; grid.n()],
+            ROTATION,
+        );
+        let wind = box_wind(&grid);
+        ocean.set_wind_stress(|i| wind[i]);
+        ocean.transport(dt);
+        let largest = ocean
+            .gyre_mass_flux()
+            .iter()
+            .fold(0.0, |m: f64, f| m.max(f.abs()));
+        assert!(largest > 1e9, "{largest}");
+        // Only the round-off of each cell's flow summing to zero is left:
+        // measured 0 K and 3e-12 W/m².
+        let (mut change, mut heating) = (0.0f64, 0.0f64);
+        for i in (0..grid.n()).filter(|&i| ocean.area[i] > 0.0) {
+            change = change
+                .max((ocean.mixed[i] - 285.0).abs())
+                .max((ocean.deep[i] - 285.0).abs());
+            heating = heating.max(ocean.gyre_heating(i).abs());
+        }
+        eprintln!("largest change {change:e} K, heating {heating:e} W/m²");
+        assert!(
+            change < 1e-10 && heating < 1e-6,
+            "{change} K, {heating} W/m²"
+        );
+    }
+
+    #[test]
+    fn each_layer_carries_its_share_of_the_gyre() {
+        let p = OceanParams::default();
+        assert_eq!(p.gyre_shares(), [50.0 / 700.0, 150.0 / 700.0]);
+        // A gyre shallower than the ocean is spread over the two layers.
+        let shallow = OceanParams {
+            gyres: Some(GyreParams {
+                depth: 100.0,
+                ..GyreParams::default()
+            }),
+            ..p
+        };
+        assert_eq!(shallow.gyre_shares(), [0.25, 0.75]);
+        // Each layer's heating is its share of the flow times its upstream
+        // temperature, summed over the cell's links: the layers carry their
+        // shares the same way.
+        for depth in [700.0, 100.0] {
+            let grid = Grid::new(16);
+            let dt = 600.0;
+            let params = OceanParams {
+                gyres: Some(GyreParams {
+                    depth,
+                    ..quick_gyres(dt)
+                }),
+                ..gyres_only(dt)
+            };
+            let ll = lat_lon(&grid);
+            let mixed: Vec<f64> = ll
+                .iter()
+                .map(|&(lat, _)| 300.0 - 0.4 * (lat - 10.0))
+                .collect();
+            let mut ocean = Ocean::new(params, &grid.ops(), &ocean_box(&grid), mixed, ROTATION);
+            for (d, &(lat, lon)) in ocean.deep.iter_mut().zip(&ll) {
+                *d = 285.0 - 0.1 * (lat - 10.0) + 0.05 * lon;
+            }
+            let (t_mixed, t_deep) = (ocean.mixed.clone(), ocean.deep.clone());
+            let wind = box_wind(&grid);
+            ocean.set_wind_stress(|i| wind[i]);
+            ocean.transport(dt);
+            assert_eq!(ocean.overturning.steps, 1);
+            let shares = params.gyre_shares();
+            let mut expected = [vec![0.0; grid.n()], vec![0.0; grid.n()]];
+            for (link, &f) in ocean.links.iter().zip(ocean.gyre_mass_flux()) {
+                let [a, b] = link.cells.map(|c| c as usize);
+                for (k, t) in [&t_mixed, &t_deep].into_iter().enumerate() {
+                    let upstream = if f > 0.0 { t[a] } else { t[b] };
+                    let carried = shares[k] * f * upstream * params.specific_heat;
+                    expected[k][a] -= carried;
+                    expected[k][b] += carried;
+                }
+            }
+            let (mut worst, mut largest) = (0.0f64, 0.0f64);
+            for i in (0..grid.n()).filter(|&i| ocean.area[i] > 0.0) {
+                let got = [
+                    ocean.gyre_mixed_heating(i),
+                    ocean.gyre_heating(i) - ocean.gyre_mixed_heating(i),
+                ];
+                for k in 0..2 {
+                    let e = expected[k][i] / ocean.area[i];
+                    worst = worst.max((got[k] - e).abs());
+                    largest = largest.max(e.abs());
+                }
+            }
+            eprintln!("depth {depth}: largest error {worst:e} of {largest:e} W/m²");
+            assert!(
+                largest > 1.0 && worst < 1e-9 * largest,
+                "{worst} of {largest}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gyres_answer_a_running_mean_of_the_wind_solved_each_interval() {
+        let grid = Grid::new(16);
+        let land = ocean_box(&grid);
+        let wind = box_wind(&grid);
+        let day = 86_400.0;
+        let averaging = 10.0 * day;
+        let params = OceanParams {
+            gyres: Some(GyreParams {
+                averaging,
+                interval: day,
+                ..GyreParams::default()
+            }),
+            ..gyres_only(day)
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
+        // The steady gyre of the wind itself.
+        let ops = grid.ops();
+        let stress: Vec<[f64; 2]> = (0..grid.n())
+            .map(|i| if land[i] < 1.0 { wind[i] } else { [0.0; 2] })
+            .collect();
+        let mut steady = Gyres::new(&ops, &ocean.basins, ROTATION, GyreParams::default());
+        steady.solve(&edge_stress(&ops, &stress));
+        let steady = steady.streamfunction().to_vec();
+        let largest = steady.iter().fold(0.0, |m: f64, p| m.max(p.abs()));
+        assert!(largest > 1e10, "{largest}");
+        // Quarter days: no solve until the first day is up.
+        let dt = day / 4.0;
+        let weight = dt / averaging;
+        let mut share = 0.0;
+        for step in 1..=4 {
+            ocean.set_wind_stress(|i| wind[i]);
+            ocean.transport(dt);
+            share += weight * (1.0 - share);
+            let i = (0..grid.n()).find(|&i| land[i] == 0.0).unwrap();
+            let [e, n] = ocean.gyre_wind(i);
+            assert!(
+                (e - share * wind[i][0]).abs() < 1e-15 && n == 0.0,
+                "{e} {share}"
+            );
+            let psi = ocean.gyres().unwrap().streamfunction();
+            if step < 4 {
+                assert_eq!(ocean.gyre_solves(), 0);
+                assert!(psi.iter().all(|&p| p == 0.0));
+                assert!(ocean.gyre_mass_flux().iter().all(|&f| f == 0.0));
+            } else {
+                // The gyre of the mean wind so far, which is the wind's
+                // share times the steady gyre.
+                assert_eq!(ocean.gyre_solves(), 1);
+                let (e, _) = worst_difference(psi, &steady, share);
+                assert!(e < 1e-6 * share * largest, "{e} of {}", share * largest);
+            }
+        }
+        // A day at a time, the mean closes on the wind and the gyre on its
+        // steady state: e^(−30) after 300 days.
+        let mut solves = 1;
+        for _ in 0..300 {
+            ocean.set_wind_stress(|i| wind[i]);
+            ocean.transport(day);
+            solves += 1;
+            assert_eq!(ocean.gyre_solves(), solves);
+        }
+        let (e, _) = worst_difference(ocean.gyres().unwrap().streamfunction(), &steady, 1.0);
+        eprintln!("after 300 days: {e:e} of {largest:e} kg/s");
+        assert!(e < 1e-6 * largest, "{e} of {largest}");
+    }
+
+    /// The largest `|a − scale b|`, and where.
+    fn worst_difference(a: &[f64], b: &[f64], scale: f64) -> (f64, usize) {
+        (0..a.len())
+            .map(|v| ((a[v] - scale * b[v]).abs(), v))
+            .fold((0.0, 0), |m, x| if x.0 > m.0 { x } else { m })
+    }
+
+    #[test]
+    fn the_gyres_see_the_stress_along_each_edge_as_the_solver_takes_it() {
+        // The running mean is the wind itself here; the ocean's projection,
+        // through its cell frames, is `gyres::edge_stress` to round-off, poles
+        // included.
+        let grid = Grid::new(16);
+        let rough = coasts(grid.n());
+        let land = continent_coasts(&grid, &rough);
+        let dt = 1800.0;
+        let params = OceanParams {
+            gyres: Some(quick_gyres(dt)),
+            ..OceanParams::default()
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![285.0; grid.n()], ROTATION);
+        ocean.set_wind_stress(rough_wind);
+        ocean.transport(dt);
+        let stress = &ocean.wind.as_ref().unwrap().stress;
+        let expected = edge_stress(&grid.ops(), stress);
+        let along = &ocean.gyres.as_ref().unwrap().along;
+        let (e, _) = worst_difference(along, &expected, 1.0);
+        let largest = expected.iter().fold(0.0, |m: f64, x| m.max(x.abs()));
+        eprintln!("largest difference {e:e} of {largest:e} N/m²");
+        assert!(
+            largest > 0.05 && e < 1e-15 * largest.max(1.0),
+            "{e} of {largest}"
+        );
+        assert!(ocean.gyre_mass_flux().iter().any(|&f| f != 0.0));
+    }
+
+    #[test]
+    fn an_aquaplanet_with_gyres_is_one_without_bit_for_bit() {
+        // No coast, no gyre: the solves are skipped, and nothing changes.
+        let grid = Grid::new(16);
+        let land = vec![0.0; grid.n()];
+        let mixed: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let run = |gyres: Option<GyreParams>| {
+            let params = OceanParams {
+                gyres,
+                ..OceanParams::default()
+            };
+            let mut ocean = Ocean::new(params, &grid.ops(), &land, mixed.clone(), ROTATION);
+            for _ in 0..20 {
+                ocean.set_wind_stress(rough_wind);
+                ocean.transport(1800.0);
+            }
+            ocean
+        };
+        let (with, without) = (run(Some(quick_gyres(1800.0))), run(None));
+        assert_eq!(with.gyre_solves(), 20);
+        assert_eq!(with.gyres().unwrap().stats(), &[None]);
+        assert!(with.gyre_mass_flux().iter().all(|&f| f == 0.0));
+        let bits = |o: &Ocean| -> Vec<u64> {
+            o.mixed
+                .iter()
+                .chain(&o.deep)
+                .chain(o.ekman_mass_flux())
+                .chain(o.eddy_mass_flux())
+                .chain(
+                    (0..grid.n())
+                        .flat_map(|i| o.transported_heat(i))
+                        .collect::<Vec<_>>()
+                        .iter(),
+                )
+                .map(|x| x.to_bits())
+                .collect()
+        };
+        assert!(bits(&with) == bits(&without), "the aquaplanet changed");
+    }
+
+    #[test]
+    fn the_gyres_with_ekman_and_eddies_conserve_heat_and_stay_within_range() {
+        // Rough winds, coasts with partial cells and temperatures, every
+        // flux on, at a normal step and at one long enough to need
+        // sub-steps.
+        let grid = Grid::new(16);
+        let land = continent_coasts(&grid, &coasts(grid.n()));
+        let mixed: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let deep: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 4))
+            .collect();
+        for (dt, calls) in [(1800.0, 20), (1.0e7, 3)] {
+            let params = OceanParams {
+                eddies: Some(EddyParams::default()),
+                gyres: Some(quick_gyres(dt)),
+                ..ekman_only()
+            };
+            let mut ocean = Ocean::new(params, &grid.ops(), &land, mixed.clone(), ROTATION);
+            ocean.deep.copy_from_slice(&deep);
+            let (low, high) = layer_range(&ocean);
+            let before = total(&ocean);
+            for _ in 0..calls {
+                ocean.set_wind_stress(rough_wind);
+                ocean.transport(dt);
+            }
+            let drift = (total(&ocean) - before) / before;
+            let steps = ocean.advection_steps();
+            eprintln!("dt {dt}: relative drift {drift:e}, {steps} sub-steps");
+            assert!(drift.abs() < 1e-14, "relative drift {drift} at dt {dt}");
+            if dt > 1e6 {
+                assert!(steps > 1, "{steps} sub-steps");
+            }
+            // Each layer's flow sums to nothing in a cell only to round-off,
+            // so a cell at the extreme can pass it by as much.
+            let (new_low, new_high) = layer_range(&ocean);
+            assert!(
+                new_low >= low - 1e-9 && new_high <= high + 1e-9,
+                "{new_low}–{new_high} from {low}–{high}"
+            );
+            assert!(ocean.gyre_mass_flux().iter().any(|f| *f != 0.0));
+            assert!(
+                ocean
+                    .gyres()
+                    .unwrap()
+                    .stats()
+                    .iter()
+                    .flatten()
+                    .all(|s| s.converged)
+            );
+        }
     }
 }

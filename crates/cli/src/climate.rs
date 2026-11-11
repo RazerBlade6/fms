@@ -18,7 +18,7 @@ use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
-use fms_ocean::{EddyParams, EkmanParams, IceParams, JumpLayers, OceanParams};
+use fms_ocean::{EddyParams, EkmanParams, GyreParams, IceParams, JumpLayers, OceanParams};
 use glam::DVec3;
 
 use crate::chart::{self, Series, TimeAxis};
@@ -91,10 +91,25 @@ pub struct ClimateArgs {
     /// down the slope of the isotherms that the deep layer returns.
     #[arg(long)]
     no_ocean_eddies: bool,
-    /// Without currents (`--no-ocean-ekman --no-ocean-eddies`), the deep
-    /// layer starts at the mixed layer's temperature but no warmer than this
-    /// (K); `inf` for no limit. Ignored with currents, where the deep layer
-    /// always starts at the mixed layer's temperature.
+    /// Turn off the wind-driven gyres, Stommel's depth-integrated flow with
+    /// its western boundary currents, which both layers carry their share of.
+    #[arg(long)]
+    no_ocean_gyres: bool,
+    /// Depth the gyres' flow is spread over (m); the mixed and deep layers
+    /// carry their depths' share of it, the rest flows below them. Ignored
+    /// with `--no-ocean-gyres`.
+    #[arg(long, default_value_t = GyreParams::default().depth)]
+    ocean_gyre_depth: f64,
+    /// The gyres' linear bottom friction (1/s), which sets how wide the
+    /// western boundary currents are and how much flows round Antarctica.
+    /// Ignored with `--no-ocean-gyres`.
+    #[arg(long, default_value_t = GyreParams::default().friction)]
+    ocean_gyre_friction: f64,
+    /// Without currents (`--no-ocean-ekman`, `--no-ocean-eddies` and
+    /// `--no-ocean-gyres`), the deep layer starts at the mixed layer's
+    /// temperature but no warmer than this (K); `inf` for no limit. Ignored
+    /// with currents, where the deep layer always starts at the mixed layer's
+    /// temperature.
     #[arg(long, default_value_t = OceanParams::default().deep_start_limit)]
     ocean_deep_start_limit: f64,
     /// Give sea ice and its snow the albedo of open water, which turns off
@@ -176,6 +191,38 @@ impl ClimateArgs {
         };
         (spin_up, self.years.unwrap_or(years))
     }
+
+    /// The ocean the options ask for.
+    fn ocean(&self) -> OceanParams {
+        let radiation = PhysicsParams::default().radiation;
+        OceanParams {
+            diffusivity: self.ocean_diffusivity,
+            convective_adjustment: !self.no_ocean_convection,
+            ekman: (!self.no_ocean_ekman).then(|| EkmanParams {
+                sverdrup: !self.no_ocean_sverdrup,
+                ..EkmanParams::default()
+            }),
+            eddies: (!self.no_ocean_eddies).then(EddyParams::default),
+            gyres: (!self.no_ocean_gyres).then(|| GyreParams {
+                depth: self.ocean_gyre_depth,
+                friction: self.ocean_gyre_friction,
+                ..GyreParams::default()
+            }),
+            deep_start_limit: self.ocean_deep_start_limit,
+            ice: OceanParams::default().ice.map(|ice| {
+                if self.no_ice_albedo {
+                    IceParams {
+                        albedo_limit: radiation.albedo,
+                        snow_albedo: radiation.albedo[0],
+                        ..ice
+                    }
+                } else {
+                    ice
+                }
+            }),
+            ..OceanParams::default()
+        }
+    }
 }
 
 /// The spin-up, for the run's description.
@@ -255,29 +302,7 @@ fn write_annual_cells(
 }
 
 pub fn run(args: ClimateArgs) -> Result<(), String> {
-    let radiation = PhysicsParams::default().radiation;
-    let ocean = OceanParams {
-        diffusivity: args.ocean_diffusivity,
-        convective_adjustment: !args.no_ocean_convection,
-        ekman: (!args.no_ocean_ekman).then(|| EkmanParams {
-            sverdrup: !args.no_ocean_sverdrup,
-            ..EkmanParams::default()
-        }),
-        eddies: (!args.no_ocean_eddies).then(EddyParams::default),
-        deep_start_limit: args.ocean_deep_start_limit,
-        ice: OceanParams::default().ice.map(|ice| {
-            if args.no_ice_albedo {
-                IceParams {
-                    albedo_limit: radiation.albedo,
-                    snow_albedo: radiation.albedo[0],
-                    ..ice
-                }
-            } else {
-                ice
-            }
-        }),
-        ..OceanParams::default()
-    };
+    let ocean = args.ocean();
     let (spin_up, years) = args.spin_up(ocean.has_currents());
     if years <= 1.0 {
         return Err("--years must be more than 1 (the last year is averaged)".into());
@@ -408,6 +433,18 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ColorScale::Temperature,
         ),
         (
+            "ocean.gyre_streamfunction",
+            "Streamfunction of the wind-driven gyres (clockwise round a maximum)",
+            "Sv",
+            ColorScale::Diverging,
+        ),
+        (
+            "ocean.gyre_heating",
+            "Heating of the ocean by the wind-driven gyres, per unit area of ocean",
+            "W m-2",
+            ColorScale::Diverging,
+        ),
+        (
             "rad.shortwave_cloud_effect",
             "Shortwave cloud radiative effect",
             "W m-2",
@@ -434,6 +471,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         "rad.clear_surface_longwave",
         "atm.surface_air_temperature",
         "atm.surface_stress_east",
+        "ocean.mixed_temperature",
     ];
     let names: Vec<&str> = maps.iter().map(|m| m.0).chain(extra).collect();
     // Monthly zonal means over the whole run, for the seasons and the drift.
@@ -559,6 +597,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let gained_index = [
         "ocean.ekman_heat_gained",
         "ocean.eddy_heat_gained",
+        "ocean.gyre_heat_gained",
         "ocean.diffusion_heat_gained",
     ]
     .map(|n| {
@@ -730,7 +769,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .map(|(from, gained)| {
             let fields = si.model().forcing().expect("forcing").cell_fields();
             let seconds = (si.steps() - from) as f64 * dt;
-            let heating: [Vec<f64>; 3] = std::array::from_fn(|j| {
+            let heating: [Vec<f64>; 4] = std::array::from_fn(|j| {
                 fields[gained_index[j]]
                     .values
                     .iter()
@@ -969,13 +1008,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
 
 /// Writes the final year's northward ocean heat transport by each transport
 /// and their total, from each one's mean heating per unit of ocean (W m⁻²,
-/// Ekman, eddies, diffusion), as `ocean_heat_transport.csv` and a chart, and
-/// returns the summary's line.
+/// Ekman, eddies, gyres, diffusion), as `ocean_heat_transport.csv` and a
+/// chart, and returns the summary's line.
 fn ocean_heat_transport(
     model: &fms_atmos::LayeredModel<'_>,
     bands: &LatitudeBands,
     land: &[f64],
-    heating: &[Vec<f64>; 3],
+    heating: &[Vec<f64>; 4],
     dir: &Path,
     width: usize,
 ) -> Result<String, String> {
@@ -1002,8 +1041,8 @@ fn ocean_heat_transport(
         .collect();
     q.push(total);
     let latitudes = edge_latitudes(bands);
-    let names = ["Ekman", "eddies", "diffusion", "total"];
-    let mut csv = String::from("latitude_deg,ekman_pw,eddies_pw,diffusion_pw,total_pw\n");
+    let names = ["Ekman", "eddies", "gyres", "diffusion", "total"];
+    let mut csv = String::from("latitude_deg,ekman_pw,eddies_pw,gyres_pw,diffusion_pw,total_pw\n");
     for (k, lat) in latitudes.iter().enumerate() {
         let _ = write!(csv, "{lat:.3}");
         for c in &q {
@@ -1063,29 +1102,36 @@ fn ocean_heat_transport(
     }
     let equator = latitudes.iter().position(|l| l.abs() < 1e-9);
     if let Some(k) = equator {
-        let _ = write!(line, " total at the equator {:+.3};", q[3][k]);
+        let _ = write!(line, " total at the equator {:+.3};", q[4][k]);
     }
     let _ = writeln!(
         line,
         " at the north pole (closure) {:+.1e}",
-        q[3].last().expect("bands")
+        q[4].last().expect("bands")
     );
     Ok(line)
 }
 
 /// How the ocean's currents read in the run's description.
-fn currents(ocean: &OceanParams) -> &'static str {
-    match (ocean.ekman, ocean.eddies.is_some()) {
-        (Some(EkmanParams { sverdrup: true, .. }), true) => {
-            "with Ekman transport (Sverdrup at the equator) and eddy transport"
+fn currents(ocean: &OceanParams) -> String {
+    let mut parts = Vec::new();
+    match ocean.ekman {
+        Some(EkmanParams { sverdrup: true, .. }) => {
+            parts.push("Ekman transport (Sverdrup at the equator)".to_string());
         }
-        (Some(_), true) => "with Ekman and eddy transport",
-        (Some(EkmanParams { sverdrup: true, .. }), false) => {
-            "with Ekman transport (Sverdrup at the equator)"
-        }
-        (Some(_), false) => "with Ekman transport",
-        (None, true) => "with eddy transport",
-        (None, false) => "without currents",
+        Some(_) => parts.push("Ekman transport".into()),
+        None => {}
+    }
+    if ocean.eddies.is_some() {
+        parts.push("eddy transport".into());
+    }
+    if let Some(gyres) = ocean.gyres {
+        parts.push(format!("wind-driven gyres over {} m", gyres.depth));
+    }
+    match parts.split_last() {
+        None => "without currents".into(),
+        Some((last, [])) => format!("with {last}"),
+        Some((last, rest)) => format!("with {} and {last}", rest.join(", ")),
     }
 }
 
@@ -1098,7 +1144,7 @@ mod tests {
         let default = OceanParams::default();
         assert_eq!(
             currents(&default),
-            "with Ekman transport (Sverdrup at the equator) and eddy transport"
+            "with Ekman transport (Sverdrup at the equator), eddy transport and wind-driven gyres over 700 m"
         );
         assert_eq!(currents(&OceanParams::still()), "without currents");
         let plain = OceanParams {
@@ -1106,15 +1152,39 @@ mod tests {
                 sverdrup: false,
                 ..EkmanParams::default()
             }),
+            gyres: None,
             ..default
         };
-        assert_eq!(currents(&plain), "with Ekman and eddy transport");
+        assert_eq!(currents(&plain), "with Ekman transport and eddy transport");
         assert_eq!(
             currents(&OceanParams {
                 ekman: None,
+                gyres: None,
                 ..default
             }),
             "with eddy transport"
+        );
+        assert_eq!(
+            currents(&OceanParams {
+                gyres: Some(GyreParams::default()),
+                ..OceanParams::still()
+            }),
+            "with wind-driven gyres over 700 m"
+        );
+    }
+
+    #[test]
+    fn the_gyre_options_set_the_gyres() {
+        let ocean = |options: &[&str]| parse(options).ocean().gyres;
+        assert_eq!(ocean(&[]), Some(GyreParams::default()));
+        assert_eq!(ocean(&["--no-ocean-gyres"]), None);
+        assert_eq!(
+            ocean(&["--ocean-gyre-depth", "500", "--ocean-gyre-friction", "1e-6"]),
+            Some(GyreParams {
+                depth: 500.0,
+                friction: 1e-6,
+                ..GyreParams::default()
+            })
         );
     }
 

@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.7.**
+**Next: M2.12.8.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -74,7 +74,7 @@ a visual check.
   - [x] 12.5. Ocean mask and basins (O-11)
   - [x] 12.6. Wind-driven gyre streamfunction per basin; western
     intensification in a closed basin
-  - [ ] 12.7. Gyre heat transport in the climate run
+  - [x] 12.7. Gyre heat transport in the climate run
   - [ ] 12.8. Earth run and close-out
 - [ ] 13. **Multi-rate scheduling**: `dt` from the CFL limit and a design
   maximum wind (O-13), rounded to divide the solar day; radiation every ~3 h and

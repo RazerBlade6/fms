@@ -9,9 +9,9 @@ use fms_atmos::column_physics::{
 };
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
-    ColumnPhysics, EARTH_ROTATION, EddyParams, EkmanParams, Forcing, Gas, HyperdiffusionOptions,
-    JumpLayers, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, OceanParams,
-    PhysicsParams,
+    ColumnPhysics, EARTH_ROTATION, EddyParams, EkmanParams, Forcing, Gas, GyreParams,
+    HyperdiffusionOptions, JumpLayers, LayeredModel, LayeredSemiImplicit,
+    LayeredSemiImplicitOptions, Levels, OceanParams, PhysicsParams,
 };
 use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
@@ -486,8 +486,36 @@ fn energy_and_water_close_with_ekman_transport() {
 }
 
 #[test]
+fn energy_and_water_close_with_gyre_transport() {
+    // The gyres alone move the ocean, round a continent: they answer the
+    // running mean of the wind, so are most of the way up by the end.
+    let params = PhysicsParams {
+        ocean: OceanParams {
+            ekman: None,
+            eddies: None,
+            gyres: Some(GyreParams::default()),
+            ..OceanParams::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let run = budget_run(&Planet::earth(), params, 45.0, continent_fraction);
+    eprintln!(
+        "energy residual {:+.5} W/m², water residual {:+.1e}, gyre heating up to {:.1} W/m²",
+        run.energy, run.water, run.most_gyre_heating
+    );
+    assert!(
+        run.energy.abs() < 0.1,
+        "energy residual {} W/m²",
+        run.energy
+    );
+    assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
+    assert!(run.most_gyre_heating > 1.0, "the gyres never moved heat");
+}
+
+#[test]
 fn energy_and_water_close_with_eddy_transport() {
-    // Eddies and the wind move the ocean together, as by default.
+    // Eddies, the wind and the gyres move the ocean together, as by
+    // default.
     let params = PhysicsParams::default();
     assert_eq!(
         params.ocean.eddies,
@@ -532,6 +560,8 @@ struct BudgetRun {
     most_sheet: f64,
     /// The fastest upwelling anywhere (kg m⁻² s⁻¹).
     most_upwelling: f64,
+    /// The strongest heating or cooling by the gyres anywhere (W m⁻²).
+    most_gyre_heating: f64,
 }
 
 fn budget_run(
@@ -548,6 +578,7 @@ fn budget_run(
     let (mut least_ice, mut most_ice) = (f64::INFINITY, 0.0f64);
     let mut most_sheet = 0.0f64;
     let mut most_upwelling = 0.0f64;
+    let mut most_gyre_heating = 0.0f64;
     let levels = Levels::new(&CLIMATE_LEVELS);
     run_on(
         planet,
@@ -605,6 +636,9 @@ fn budget_run(
             most_upwelling = field("ocean.upwelling")
                 .iter()
                 .fold(most_upwelling, |a, &w| a.max(w));
+            most_gyre_heating = field("ocean.gyre_heating")
+                .iter()
+                .fold(most_gyre_heating, |a, &q| a.max(q.abs()));
             if row.3 > DAY {
                 let ice = field("ocean.ice_fraction")
                     .iter()
@@ -641,6 +675,7 @@ fn budget_run(
         most_ice,
         most_sheet,
         most_upwelling,
+        most_gyre_heating,
     }
 }
 
