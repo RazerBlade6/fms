@@ -189,7 +189,8 @@ given world. Speed controls change steps per real second, never `dt`.
 |---|---|
 | Dynamics, surface fluxes, clouds, precipitation | every base step |
 | Radiation | every ~3 h |
-| Ocean, sea ice | every 1–6 h |
+| Ocean surface heat, sea ice | every base step |
+| Ocean transport | with radiation, ~3 h |
 | Hydrology | daily |
 | Climate statistics | accumulated daily; Köppen monthly; vegetation on long-run steps |
 

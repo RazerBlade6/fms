@@ -108,6 +108,12 @@ pub struct ClimateArgs {
     /// Ignored with `--no-ocean-gyres`.
     #[arg(long, default_value_t = GyreParams::default().friction)]
     ocean_gyre_friction: f64,
+    /// Hours between the ocean's transports (currents, eddies, diffusion,
+    /// convective adjustment), rounded to whole steps; 0 for every step.
+    /// The sea's surface heat and ice are always stepped every step.
+    /// Default: the radiation's interval.
+    #[arg(long)]
+    ocean_interval: Option<f64>,
     /// Without currents (`--no-ocean-ekman`, `--no-ocean-eddies` and
     /// `--no-ocean-gyres`), the deep layer starts at the mixed layer's
     /// temperature but no warmer than this (K); `inf` for no limit. Ignored
@@ -535,7 +541,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         geopotential,
     )?;
     // Radiation every whole number of steps, within 3 h and an eighth of the day.
-    let params = params.with_step(setup.dt, setup.day);
+    let mut params = params.with_step(setup.dt, setup.day);
+    if let Some(hours) = args.ocean_interval {
+        if hours.is_nan() || hours < 0.0 {
+            return Err("--ocean-interval must be 0 or more".into());
+        }
+        params.transport_interval = (hours * 3600.0 / setup.dt).round().max(1.0) * setup.dt;
+    }
     let model = setup
         .model
         .with_humidity_profile(params.radiation)
@@ -624,11 +636,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (years * world.planet.year_seconds() / setup.day).round(),
         &format!(
-            "; {} steps to the {:.4} h solar day, radiation every {} ({:.2} h); radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm; {}",
+            "; {} steps to the {:.4} h solar day, radiation every {} ({:.2} h), ocean transport every {} ({:.2} h); radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm; {}",
             setup.steps_per_day,
             setup.day / 3600.0,
             fms_atmos::radiation_steps(setup.dt, setup.day),
             params.radiation_interval / 3600.0,
+            (params.transport_interval / setup.dt).round(),
+            params.transport_interval / 3600.0,
             params.ocean.mixed_depth,
             params.ocean.deep_depth,
             currents(&params.ocean),

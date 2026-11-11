@@ -357,7 +357,11 @@ struct Wind {
     frames: Vec<[DVec3; 2]>,
     /// Eastward and northward stress on each cell's water, per m² of its
     /// ocean: the stress on open water times the share that is open (N m⁻²).
+    /// The sum of those set since the last transport until it takes their
+    /// mean; from then the mean.
     stress: Vec<[f64; 2]>,
+    /// Stresses summed in `stress` since the last transport.
+    samples: u32,
 }
 
 /// What Ekman transport needs to turn the wind into mass fluxes.
@@ -805,6 +809,8 @@ pub struct Ocean {
     /// transport, eddy transport, diffusion and the gyres (J per m² of
     /// ocean).
     transported: [Vec<f64>; 4],
+    /// [`transport`](Self::transport) calls so far.
+    transports: u64,
     basins: Basins,
 }
 
@@ -911,6 +917,7 @@ impl Ocean {
                 })
                 .collect(),
             stress: vec![[0.0; 2]; n],
+            samples: 0,
         });
         let ekman = params.ekman.map(|p| {
             let radius = ops.radius();
@@ -1028,6 +1035,7 @@ impl Ocean {
             overturning: Overturning::new(n),
             diffusion_heating: vec![0.0; n],
             transported: std::array::from_fn(|_| vec![0.0; n]),
+            transports: 0,
             basins,
         }
     }
@@ -1083,22 +1091,31 @@ impl Ocean {
     /// northward (N per m² of open water), for the Ekman transport and the
     /// gyres' running mean of the following [`transport`](Self::transport)
     /// calls. The ocean keeps it scaled by the share of the cell's ocean that
-    /// is open now. Does nothing without Ekman transport or gyres.
+    /// is open now. Set more than once between two transports, the
+    /// transport uses their mean, so it may run less often than the wind is
+    /// known. Does nothing without Ekman transport or gyres.
     pub fn set_wind_stress(&mut self, stress: impl Fn(usize) -> [f64; 2] + Sync) {
         let Some(wind) = &mut self.wind else {
             return;
         };
         let (area, ice) = (&self.area, self.ice.as_ref());
+        let first = wind.samples == 0;
+        wind.samples += 1;
         wind.stress
             .par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .enumerate()
             .for_each(|(i, s)| {
-                *s = if area[i] > 0.0 {
+                let now = if area[i] > 0.0 {
                     let open = 1.0 - ice.map_or(0.0, |ice| ice.fraction[i]);
                     stress(i).map(|t| open * t)
                 } else {
                     [0.0; 2]
+                };
+                *s = if first {
+                    now
+                } else {
+                    [s[0] + now[0], s[1] + now[1]]
                 };
             });
     }
@@ -1110,6 +1127,16 @@ impl Ocean {
     /// [`interval`](GyreParams::interval)), diffusion in both layers, then
     /// convective adjustment.
     pub fn transport(&mut self, dt: f64) {
+        if let Some(wind) = &mut self.wind {
+            if wind.samples > 1 {
+                let share = 1.0 / f64::from(wind.samples);
+                for s in &mut wind.stress {
+                    *s = [share * s[0], share * s[1]];
+                }
+            }
+            wind.samples = 0;
+        }
+        self.transports += 1;
         if let (Some(ekman), Some(wind)) = (&mut self.ekman, &self.wind) {
             ekman.mass_flux(&self.links, wind, &mut self.mass_flux[EKMAN]);
         }
@@ -1293,6 +1320,11 @@ impl Ocean {
             Some(g) if self.basins.is_wet(i as u32) => g.cell_streamfunction(i),
             _ => 0.0,
         }
+    }
+
+    /// [`transport`](Self::transport) calls since the ocean was made.
+    pub fn transports(&self) -> u64 {
+        self.transports
     }
 
     /// Sub-steps the latest [`transport`](Self::transport)'s advection took
@@ -3857,5 +3889,47 @@ mod tests {
                     .all(|s| s.converged)
             );
         }
+    }
+
+    #[test]
+    fn a_transport_after_several_winds_uses_their_mean() {
+        // Three winds then one transport, against their mean set once.
+        let grid = Grid::new(8);
+        let params = OceanParams {
+            eddies: None,
+            ..OceanParams::default()
+        };
+        let sst = grid.each(|z| 275.0 + 25.0 * (1.0 - z * z));
+        let start = || {
+            Ocean::new(
+                params,
+                &grid.ops(),
+                &vec![0.0; grid.n()],
+                sst.clone(),
+                ROTATION,
+            )
+        };
+        let winds = [[0.1, 0.02], [-0.04, 0.0], [0.06, -0.05]];
+        let (mut several, mut once) = (start(), start());
+        let dt = 3600.0;
+        for round in 0..3 {
+            for w in winds {
+                several.set_wind_stress(|i| [w[0] * (1.0 + 0.001 * i as f64), w[1]]);
+            }
+            several.transport(3.0 * dt);
+            once.set_wind_stress(|i| {
+                let east: f64 = winds.iter().map(|w| w[0] * (1.0 + 0.001 * i as f64)).sum();
+                let north: f64 = winds.iter().map(|w| w[1]).sum();
+                [east / 3.0, north / 3.0]
+            });
+            once.transport(3.0 * dt);
+            assert_eq!(several.transports(), round + 1);
+        }
+        let mut moved = 0.0f64;
+        for (i, (a, b)) in several.mixed.iter().zip(&once.mixed).enumerate() {
+            assert!((a - b).abs() < 1e-9, "cell {i}: {a} against {b}");
+            moved = moved.max((a - sst[i]).abs());
+        }
+        assert!(moved > 1e-4, "the wind moved nothing: {moved}");
     }
 }

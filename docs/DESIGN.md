@@ -218,6 +218,8 @@ The deep layer starts at the mixed layer's temperature.
 `OceanParams::slab(10.0)` is the old motionless 10 m slab, kept for pinned
 tests.
 
+The ocean's transport (currents, horizontal diffusion, convective adjustment) runs every whole number of steps, not every step, under the mean of the wind stress since the last transport. By default the interval is the radiation's (on Earth at 2,562 cells, every 5 steps, 2.86 h). The sea's surface heat exchange and the sea ice are still stepped every step.
+
 The climate run writes the northward heat transport of each of these (Ekman,
 eddies, gyres, diffusion) across each latitude, in PW, from every step of the final
 year. It also maps the gyre streamfunction and the heating each gyre gives

@@ -292,6 +292,7 @@ first line of `summary.txt` records the schedule.
 | `--no-ocean-gyres` | off | Turn off the wind-driven gyres: the Stommel streamfunction round each basin, with the island rule, carried in both layers |
 | `--ocean-gyre-depth H` | 700 | Depth the gyre flow is spread over, m; the mixed and deep layers carry their share of it |
 | `--ocean-gyre-friction R` | 2e-6 | Friction of the gyre balance, s⁻¹; ignored with `--no-ocean-gyres` |
+| `--ocean-interval H` | radiation's interval | Hours between the ocean's transports, rounded to whole steps; 0 for every step. The surface heat exchange and sea ice still run every step |
 | `--no-ocean-eddies` | off | Turn off Gent–McWilliams eddy transport: the flow in the mixed layer down the slope of the isotherms, returned by the deep layer |
 | `--ocean-deep-start-limit K` | 277.15 | Without currents, the deep layer starts no warmer than this; ignored with currents |
 | `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
@@ -308,7 +309,7 @@ In the layered runs (`climate`, `held-suarez`, `baroclinic`) a day is the planet
 solar day. The step divides it, with at least 24 steps a day, and radiation runs every
 whole number of steps within 3 h and an eighth of the day. Rates in mm/day are per
 86,400 s on every planet. The first line of the description printed at the start
-(and kept in `summary.txt`) gives the steps per solar day and the radiation interval.
+(and kept in `summary.txt`) gives the steps per solar day, the radiation interval and the ocean transport interval.
 
 Outputs in `output/climate/`:
 - `summary.txt`: final-year global means (surface temperature, absorbed

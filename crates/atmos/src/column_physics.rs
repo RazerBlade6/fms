@@ -308,6 +308,12 @@ pub struct PhysicsParams {
     /// should be a multiple of the step: see
     /// [`with_step`](PhysicsParams::with_step).
     pub radiation_interval: f64,
+    /// Time between the ocean's transports (s): currents, eddies, diffusion
+    /// and convective adjustment, under the mean wind since the last. They
+    /// run every whole number of steps nearest to this, and every step if
+    /// it is shorter than one. The sea's surface heat and its ice are
+    /// stepped every step whatever this is.
+    pub transport_interval: f64,
 }
 
 /// The longest time between radiation calls (s): clouds and temperatures
@@ -331,9 +337,11 @@ impl PhysicsParams {
     /// These parameters with the radiation interval set for steps of `dt`
     /// seconds on a planet whose solar day is `solar_day` seconds: a whole
     /// number of steps ([`radiation_steps`]), so sunlight is averaged over
-    /// exactly the time until the next call.
+    /// exactly the time until the next call. The ocean's transports take
+    /// the same interval.
     pub fn with_step(mut self, dt: f64, solar_day: f64) -> Self {
         self.radiation_interval = f64::from(radiation_steps(dt, solar_day)) * dt;
+        self.transport_interval = self.radiation_interval;
         self
     }
 }
@@ -436,6 +444,7 @@ impl Default for PhysicsParams {
             lapse_rate: 4.4e-3,
             convection_time: 2.0 * 3600.0,
             radiation_interval: 3.0 * 3600.0,
+            transport_interval: 0.0,
         }
     }
 }
@@ -897,6 +906,8 @@ pub struct ColumnPhysics<'a> {
     time: f64,
     /// Steps since the last radiation call.
     since_radiation: u32,
+    /// Steps since the ocean's last transport.
+    since_transport: u32,
     /// Land fraction of each cell.
     land_fraction: Vec<f64>,
     /// Sub-grid spread of each cell's surface height (m).
@@ -1024,6 +1035,7 @@ impl<'a> ColumnPhysics<'a> {
             planet,
             time,
             since_radiation: 0,
+            since_transport: 0,
             land_fraction,
             relief: vec![0.0; n],
             relief_slope: vec![DVec3::ZERO; n],
@@ -1214,6 +1226,12 @@ impl<'a> ColumnPhysics<'a> {
                 self.ocean.ice_temperature(i),
             ],
         }
+    }
+
+    /// Times the ocean has moved heat
+    /// ([`PhysicsParams::transport_interval`]).
+    pub fn ocean_transports(&self) -> u64 {
+        self.ocean.transports()
     }
 
     /// The last radiation call's fluxes per cell.
@@ -1736,7 +1754,12 @@ impl Forcing for ColumnPhysics<'_> {
                 let water = &surface[i].tiles[OCEAN];
                 [-water.stress_east, -water.stress_north]
             });
-            self.ocean.transport(dt);
+            self.since_transport += 1;
+            let every = (self.params.transport_interval / dt).round().max(1.0) as u32;
+            if self.since_transport >= every {
+                self.ocean.transport(f64::from(self.since_transport) * dt);
+                self.since_transport = 0;
+            }
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
         let (mut runoff, mut ocean_exchange) = (0.0, 0.0);

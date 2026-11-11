@@ -1244,7 +1244,7 @@ fn the_fixed_sst_aquaplanet_has_trades_and_a_rain_belt() {
 }
 
 #[test]
-fn radiation_runs_every_whole_number_of_steps_on_any_day_length() {
+fn radiation_and_ocean_transport_run_every_whole_number_of_steps_on_any_day_length() {
     // The physics alone under a fixed atmosphere: each call moves the Sun,
     // so the stored fluxes change exactly when radiation runs. The steps
     // don't divide 3 h, and on the 5 h day an eighth of the day is the limit.
@@ -1292,5 +1292,7 @@ fn radiation_runs_every_whole_number_of_steps_on_any_day_length() {
             .map(|j| j * every)
             .collect();
         assert_eq!(calls, expected, "{day_hours} h day");
+        // The ocean moves heat on the same steps.
+        assert_eq!(physics.ocean_transports(), expected.len() as u64);
     }
 }

@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.13.3.**
+**Next: M2.13.4.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -83,7 +83,7 @@ a visual check.
     `--solar-day`, `--year-days`
   - [x] 13.2. Radiation every whole number of steps, within 3 h and an eighth
     of the day
-  - [ ] 13.3. Measure the ocean's cost; decide its interval
+  - [x] 13.3. Ocean transport every whole number of steps (the radiation's interval by default), under the mean wind; `--ocean-interval`
   - [ ] 13.4. Close-out
 - [ ] 13.5. **Restart files**: save a spun-up state and start runs from it
   (a plain state dump; the versioned format is M4.2).

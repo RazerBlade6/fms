@@ -93,6 +93,9 @@ step from a design maximum wind: flows accelerate, and Williamson 5 blew up othe
 *Scheduled: M2.15.* Likely per-cell small vectors and scratch copies. Plan: profile,
 then stack arrays of `MAX_LAYERS` and reuse buffers.
 
+### O-49: Ocean transport is about 5% of a step
+*Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing.
+
 ## Dynamics
 
 ### O-14: The undamped core collapses to the grid scale
@@ -135,10 +138,10 @@ from line-by-line spectra, and Rayleigh scaled with mass.
 *Resolved at M2.10.1* by the two-band adding method on the cumulative path.
 
 ### O-48: Budget-test energy residual moves with the radiation interval
-*Watching.* The 45-day energy-closure tests on 642 cells leave -0.05 to -0.11 W/m²
+*Watching; M2.16, else a step after M2.* The 45-day energy-closure tests on 642 cells leave -0.05 to -0.11 W/m²
 depending on how often radiation runs (Ekman test, 21 steps a day: -0.089, -0.111,
 -0.071, -0.050 for every 1, 2, 3, 6 steps), with no trend. Cause not found. A year of
-Earth at 2,562 cells leaves +0.007. The test limit was raised from 0.1 to 0.15 at M2.13.2.
+Earth at 2,562 cells leaves +0.007. The test limit was raised from 0.1 to 0.15 at M2.13.2. Tuning (M2.16) may resolve it; if not, it goes to a dedicated step after M2.
 
 ## Moisture and clouds
 
