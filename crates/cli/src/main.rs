@@ -25,6 +25,7 @@ mod colormap;
 mod font;
 mod held_suarez;
 mod layered_run;
+mod ocean_transport;
 mod patterns;
 mod render;
 mod run_log;

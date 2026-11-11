@@ -26,6 +26,7 @@ use crate::layered_run::{
     DynamicsArgs, Fields, Output, Plan, SAMPLES_PER_DAY, build_model, describe, integrate, stepper,
     write_map,
 };
+use crate::ocean_transport::{edge_latitudes, northward_transport};
 use crate::render::write_png;
 use crate::{ImageArgs, WorldArgs, build_world};
 
@@ -69,6 +70,10 @@ pub struct ClimateArgs {
     /// slope of the isotherms, returned by the deep layer.
     #[arg(long)]
     ocean_eddies: bool,
+    /// The deep layer starts at the mixed layer's temperature, but no warmer
+    /// than this (K); `inf` for no limit.
+    #[arg(long, default_value_t = OceanParams::default().deep_start_limit)]
+    ocean_deep_start_limit: f64,
     /// Give sea ice and its snow the albedo of open water, which turns off
     /// the ice-albedo feedback.
     #[arg(long)]
@@ -160,6 +165,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             ..EkmanParams::default()
         }),
         eddies: args.ocean_eddies.then(EddyParams::default),
+        deep_start_limit: args.ocean_deep_start_limit,
         ice: OceanParams::default().ice.map(|ice| {
             if args.no_ice_albedo {
                 IceParams {
@@ -324,6 +330,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         "rad.surface_longwave",
         "rad.clear_surface_longwave",
         "atm.surface_air_temperature",
+        "atm.surface_stress_east",
     ];
     let names: Vec<&str> = maps.iter().map(|m| m.0).chain(extra).collect();
     // Monthly zonal means over the whole run, for the seasons and the drift.
@@ -424,6 +431,19 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             .position(|f| f.name == n)
             .expect("the physics reports its ice")
     });
+    // The heat each ocean transport has brought into each column since the
+    // start, whose change over the final year is its mean heating.
+    let gained_index = [
+        "ocean.ekman_heat_gained",
+        "ocean.eddy_heat_gained",
+        "ocean.diffusion_heat_gained",
+    ]
+    .map(|n| {
+        fields_now
+            .iter()
+            .position(|f| f.name == n)
+            .expect("the physics reports the ocean's transport")
+    });
     let land = world.fields.read(world.core.terrain.land_fraction).to_vec();
     let model = model.with_forcing(Box::new(physics));
     let bands = args
@@ -479,6 +499,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let mut sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; names.len()];
     let mut samples = 0.0;
     let mut start = None;
+    let mut gained_start: Option<(u64, Vec<Vec<f64>>)> = None;
     std::fs::create_dir_all(&out.dir)
         .map_err(|e| format!("cannot create {}: {e}", out.dir.display()))?;
     let path = out.dir.join("monthly_zonal.csv");
@@ -557,6 +578,14 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 si.water(),
                 si.water_budget(),
             ));
+            let fields = forcing.cell_fields();
+            gained_start = Some((
+                si.steps(),
+                gained_index
+                    .iter()
+                    .map(|&k| fields[k].values.clone())
+                    .collect(),
+            ));
         }
         if si.steps() > stats_from {
             climate.sample(si.model(), si.state());
@@ -582,6 +611,28 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &names,
         &means,
     )?;
+    let transport = gained_start
+        .map(|(from, gained)| {
+            let fields = si.model().forcing().expect("forcing").cell_fields();
+            let seconds = (si.steps() - from) as f64 * dt;
+            let heating: [Vec<f64>; 3] = std::array::from_fn(|j| {
+                fields[gained_index[j]]
+                    .values
+                    .iter()
+                    .zip(&gained[j])
+                    .map(|(now, then)| (now - then) / seconds)
+                    .collect()
+            });
+            ocean_heat_transport(
+                si.model(),
+                &lat_bands,
+                &land,
+                &heating,
+                &out.dir,
+                args.image.width,
+            )
+        })
+        .transpose()?;
     let zonal = crate::layered_run::upper_and_lower(si.model(), climate.means());
     let zonal_physics: Vec<Vec<f64>> = means.iter().map(|m| lat_bands.mean(geometry, m)).collect();
 
@@ -724,6 +775,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         g("atm.latent_heat_flux"),
         g("atm.sensible_heat_flux"),
     );
+    if let Some(line) = transport {
+        summary.push_str(&line);
+    }
     if let Some((d0, e0, b0, w0, wb0)) = start {
         let d1 = si.model().diagnostics(si.state());
         let (e1, b1, w1, wb1) = (
@@ -796,4 +850,110 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     std::fs::write(&path, &summary).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     print!("{summary}");
     Ok(())
+}
+
+/// Writes the final year's northward ocean heat transport by each transport
+/// and their total, from each one's mean heating per unit of ocean (W m⁻²,
+/// Ekman, eddies, diffusion), as `ocean_heat_transport.csv` and a chart, and
+/// returns the summary's line.
+fn ocean_heat_transport(
+    model: &fms_atmos::LayeredModel<'_>,
+    bands: &LatitudeBands,
+    land: &[f64],
+    heating: &[Vec<f64>; 3],
+    dir: &Path,
+    width: usize,
+) -> Result<String, String> {
+    let ops = model.operators();
+    let r2 = ops.radius() * ops.radius();
+    let area: Vec<f64> = ops
+        .geometry()
+        .cell_areas
+        .iter()
+        .zip(land)
+        .map(|(a, f)| (1.0 - f) * a * r2)
+        .collect();
+    let mut q: Vec<Vec<f64>> = heating
+        .iter()
+        .map(|h| {
+            northward_transport(bands, h, &area)
+                .iter()
+                .map(|w| w / 1e15)
+                .collect()
+        })
+        .collect();
+    let total: Vec<f64> = (0..q[0].len())
+        .map(|k| q.iter().map(|c| c[k]).sum())
+        .collect();
+    q.push(total);
+    let latitudes = edge_latitudes(bands);
+    let names = ["Ekman", "eddies", "diffusion", "total"];
+    let mut csv = String::from("latitude_deg,ekman_pw,eddies_pw,diffusion_pw,total_pw\n");
+    for (k, lat) in latitudes.iter().enumerate() {
+        let _ = write!(csv, "{lat:.3}");
+        for c in &q {
+            let _ = write!(csv, ",{:.6}", c[k]);
+        }
+        csv.push('\n');
+    }
+    let path = dir.join("ocean_heat_transport.csv");
+    std::fs::write(&path, csv).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    println!("ocean heat transport -> {}", path.display());
+    let series: Vec<Series> = names
+        .iter()
+        .zip(&q)
+        .map(|(name, values)| Series {
+            title: format!(
+                "NORTHWARD OCEAN HEAT TRANSPORT, {} (PW)",
+                name.to_uppercase()
+            ),
+            values,
+        })
+        .collect();
+    let axis = TimeAxis {
+        times: &latitudes,
+        caption: "LATITUDE (DEGREES)",
+        hours: false,
+    };
+    let (pixels, height) = chart::render_chart(
+        width,
+        "CLIMATE: FINAL-YEAR NORTHWARD OCEAN HEAT TRANSPORT",
+        &axis,
+        &series,
+    );
+    let path = dir.join("ocean_heat_transport.png");
+    write_png(&path, width, height, &pixels, &chart::palette())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    println!("ocean heat transport chart -> {}", path.display());
+    let extreme = |values: &[f64], north: bool| {
+        let pick = |a: &(usize, &f64), b: &(usize, &f64)| a.1.total_cmp(b.1);
+        let (k, v) = if north {
+            values.iter().enumerate().max_by(pick)
+        } else {
+            values.iter().enumerate().min_by(pick)
+        }
+        .expect("bands");
+        format!("{v:+.3} at {:.0}°", latitudes[k])
+    };
+    let mut line = String::from(
+        "Ocean heat transport (PW, final-year mean of every step; most northward / most southward):",
+    );
+    for (name, values) in names.iter().zip(&q) {
+        let _ = write!(
+            line,
+            " {name} {} / {};",
+            extreme(values, true),
+            extreme(values, false)
+        );
+    }
+    let equator = latitudes.iter().position(|l| l.abs() < 1e-9);
+    if let Some(k) = equator {
+        let _ = write!(line, " total at the equator {:+.3};", q[3][k]);
+    }
+    let _ = writeln!(
+        line,
+        " at the north pole (closure) {:+.1e}",
+        q[3].last().expect("bands")
+    );
+    Ok(line)
 }

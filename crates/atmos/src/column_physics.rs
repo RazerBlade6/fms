@@ -1862,6 +1862,41 @@ impl Forcing for ColumnPhysics<'_> {
                     .collect(),
             ),
             field(
+                "ocean.diffusion_heating",
+                "Heating of the ocean's two layers by horizontal diffusion, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.diffusion_heating(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.ekman_heat_gained",
+                "Heat Ekman transport has brought into the ocean's two layers since the start, \
+                 per unit area of ocean; its change over a span is the mean heating, from every step",
+                "J m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.transported_heat(i)[0])
+                    .collect(),
+            ),
+            field(
+                "ocean.eddy_heat_gained",
+                "Heat eddy transport has brought into the ocean's two layers since the start, \
+                 per unit area of ocean",
+                "J m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.transported_heat(i)[1])
+                    .collect(),
+            ),
+            field(
+                "ocean.diffusion_heat_gained",
+                "Heat horizontal diffusion has brought into the ocean's two layers since the start, \
+                 per unit area of ocean",
+                "J m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.transported_heat(i)[2])
+                    .collect(),
+            ),
+            field(
                 "ocean.upwelling",
                 "Deep water welling up into the mixed layer (negative where it sinks), per unit area of ocean",
                 "kg m-2 s-1",

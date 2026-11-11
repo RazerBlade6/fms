@@ -601,6 +601,12 @@ pub struct Ocean {
     /// positive from `cells[0]` to `cells[1]`).
     mass_flux: [Vec<f64>; 2],
     overturning: Overturning,
+    /// Mean heating of each cell's column by diffusion over the latest
+    /// [`transport`](Ocean::transport) (W per m² of ocean).
+    diffusion_heating: Vec<f64>,
+    /// Heat brought into each cell's column since the start by Ekman
+    /// transport, eddy transport and diffusion (J per m² of ocean).
+    transported: [Vec<f64>; 3],
 }
 
 impl Ocean {
@@ -781,6 +787,8 @@ impl Ocean {
             ice: params.ice.map(|p| SeaIce::new(p, n)),
             ekman,
             overturning: Overturning::new(n),
+            diffusion_heating: vec![0.0; n],
+            transported: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
         }
     }
 
@@ -880,6 +888,7 @@ impl Ocean {
             );
         }
         let diffusivity = self.params.diffusivity * self.eddy_scale;
+        self.diffusion_heating.fill(0.0);
         if diffusivity > 0.0 {
             let number = diffusivity * dt * self.largest_rate;
             let steps = (number / MAX_DIFFUSION_NUMBER).ceil().max(1.0);
@@ -890,9 +899,22 @@ impl Ocean {
                     self.diffuse_deep(amount);
                 }
             }
+            if dt > 0.0 {
+                self.diffusion_heating.iter_mut().for_each(|q| *q /= dt);
+            }
         }
         if self.params.convective_adjustment && self.params.deep_depth > 0.0 {
             self.adjust();
+        }
+        for (i, _) in self.area.iter().enumerate().filter(|(_, a)| **a > 0.0) {
+            let heating = [
+                self.ekman_heating(i),
+                self.eddy_heating(i),
+                self.diffusion_heating[i],
+            ];
+            for (total, q) in self.transported.iter_mut().zip(heating) {
+                total[i] += dt * q;
+            }
         }
     }
 
@@ -903,6 +925,7 @@ impl Ocean {
             &self.area,
             &mut self.convergence,
             amount,
+            (self.params.mixed_capacity(), &mut self.diffusion_heating),
         );
     }
 
@@ -913,7 +936,26 @@ impl Ocean {
             &self.area,
             &mut self.convergence,
             amount,
+            (self.params.deep_capacity(), &mut self.diffusion_heating),
         );
+    }
+
+    /// Heating of cell `i`'s column, both layers, by the latest
+    /// [`transport`](Self::transport)'s horizontal diffusion (W per m² of
+    /// its ocean); zero without it. Its integral over the ocean is zero.
+    pub fn diffusion_heating(&self, i: usize) -> f64 {
+        self.diffusion_heating[i]
+    }
+
+    /// Heat brought into cell `i`'s column, both layers, since the ocean was
+    /// made, by Ekman transport, eddy transport and diffusion, in that order
+    /// (J per m² of its ocean), accumulated every
+    /// [`transport`](Self::transport). The difference over a span divided by
+    /// its length is each one's mean heating, from every step. Convective
+    /// adjustment moves heat only within a column, and the ocean jumps of
+    /// spin-up aren't transport, so neither counts.
+    pub fn transported_heat(&self, i: usize) -> [f64; 3] {
+        std::array::from_fn(|k| self.transported[k][i])
     }
 
     /// What the planet's rotation multiplies the diffusivity and the eddy
@@ -1125,8 +1167,17 @@ impl Ocean {
 }
 
 /// One explicit diffusion step of `field`, where `amount` is the diffusivity
-/// times the step (m²). Flux form, so `Σ area · field` is conserved.
-fn diffuse(field: &mut [f64], links: &[Link], area: &[f64], convergence: &mut [f64], amount: f64) {
+/// times the step (m²). Flux form, so `Σ area · field` is conserved. Adds
+/// the heat each cell gained to `heat.1` (J per m² of ocean), with `heat.0`
+/// the layer's heat capacity (J m⁻² K⁻¹).
+fn diffuse(
+    field: &mut [f64],
+    links: &[Link],
+    area: &[f64],
+    convergence: &mut [f64],
+    amount: f64,
+    heat: (f64, &mut [f64]),
+) {
     convergence.fill(0.0);
     for link in links {
         let [a, b] = link.cells.map(|c| c as usize);
@@ -1134,9 +1185,17 @@ fn diffuse(field: &mut [f64], links: &[Link], area: &[f64], convergence: &mut [f
         convergence[a] += flux;
         convergence[b] -= flux;
     }
-    for ((t, c), a) in field.iter_mut().zip(convergence.iter()).zip(area) {
+    let (capacity, gained) = heat;
+    for (((t, c), a), q) in field
+        .iter_mut()
+        .zip(convergence.iter())
+        .zip(area)
+        .zip(gained)
+    {
         if *a > 0.0 {
-            *t += amount * c / a;
+            let change = amount * c / a;
+            *t += change;
+            *q += capacity * change;
         }
     }
 }
@@ -2703,5 +2762,93 @@ mod tests {
         };
         let land = vec![0.0; grid.n()];
         Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
+    }
+
+    #[test]
+    fn each_transports_heating_is_what_it_moved_and_sums_to_zero() {
+        // Rough coasts and temperatures, with every transport on.
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let start: Vec<f64> = (0..grid.n())
+            .map(|i| 275.0 + 25.0 * scatter(i, 3))
+            .collect();
+        let params = OceanParams {
+            convective_adjustment: false,
+            ice: None,
+            ekman: Some(EkmanParams::default()),
+            eddies: Some(EddyParams::default()),
+            ..OceanParams::default()
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
+        let dt = 3600.0;
+        let mut previous = (0..grid.n()).map(|i| ocean.heat(i)).collect::<Vec<_>>();
+        let mut expected = vec![[0.0; 3]; grid.n()];
+        for _ in 0..5 {
+            ocean.set_wind_stress(rough_wind);
+            ocean.transport(dt);
+            let a = &ocean.area;
+            let mut gross = 0.0;
+            for k in 0..3 {
+                let heating = |i: usize| match k {
+                    0 => ocean.ekman_heating(i),
+                    1 => ocean.eddy_heating(i),
+                    _ => ocean.diffusion_heating(i),
+                };
+                let net: f64 = (0..grid.n()).map(|i| a[i] * heating(i)).sum();
+                let size: f64 = (0..grid.n()).map(|i| a[i] * heating(i).abs()).sum();
+                assert!(
+                    size > 0.0 && (net / size).abs() < 1e-12,
+                    "{k}: {net} of {size}"
+                );
+                gross += size;
+            }
+            // Together they are each column's change in heat.
+            let mut worst = 0.0f64;
+            for i in (0..grid.n()).filter(|&i| a[i] > 0.0) {
+                let heating =
+                    ocean.ekman_heating(i) + ocean.eddy_heating(i) + ocean.diffusion_heating(i);
+                let change = (ocean.heat(i) - previous[i]) / dt;
+                worst = worst.max(a[i] * (change - heating).abs());
+            }
+            // The columns' heat is ~2e11 J per m², so a change is known only
+            // to ~3e-5 J per m² and 1e-8 W per m² over an hour.
+            assert!(worst < 1e-12 * gross, "{worst} of {gross}");
+            previous = (0..grid.n()).map(|i| ocean.heat(i)).collect();
+            for (i, e) in expected.iter_mut().enumerate().filter(|(i, _)| a[*i] > 0.0) {
+                e[0] += dt * ocean.ekman_heating(i);
+                e[1] += dt * ocean.eddy_heating(i);
+                e[2] += dt * ocean.diffusion_heating(i);
+            }
+        }
+        // The running totals are each heating times the step, summed.
+        for (i, e) in expected.iter().enumerate() {
+            assert_eq!(ocean.transported_heat(i), *e, "cell {i}");
+        }
+        let total = |k: usize| -> f64 {
+            (0..grid.n())
+                .map(|i| ocean.area[i] * ocean.transported_heat(i)[k])
+                .sum()
+        };
+        let size: f64 = (0..grid.n())
+            .map(|i| ocean.area[i] * ocean.transported_heat(i)[2].abs())
+            .sum();
+        for k in 0..3 {
+            assert!((total(k) / size).abs() < 1e-11, "{k}: {}", total(k));
+        }
+    }
+
+    #[test]
+    fn without_diffusion_there_is_no_diffusion_heating() {
+        let grid = Grid::new(8);
+        let land = vec![0.0; grid.n()];
+        let params = OceanParams {
+            diffusivity: 0.0,
+            ..OceanParams::default()
+        };
+        let start = grid.each(|z| 280.0 + 10.0 * z);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
+        ocean.transport(1800.0);
+        assert!((0..grid.n()).all(|i| ocean.diffusion_heating(i) == 0.0));
+        assert!((0..grid.n()).all(|i| ocean.transported_heat(i) == [0.0; 3]));
     }
 }
