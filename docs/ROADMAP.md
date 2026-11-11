@@ -78,9 +78,10 @@ a visual check.
 - [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
   with assertions on zonal-mean wind and temperature; grid-imprinting check in
   long-run Held–Suarez, with a fix if visible (O-1).
-- [ ] 15. **Earth benchmark, part 1**, against a reference climatology, with a
-  tuning pass: trade winds and jets, the tropical rain belt and its migration,
-  subtropical highs, monsoons, deserts.
+- [ ] 15. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
+  winds and temperatures aloft, with a tuning pass: cloud brightness and
+  albedo (O-42), trade winds and jets, the tropical rain belt and its
+  migration, subtropical highs, monsoons, deserts.
 - [ ] 16. **Performance pass**: target speed 2 (~340 steps/s) at the default
   resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,
   O-29).

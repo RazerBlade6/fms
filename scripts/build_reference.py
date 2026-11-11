@@ -1,21 +1,28 @@
 """Build the committed Earth reference tables in reference/earth from the raw
-downloads in data/reference/raw (scripts/fetch-reference.sh). From the
-repository root, with the project virtualenv (numpy, netCDF4):
+files in data/reference/raw: those scripts/fetch-reference.sh downloads, plus
+two that need an account (reference/earth/SOURCES.md says how to get them):
+era5.grib and CERES_EBAF-4.nc. From the repository root, with the project
+virtualenv (numpy, netCDF4, eccodes):
     .venv/bin/python scripts/build_reference.py
-Sources and caveats: reference/earth/SOURCES.md. Every table covers 1991–2020
-and calendar months."""
+Reading ERA5 takes a few minutes. All tables use calendar months; ERA5, GPCP,
+NCEP and NSIDC cover 1991–2020 and CERES 2001–2020."""
 import csv
 import json
 
+import eccodes
 import netCDF4
 import numpy as np
 
 RAW = "data/reference/raw"
 OUT = "reference/earth"
 YEARS = range(1991, 2021)
+CERES_YEARS = range(2001, 2021)
+GRAVITY = 9.80665  # ERA5's geopotential to height
 # NSIDC's Arctic pole hole (million km²; user guide v4, Table 8): left out of
 # the northern area, assumed fully ice-covered here, as extent assumes it.
 POLE_HOLE = {y: (0.31 if y <= 2007 else 0.029) for y in YEARS}
+ERA5_MONTHLY = ("skt", "2t", "msl", "10u")
+ERA5_FIXED = ("z", "lsm")
 
 
 def field(name, var):
@@ -24,6 +31,76 @@ def field(name, var):
     lon = np.asarray(d["lon"][:], dtype=float)
     data = np.ma.filled(np.ma.asarray(d[var][:], dtype=float), np.nan)
     return lat, lon, data
+
+
+def era5():
+    """ERA5 monthly climatology, 1991–2020: {name: (12, lat, lon)}, plus the
+    fixed fields as (lat, lon), and the grid."""
+    sums, counts, fixed = {}, {}, {}
+    lat = lon = None
+    with open(f"{RAW}/era5.grib", "rb") as f:
+        while True:
+            h = eccodes.codes_grib_new_from_file(f)
+            if h is None:
+                break
+            try:
+                name = eccodes.codes_get(h, "shortName")
+                date = eccodes.codes_get(h, "validityDate")
+                year, month = date // 10000, date // 100 % 100
+                if year not in YEARS or name not in ERA5_MONTHLY + ERA5_FIXED:
+                    continue
+                if name in ERA5_FIXED and name in fixed:
+                    continue
+                if lat is None:
+                    ni, nj = eccodes.codes_get(h, "Ni"), eccodes.codes_get(h, "Nj")
+                    lat0 = eccodes.codes_get(h, "latitudeOfFirstGridPointInDegrees")
+                    step = eccodes.codes_get(h, "jDirectionIncrementInDegrees")
+                    lat = lat0 - step * np.arange(nj)
+                    lon = eccodes.codes_get(h, "longitudeOfFirstGridPointInDegrees") \
+                        + eccodes.codes_get(h, "iDirectionIncrementInDegrees") * np.arange(ni)
+                values = eccodes.codes_get_values(h).reshape(len(lat), len(lon))
+                if name in ERA5_FIXED:
+                    fixed[name] = values
+                else:
+                    if name not in sums:
+                        sums[name] = np.zeros((12, len(lat), len(lon)))
+                        counts[name] = np.zeros(12)
+                    sums[name][month - 1] += values
+                    counts[name][month - 1] += 1
+            finally:
+                eccodes.codes_release(h)
+    for name in ERA5_MONTHLY:
+        if not (counts[name] == len(YEARS)).all():
+            raise SystemExit(f"ERA5 {name}: expected {len(YEARS)} years per month, got {counts[name]}")
+    clim = {k: sums[k] / counts[k][:, None, None] for k in ERA5_MONTHLY}
+    return lat, lon, clim, fixed
+
+
+def ceres():
+    """CERES EBAF monthly climatology, 2001–2020: {name: (12, lat, lon)}."""
+    d = netCDF4.Dataset(f"{RAW}/CERES_EBAF-4.nc")
+    dates = netCDF4.num2date(d["time"][:], d["time"].units)
+    pick = [[i for i, t in enumerate(dates) if t.year in CERES_YEARS and t.month == m]
+            for m in range(1, 13)]
+    if any(len(p) != len(CERES_YEARS) for p in pick):
+        raise SystemExit("CERES: missing months in 2001–2020")
+
+    def clim(var):
+        a = np.ma.filled(np.ma.asarray(d[var][:], dtype=float), np.nan)
+        return np.stack([a[p].mean(axis=0) for p in pick])
+
+    solar, sw, lw = clim("solar_mon"), clim("toa_sw_all_mon"), clim("toa_lw_all_mon")
+    sw_clr, lw_clr = clim("toa_sw_clr_c_mon"), clim("toa_lw_clr_c_mon")
+    fields = {
+        "solar": solar,
+        "absorbed_shortwave": solar - sw,
+        "outgoing_longwave": lw,
+        "shortwave_cloud_effect": sw_clr - sw,
+        "longwave_cloud_effect": lw_clr - lw,
+        "cloud_fraction": clim("cldarea_total_daynight_mon") / 100,
+        "reflected_shortwave": sw,
+    }
+    return np.asarray(d["lat"][:], dtype=float), np.asarray(d["lon"][:], dtype=float), fields
 
 
 def band_shares(lat):
@@ -37,8 +114,19 @@ def band_shares(lat):
     return share
 
 
+def weights(lat, lon):
+    return np.repeat(band_shares(lat)[:, None] / len(lon), len(lon), axis=1)
+
+
 def wrap(lon):
     return np.where(lon > 180, lon - 360, lon)
+
+
+def nearest(src_lat, src_lon, src, lat, lon):
+    """A source field sampled at the nearest point of another grid."""
+    iy = np.abs(src_lat[None, :] - lat[:, None]).argmin(axis=1)
+    ix = np.abs(((src_lon[None, :] - lon[:, None]) + 180) % 360 - 180).argmin(axis=1)
+    return src[np.ix_(iy, ix)]
 
 
 def region_mask(lat, lon, land, box):
@@ -51,65 +139,85 @@ def region_mask(lat, lon, land, box):
     return m
 
 
-def weighted(values, weights, mask):
-    w = np.where(mask & np.isfinite(values), weights, 0.0)
-    return float(np.nansum(np.where(w > 0, values, 0.0) * w) / w.sum()) if w.sum() > 0 else float("nan")
+def weighted(values, w, mask):
+    w = np.where(mask & np.isfinite(values), w, 0.0)
+    return float(np.sum(np.where(w > 0, values, 0.0) * w) / w.sum()) if w.sum() > 0 else float("nan")
+
+
+def zonal_rows(lat, monthly, coarsen=None):
+    """Monthly zonal means per grid row, or per `coarsen`-degree band:
+    yields (month, latitude, area share, [values])."""
+    share = band_shares(lat)
+    if coarsen is None:
+        groups = [(lat[j], [j]) for j in np.argsort(lat)]
+    else:
+        key = np.clip(np.floor((lat + 90) / coarsen), 0, 180 / coarsen - 1)
+        groups = [(-90 + (k + 0.5) * coarsen, list(np.nonzero(key == k)[0])) for k in np.unique(key)]
+    for m in range(12):
+        for centre, rows in groups:
+            w = share[rows]
+            yield m + 1, centre, w.sum(), [float((np.nanmean(f[m, rows], axis=1) * w).sum() / w.sum())
+                                           for f in monthly]
+
+
+def write_zonal(path, header, rows, digits):
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["month", "latitude_deg", "area_share"] + header)
+        for m, lat, share, values in rows:
+            w.writerow([m, f"{lat:.3f}", f"{share:.6f}"] + [f"{v:.{d}f}" for v, d in zip(values, digits)])
 
 
 def main():
     regions = {k: v for k, v in json.load(open(f"{OUT}/regions.json")).items() if not k.startswith("_")}
 
-    lat, lon, skt = field("ncep_skt", "skt")
-    skt = skt + 273.15  # degC to K
-    _, _, air = field("ncep_air2m", "air")
-    _, _, land = field("ncep_land", "land")
-    _, _, hgt = field("ncep_hgt", "hgt")
-    land, hgt = land[0], hgt[0]
+    print("reading ERA5 ...", flush=True)
+    elat, elon, e, efixed = era5()
+    eland, eheight = efixed["lsm"], efixed["z"] / GRAVITY
+    clat, clon, c = ceres()
+    nlat, nlon, nskt = field("ncep_skt", "skt")
+    nskt = nskt + 273.15  # degC to K
+    _, _, nland = field("ncep_land", "land")
+    nland = nland[0]
     glat, glon, pr = field("gpcp_precip", "precip")
+    g_land = nearest(elat, elon, eland, glat, glon)
+    c_land = nearest(elat, elon, eland, clat, clon)
 
-    n_share = band_shares(lat)
-    g_share = band_shares(glat)
-    n_w = np.repeat(n_share[:, None] / len(lon), len(lon), axis=1)
-    g_w = np.repeat(g_share[:, None] / len(glon), len(glon), axis=1)
-    # NCEP's land mask on the GPCP grid, nearest point.
-    iy = np.abs(lat[None, :] - glat[:, None]).argmin(axis=1)
-    ix = np.abs(((lon[None, :] - glon[:, None]) + 180) % 360 - 180).argmin(axis=1)
-    g_land = land[np.ix_(iy, ix)]
+    write_zonal(f"{OUT}/zonal_era5.csv",
+                ["skin_temperature_k", "air_2m_k", "sea_level_pressure_hpa", "wind_10m_east_m_s"],
+                zonal_rows(elat, [e["skt"], e["2t"], e["msl"] / 100, e["10u"]], coarsen=1.0), [3, 3, 2, 3])
+    write_zonal(f"{OUT}/zonal_gpcp.csv", ["precipitation_mm_day"], zonal_rows(glat, [pr]), [4])
+    ckeys = ["solar", "absorbed_shortwave", "outgoing_longwave", "shortwave_cloud_effect",
+             "longwave_cloud_effect", "cloud_fraction"]
+    write_zonal(f"{OUT}/zonal_ceres.csv", ckeys, zonal_rows(clat, [c[k] for k in ckeys]), [2, 2, 2, 2, 2, 4])
 
-    with open(f"{OUT}/zonal_ncep.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["month", "latitude_deg", "area_share", "skin_temperature_k", "air_2m_k"])
-        for m in range(12):
-            for j in np.argsort(lat):
-                w.writerow([m + 1, f"{lat[j]:.3f}", f"{n_share[j]:.6f}",
-                            f"{np.nanmean(skt[m, j]):.3f}", f"{np.nanmean(air[m, j]):.3f}"])
-
-    with open(f"{OUT}/zonal_gpcp.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["month", "latitude_deg", "area_share", "precipitation_mm_day"])
-        for m in range(12):
-            for j in np.argsort(glat):
-                w.writerow([m + 1, f"{glat[j]:.3f}", f"{g_share[j]:.6f}", f"{np.nanmean(pr[m, j]):.4f}"])
-
+    ew, nw, gw, cw = weights(elat, elon), weights(nlat, nlon), weights(glat, glon), weights(clat, clon)
+    annual = {k: v.mean(axis=0) for k, v in c.items()}
     with open(f"{OUT}/regions.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["region", "skin_temperature_k", "air_2m_k", "precipitation_mm_day",
-                    "ncep_height_m", "area_share"])
+        w.writerow(["region", "skin_temperature_k", "air_2m_k", "height_m", "ncep_skin_temperature_k",
+                    "precipitation_mm_day", "solar", "absorbed_shortwave", "outgoing_longwave",
+                    "shortwave_cloud_effect", "longwave_cloud_effect", "cloud_fraction", "albedo",
+                    "area_share"])
         for name, box in regions.items():
-            nm = region_mask(lat, lon, land, box)
-            gm = region_mask(glat, glon, g_land, box)
+            em = region_mask(elat, elon, eland, box)
+            cm = region_mask(clat, clon, c_land, box)
+            rad = {k: weighted(annual[k], cw, cm) for k in annual}
             w.writerow([name,
-                        f"{weighted(skt.mean(axis=0), n_w, nm):.2f}",
-                        f"{weighted(air.mean(axis=0), n_w, nm):.2f}",
-                        f"{weighted(pr.mean(axis=0), g_w, gm):.3f}",
-                        f"{weighted(hgt, n_w, nm):.0f}",
-                        f"{float(n_w[nm].sum()):.5f}"])
+                        f"{weighted(e['skt'].mean(axis=0), ew, em):.2f}",
+                        f"{weighted(e['2t'].mean(axis=0), ew, em):.2f}",
+                        f"{weighted(eheight, ew, em):.0f}",
+                        f"{weighted(nskt.mean(axis=0), nw, region_mask(nlat, nlon, nland, box)):.2f}",
+                        f"{weighted(pr.mean(axis=0), gw, region_mask(glat, glon, g_land, box)):.3f}"]
+                       + [f"{rad[k]:.2f}" for k in ckeys[:-1]]
+                       + [f"{rad['cloud_fraction']:.3f}", f"{rad['reflected_shortwave'] / rad['solar']:.4f}",
+                          f"{float(ew[em].sum()):.5f}"])
 
     ice = {}
     for h in "NS":
         for m in range(1, 13):
             rows = list(csv.reader(open(f"{RAW}/nsidc_{h}_{m:02d}.csv")))[1:]
-            rows = [[c.strip() for c in r] for r in rows if r and int(r[0]) in YEARS]
+            rows = [[x.strip() for x in r] for r in rows if r and int(r[0]) in YEARS]
             extent = [float(r[4]) for r in rows]
             area = [float(r[5]) + (POLE_HOLE[int(r[0])] if h == "N" else 0.0) for r in rows]
             if len(rows) != len(YEARS) or min(extent + area) < 0:
@@ -120,7 +228,8 @@ def main():
         w.writerow(["month", "north_area", "north_extent", "south_area", "south_extent"])
         for m in range(1, 13):
             w.writerow([m] + [f"{v:.2f}" for h in "NS" for v in ice[h, m]])
-    print("wrote", ", ".join(f"{OUT}/{n}" for n in ["zonal_ncep.csv", "zonal_gpcp.csv", "regions.csv", "sea_ice.csv"]))
+    print("wrote", ", ".join(f"{OUT}/{n}" for n in
+                             ["zonal_era5.csv", "zonal_gpcp.csv", "zonal_ceres.csv", "regions.csv", "sea_ice.csv"]))
 
 
 if __name__ == "__main__":

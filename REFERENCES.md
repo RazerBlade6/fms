@@ -169,6 +169,10 @@ confirmed, the entry says so.
   settings are archived at
   [doi:10.5281/zenodo.18771594](https://doi.org/10.5281/zenodo.18771594); we
   follow them where they differ from the paper's text.
+- **Trenberth, K. E. & Caron, J. M. (2001).** Estimates of meridional
+  atmosphere and ocean heat transports. *J. Climate* 14, 3433–3443.
+  [doi:10.1175/1520-0442(2001)014<3433:EOMAAO>2.0.CO;2](https://doi.org/10.1175/1520-0442(2001)014%3C3433:EOMAAO%3E2.0.CO;2)
+  — observed ocean heat transport by latitude, to check M2 step 12 against.
 
 ## Planet, terrain, hydrology and climate classification
 
@@ -200,10 +204,23 @@ confirmed, the entry says so.
 Kept in `reference/earth` (see its SOURCES.md) and compared against by
 `scripts/compare_earth.py`.
 
+- **Hersbach, H., Bell, B., Berrisford, P., et al. (2020).** The ERA5 global
+  reanalysis. *Q. J. R. Meteorol. Soc.* 146, 1999–2049.
+  [doi:10.1002/qj.3803](https://doi.org/10.1002/qj.3803)
+  — monthly skin and 2 m temperature, sea-level pressure, 10 m wind, terrain
+  and land mask, 1991–2020 (Copernicus Climate Data Store).
+- **Loeb, N. G., Doelling, D. R., Wang, H., Su, W., et al. (2018).** Clouds
+  and the Earth's Radiant Energy System (CERES) Energy Balanced and Filled
+  (EBAF) top-of-atmosphere (TOA) Edition-4.0 data product. *J. Climate* 31,
+  895–918. [doi:10.1175/JCLI-D-17-0208.1](https://doi.org/10.1175/JCLI-D-17-0208.1)
+  — the EBAF method and its global means (Table 5). The data used are EBAF-TOA
+  Edition 4.2.1, 2001–2020,
+  [doi:10.5067/TERRA-AQUA-NOAA20/CERES/EBAF-TOA_L3B004.2.1](https://doi.org/10.5067/TERRA-AQUA-NOAA20/CERES/EBAF-TOA_L3B004.2.1).
 - **Kalnay, E., Kanamitsu, M., Kistler, R., et al. (1996).** The NCEP/NCAR
   40-year reanalysis project. *Bull. Amer. Meteor. Soc.* 77, 437–471.
   [doi:10.1175/1520-0477(1996)077<0437:TNYRP>2.0.CO;2](https://doi.org/10.1175/1520-0477(1996)077%3C0437:TNYRP%3E2.0.CO;2)
-  — monthly skin and 2 m temperature, 1991–2020 long-term means from NOAA PSL.
+  — monthly skin temperature, 1991–2020 long-term means from NOAA PSL, as a
+  second reanalysis beside ERA5.
 - **Adler, R. F., Sapiano, M. R. P., Huffman, G. J., et al. (2018).** The
   Global Precipitation Climatology Project (GPCP) monthly analysis (new
   version 2.3) and a review of 2017 global precipitation. *Atmosphere* 9, 138.

@@ -311,7 +311,7 @@ Outputs in `output/climate/`:
 - `diagnostics.csv`, the surface-pressure GIF, maps of the final state, and
   the blow-up dump, as for `fms-climate baroclinic`.
 
-To compare an Earth run with 1991–2020 observations (temperature, rain and sea
+To compare an Earth run with observations (temperature, rain, radiation, cloud, wind and sea
 ice, globally, by latitude and over a few regions), run
 `python3 scripts/compare_earth.py output/<run>`; see
 [reference/earth/SOURCES.md](../reference/earth/SOURCES.md).

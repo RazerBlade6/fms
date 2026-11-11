@@ -205,9 +205,9 @@ of 0.01 K (annual), ~1 K (seasonal) and 1.6 K over Greenland:
 
 Terrain isn't the answer (M2.11.8): the region averages 1,860 m at 2.5k cells and 2,030 m
 at 10k, both ~237 K, and 1–3 smoothing passes cool it only 1–1.5 K. The ~224 K is the
-South Pole (2,835 m), while this mean includes the warmer ice shelves. Against NCEP
-(O-42) the region is +3.0 K, and about 0 K moved to NCEP's height (2,340 m; its mask
-and smooth terrain differ), so most of the "13 K" was the point comparison.
+South Pole (2,835 m), while this mean includes the warmer ice shelves. Against ERA5
+(O-42) the region is +1.9 K, and +0.6 K moved to ERA5's height (2,070 m), so most of
+the "13 K" was the point comparison.
 
 ### O-34: More rain on the lee of a ridge than the windward side
 *Scheduled: M2.15.* In idealized 2.5k-cell runs the lee gets more (3.5 against 2.5–2.9
@@ -249,18 +249,27 @@ Ellesmere Island are lost; at 269 K the Antarctic Peninsula and Svalbard are gai
 so is interior Alaska (M2.11.8).
 
 ### O-42: Earth against observations
-*Watching; M2.12, M2.15.* First comparison with 1991–2020 observations
-(`scripts/compare_earth.py`; year 20 of true time at 2.5k cells; NCEP skin temperature,
-GPCP rain, NSIDC ice area):
-- Global −1.4 K and rain +25% (3.37 against 2.69 mm/day). RMS over latitude and month
-  3.2 K and 1.1 mm/day.
-- North of 55°N −5 to −7 K, with seasons 9–17 K too wide. Greenland −6 K at 950 m
-  (NCEP 1,780 m). 40–60°S +1 to +3 K.
+*Watching; M2.12, M2.15.* First comparison with observations (`scripts/compare_earth.py`;
+year 20 of true time at 2.5k cells; ERA5 temperature and wind, GPCP rain, NSIDC ice,
+CERES radiation and cloud):
+- Global −1.7 K and rain +25% (3.37 against 2.69 mm/day). RMS over latitude and month:
+  T 3.5 K, rain 1.1 mm/day, absorbed sunlight 26 W/m², outgoing longwave 18 W/m².
+- **Clouds are the largest error.** Albedo 0.338 against 0.291, so 225 W/m² absorbed
+  against 241. Shortwave cloud effect −64.5 against −45.7 W/m², longwave +16.5 against
+  +27.9. Over tropical oceans similar cover (0.72 against 0.66) reflects twice as much
+  (−88 against −45): too bright and too low. Polar cloud is too thin (0.3–0.46 against
+  0.5–0.77), and the Sahara is cloudy (0.47 against 0.23).
+- North of 55°N −6 to −9 K, with seasons 8–20 K too wide; the Arctic Ocean −8 K (−5 K
+  against NCEP). Greenland −5 K at 950 m (ERA5 1,800 m). 45–60°S +1 to +3 K.
 - The subtropics are too wet: 3.1–3.7 mm/day at 20–31° against 1.8–2.3, the Sahara 3.9
   against 0.2 and Tibet 5.0 against 1.3. The Amazon is too dry (4.4 against 6.3).
+- The circulation is weak: the bottom layer's trades are 1.7–2.7 m/s and the southern
+  westerlies 3.5, against 3–4 and 6.8 at 10 m in ERA5, though they should be stronger.
 - Antarctica: see O-33. Sea ice: see O-36.
-- The M2.11.8 runs change the RMS by at most 0.3 K. Less smoothing leaves Tibet 5–6 K
-  further below the reference at its height, so the defaults stand.
+- Across the M2.11.8 runs the T RMS spans 3.2–3.65 K (default 3.46). Less smoothing
+  warms the Arctic Ocean ~2 K (O-30) but leaves Tibet 5–6 K colder at ERA5's height
+  and doubles the terrain wind error, so the defaults stand.
 
-Heat transport (M2.12) should warm the north and shrink the ice. The wet subtropics and
-deserts belong to M2.15. No radiation reference yet (CERES needs a login).
+Heat transport (M2.12) should warm the north and shrink the ice. Clouds, the subtropics'
+rain and the winds belong to M2.15's tuning pass; the bright clouds are likely the main
+reason the planet is cold.

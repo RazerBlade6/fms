@@ -3,10 +3,12 @@ From the repository root (plain Python, no packages needed):
     python3 scripts/compare_earth.py output/<run>
 where <run> is the --out-dir of `fms-climate climate` (or its climate/ folder).
 
-The model's final year is compared with 1991–2020 means. Model months start at
-the March equinox, so the reference is interpolated to the model's mid-months.
-Model cells are weighted equally (the icosahedral cells are close to equal
-area). Sources and caveats: reference/earth/SOURCES.md."""
+The model's final year is compared with observations: ERA5 temperature,
+terrain height and wind, GPCP rain and NSIDC sea ice for 1991–2020, and CERES
+radiation and cloud for 2001–2020. Model months start at the March equinox, so
+the reference is interpolated to the model's mid-months. Model cells are
+weighted equally (the icosahedral cells are close to equal area). Sources and
+caveats: reference/earth/SOURCES.md."""
 import csv
 import json
 import math
@@ -84,6 +86,12 @@ def fmt(x, spec):
     return format(x, spec) if math.isfinite(x) else format("—", spec.split(".")[0].lstrip("+") + "s")
 
 
+def rms(rows, i, j):
+    """Area-weighted RMS over bands and months between columns i and j."""
+    w = sum(r[1] for r in rows)
+    return math.sqrt(sum(r[1] * sum((a - b) ** 2 for a, b in zip(r[i], r[j])) / 12 for r in rows) / w)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -96,66 +104,101 @@ def main():
     monthly = [r for r in monthly if r["year"] == last]
     if len({r["month"] for r in monthly}) != 12:
         sys.exit(f"{run}: the final year ({last:.0f}) has fewer than 12 months")
+    zonal_annual = numeric(read(os.path.join(run, "zonal_mean.csv")))
     boxes = {k: v for k, v in json.load(open(os.path.join(REF, "regions.json"))).items()
              if not k.startswith("_")}
     regions = {r["region"]: r for r in read(os.path.join(REF, "regions.csv"))}
-    ncep = numeric(read(os.path.join(REF, "zonal_ncep.csv")))
+    era5 = numeric(read(os.path.join(REF, "zonal_era5.csv")))
     gpcp = numeric(read(os.path.join(REF, "zonal_gpcp.csv")))
+    ceres = numeric(read(os.path.join(REF, "zonal_ceres.csv")))
     ice_ref = numeric(read(os.path.join(REF, "sea_ice.csv")))
 
-    print(f"{run}: final year {last:.0f}, {len(cells)} cells, against 1991–2020\n")
+    print(f"{run}: final year {last:.0f}, {len(cells)} cells\n")
+    albedo = float("nan")
     summary = os.path.join(run, "summary.txt")
     if os.path.exists(summary):
-        text = open(summary, encoding="utf-8").read()
-        found = re.search(r"Final-year global means: (.*)", text)
-        if found:
-            print(f"Model only (no reference yet): {found.group(1)}\n")
+        found = re.search(r"planetary albedo ([\d.]+)", open(summary, encoding="utf-8").read())
+        albedo = float(found.group(1)) if found else albedo
+    g = regions["Global"]
+    print(f"Planetary albedo {fmt(albedo, '.3f')} (CERES {float(g['albedo']):.3f})\n")
 
-    # Regions, annual means.
-    print("Regions, annual mean. T is skin temperature, Ta is near-surface air (model: bottom layer\n"
-          "brought to the surface; reference: 2 m). 'at ref z' moves the model's T to the\n"
-          f"reference's terrain height at {LAPSE * 1000:.1f} K/km.")
-    print(f"{'region':16}{'T':>8}{'ref':>8}{'ΔT':>7}{'Ta':>8}{'ref':>8}{'ΔTa':>7}"
-          f"{'rain':>7}{'ref':>7}{'ratio':>7}{'z':>7}{'ref z':>7}{'ΔT at ref z':>12}")
+    selected = {}
     for name, box in boxes.items():
-        sel = [c for c in cells if in_box(c["latitude_deg"], c["longitude_deg"], c["land_fraction"], box)]
+        selected[name] = [c for c in cells
+                          if in_box(c["latitude_deg"], c["longitude_deg"], c["land_fraction"], box)]
+
+    def region_mean(name, key):
+        sel = selected[name]
+        return mean([c[key] for c in sel]) if sel and key in sel[0] else float("nan")
+
+    # Regions: temperature and rain.
+    print("Regions, annual mean. T is skin temperature, Ta near-surface air (model: bottom layer\n"
+          "brought to the surface; ERA5: 2 m). 'at ERA5 z' moves the model's T to ERA5's terrain\n"
+          f"height at {LAPSE * 1000:.1f} K/km. NCEP is a second reanalysis's T, for scale.")
+    print(f"{'region':16}{'T':>8}{'ERA5':>8}{'ΔT':>7}{'NCEP':>8}{'Ta':>8}{'ERA5':>8}{'ΔTa':>7}"
+          f"{'rain':>7}{'GPCP':>7}{'ratio':>7}{'z':>7}{'ERA5 z':>7}{'ΔT at ERA5 z':>13}")
+    for name in boxes:
         ref = regions.get(name)
-        if not sel or ref is None:
+        if not selected[name] or ref is None:
             print(f"{name:16} no cells")
             continue
-        t = mean([c["rad.surface_temperature"] for c in sel])
-        ta = mean([c["atm.surface_air_temperature"] for c in sel]) if "atm.surface_air_temperature" in sel[0] \
-            else float("nan")
-        rain = mean([c["atm.precipitation"] for c in sel])
-        z = mean([c["surface_height_m"] for c in sel]) if "surface_height_m" in sel[0] else float("nan")
-        rt, rta, rr, rz = (float(ref[k]) for k in
-                           ("skin_temperature_k", "air_2m_k", "precipitation_mm_day", "ncep_height_m"))
-        print(f"{name:16}{t:8.2f}{rt:8.2f}{t - rt:+7.2f}{fmt(ta, '8.2f')}{rta:8.2f}{fmt(ta - rta, '+7.2f')}"
-              f"{rain:7.2f}{rr:7.2f}{rain / rr:7.2f}{fmt(z, '7.0f')}{rz:7.0f}"
-              f"{fmt(t - rt - LAPSE * (rz - z), '+12.2f')}")
+        t, ta = region_mean(name, "rad.surface_temperature"), region_mean(name, "atm.surface_air_temperature")
+        rain, z = region_mean(name, "atm.precipitation"), region_mean(name, "surface_height_m")
+        rt, rta, rr, rz, nt = (float(ref[k]) for k in ("skin_temperature_k", "air_2m_k",
+                                                       "precipitation_mm_day", "height_m",
+                                                       "ncep_skin_temperature_k"))
+        print(f"{name:16}{t:8.2f}{rt:8.2f}{t - rt:+7.2f}{nt:8.2f}{fmt(ta, '8.2f')}{rta:8.2f}"
+              f"{fmt(ta - rta, '+7.2f')}{rain:7.2f}{rr:7.2f}{rain / rr:7.2f}{fmt(z, '7.0f')}{rz:7.0f}"
+              f"{fmt(t - rt - LAPSE * (rz - z), '+13.2f')}")
     print()
 
-    # Zonal means, annual and seasonal.
+    # Regions: radiation and cloud.
+    print("Regions, annual mean, against CERES (W/m²). ASR absorbed sunlight, OLR outgoing\n"
+          "longwave, CRE cloud radiative effect; cloud is cover (0–1).")
+    print(f"{'region':16}{'ASR':>7}{'ref':>7}{'OLR':>7}{'ref':>7}{'SW CRE':>8}{'ref':>7}"
+          f"{'LW CRE':>8}{'ref':>7}{'cloud':>7}{'ref':>7}")
+    for name in boxes:
+        ref = regions.get(name)
+        if not selected[name] or ref is None:
+            continue
+        vals = [(region_mean(name, m), float(ref[r])) for m, r in
+                (("rad.absorbed_shortwave", "absorbed_shortwave"), ("rad.outgoing_longwave", "outgoing_longwave"),
+                 ("rad.shortwave_cloud_effect", "shortwave_cloud_effect"),
+                 ("rad.longwave_cloud_effect", "longwave_cloud_effect"))]
+        cloud = (region_mean(name, "atm.cloud_cover"), float(ref["cloud_fraction"]))
+        print(f"{name:16}" + "".join(f"{a:{7 if i < 2 else 8}.1f}{b:7.1f}" for i, (a, b) in enumerate(vals))
+              + f"{cloud[0]:7.2f}{cloud[1]:7.2f}")
+    print()
+
+    # Zonal means.
     lats = sorted({r["latitude_deg"] for r in monthly})
+    wind = {round(r["latitude_deg"], 2): r["wind_lower_m_s"] for r in zonal_annual}
     rows = []
     for lat, lo, hi in bands(lats):
         sel = sorted((r for r in monthly if r["latitude_deg"] == lat), key=lambda r: r["month"])
-        share = sel[0]["area_share"]
-        t = [r["rad.surface_temperature"] for r in sel]
-        p = [r["atm.precipitation"] for r in sel]
-        rt = at_model_months(ref_zonal(ncep, "skin_temperature_k", lo, hi))
-        rp = at_model_months(ref_zonal(gpcp, "precipitation_mm_day", lo, hi))
-        rows.append((lat, share, t, rt, p, rp))
-    print("Zonal means: annual skin temperature (K) and rain (mm/day), and the seasonal range of\n"
-          "temperature (warmest minus coldest month).")
-    print(f"{'lat':>7}{'T':>8}{'ref':>8}{'ΔT':>7}{'rain':>7}{'ref':>7}{'range':>7}{'ref':>7}")
-    for lat, _, t, rt, p, rp in reversed(rows):
-        print(f"{lat:7.1f}{mean(t):8.2f}{mean(rt):8.2f}{mean(t) - mean(rt):+7.2f}"
-              f"{mean(p):7.2f}{mean(rp):7.2f}{max(t) - min(t):7.1f}{max(rt) - min(rt):7.1f}")
-    w = sum(s for _, s, *_ in rows)
-    rms_t = math.sqrt(sum(s * sum((a - b) ** 2 for a, b in zip(t, rt)) / 12 for _, s, t, rt, _, _ in rows) / w)
-    rms_p = math.sqrt(sum(s * sum((a - b) ** 2 for a, b in zip(p, rp)) / 12 for _, s, _, _, p, rp in rows) / w)
-    print(f"Area-weighted RMS over latitude and month: T {rms_t:.2f} K, rain {rms_p:.2f} mm/day\n")
+        rows.append((
+            lat, sel[0]["area_share"],
+            [r["rad.surface_temperature"] for r in sel], at_model_months(ref_zonal(era5, "skin_temperature_k", lo, hi)),
+            [r["atm.precipitation"] for r in sel], at_model_months(ref_zonal(gpcp, "precipitation_mm_day", lo, hi)),
+            [r["rad.absorbed_shortwave"] for r in sel], at_model_months(ref_zonal(ceres, "absorbed_shortwave", lo, hi)),
+            [r["rad.outgoing_longwave"] for r in sel], at_model_months(ref_zonal(ceres, "outgoing_longwave", lo, hi)),
+            [r["atm.cloud_cover"] for r in sel], at_model_months(ref_zonal(ceres, "cloud_fraction", lo, hi)),
+            wind.get(round(lat, 2), float("nan")), mean(ref_zonal(era5, "wind_10m_east_m_s", lo, hi)),
+        ))
+    print("Zonal means, annual: skin temperature (K) against ERA5 and its seasonal range (warmest\n"
+          "minus coldest month), rain (mm/day) against GPCP, absorbed sunlight and outgoing longwave\n"
+          "(W/m²) and cloud cover against CERES, and the eastward wind (m/s): the model's bottom\n"
+          "layer (~1 km deep) against ERA5 at 10 m, which is weaker.")
+    print(f"{'lat':>6}{'T':>7}{'ref':>7}{'ΔT':>6}{'range':>6}{'ref':>5}{'rain':>6}{'ref':>5}"
+          f"{'ASR':>6}{'ref':>5}{'OLR':>6}{'ref':>5}{'cloud':>6}{'ref':>5}{'u':>6}{'u10':>5}")
+    for r in reversed(rows):
+        lat, _, t, rt, p, rp, a, ra, o, ro, c, rc, u, ru = r
+        print(f"{lat:6.1f}{mean(t):7.1f}{mean(rt):7.1f}{mean(t) - mean(rt):+6.1f}{max(t) - min(t):6.1f}"
+              f"{max(rt) - min(rt):5.1f}{mean(p):6.2f}{mean(rp):5.1f}{mean(a):6.0f}{mean(ra):5.0f}"
+              f"{mean(o):6.0f}{mean(ro):5.0f}{mean(c):6.2f}{mean(rc):5.2f}{fmt(u, '6.1f')}{ru:5.1f}")
+    print(f"Area-weighted RMS over latitude and month: T {rms(rows, 2, 3):.2f} K, rain "
+          f"{rms(rows, 4, 5):.2f} mm/day, ASR {rms(rows, 6, 7):.1f} W/m², OLR {rms(rows, 8, 9):.1f} W/m², "
+          f"cloud {rms(rows, 10, 11):.2f}\n")
 
     # Sea ice by month.
     north = [sum(r["ice_cover"] * r["area_share"] for r in monthly if r["month"] == m + 1
@@ -164,8 +207,8 @@ def main():
                  and r["latitude_deg"] < 0) * EARTH_AREA for m in range(12)]
     ref_n = at_model_months([r["north_area"] for r in ice_ref])
     ref_s = at_model_months([r["south_area"] for r in ice_ref])
-    print("Sea-ice area (million km²; reference is NSIDC area, not extent). Model months from\n"
-          "the March equinox.")
+    print("Sea-ice area (million km²) against NSIDC area (not extent). Model months from the\n"
+          "March equinox.")
     print(f"{'month':>10}{'north':>8}{'ref':>7}{'south':>8}{'ref':>7}")
     for m in range(12):
         print(f"{month_label(m):>10}{north[m]:8.1f}{ref_n[m]:7.1f}{south[m]:8.1f}{ref_s[m]:7.1f}")

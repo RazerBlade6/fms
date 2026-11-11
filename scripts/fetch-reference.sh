@@ -2,8 +2,9 @@
 # Download the raw Earth reference data into data/reference/raw (gitignored).
 # From the repository root:
 #   scripts/fetch-reference.sh
-# Then build the committed tables with scripts/build_reference.py.
-# Sources and what each file holds: reference/earth/SOURCES.md.
+# ERA5 and CERES need an account and are downloaded by hand (see
+# reference/earth/SOURCES.md). Then build the committed tables with
+# scripts/build_reference.py.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RAW=data/reference/raw
@@ -19,9 +20,7 @@ get() { # url file
 # NCEP/NCAR Reanalysis 1, monthly long-term means 1991–2020, T62 Gaussian grid.
 NCEP=https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis.derived/surface_gauss
 get $NCEP/skt.sfc.mon.ltm.1991-2020.nc ncep_skt.nc
-get $NCEP/air.2m.mon.ltm.1991-2020.nc ncep_air2m.nc
 get https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis/surface_gauss/land.sfc.gauss.nc ncep_land.nc
-get https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis/surface_gauss/hgt.sfc.gauss.nc ncep_hgt.nc
 
 # GPCP v2.3 precipitation, monthly long-term means 1991–2020, 2.5° grid.
 get https://downloads.psl.noaa.gov/Datasets/gpcp/precip.mon.ltm.1991-2020.nc gpcp_precip.nc
