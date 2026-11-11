@@ -51,27 +51,30 @@ pub struct ClimateArgs {
     /// Most any ocean temperature may change in one jump (K).
     #[arg(long, default_value_t = OceanSpinUp::default().limit)]
     jump_limit: f64,
-    /// Horizontal heat diffusivity of the ocean (m²/s); 0 for none.
+    /// Horizontal heat diffusivity of the ocean (m²/s); 0 for none. The
+    /// paper's code uses 6250 when eddy transport is off.
     #[arg(long, default_value_t = OceanParams::default().diffusivity)]
     ocean_diffusivity: f64,
     /// Let a mixed layer colder than the deep layer stay on top.
     #[arg(long)]
     no_ocean_convection: bool,
-    /// Move the ocean with the wind: Ekman transport in the mixed layer,
-    /// returned by the deep layer, with upwelling and downwelling between.
+    /// Turn off Ekman transport, the wind-driven flow in the mixed layer that
+    /// the deep layer returns, with upwelling and downwelling between.
     #[arg(long)]
-    ocean_ekman: bool,
-    /// With `--ocean-ekman`, keep the paper's Eq. 4 at the equator instead
-    /// of blending in the Sverdrup transport of the wind's curl; ignored
-    /// without it.
+    no_ocean_ekman: bool,
+    /// Keep the paper's Eq. 4 at the equator instead of blending in the
+    /// Sverdrup transport of the wind's curl; ignored with
+    /// `--no-ocean-ekman`.
     #[arg(long)]
     no_ocean_sverdrup: bool,
-    /// Gent–McWilliams eddy transport: a flow in the mixed layer down the
-    /// slope of the isotherms, returned by the deep layer.
+    /// Turn off Gent–McWilliams eddy transport, the flow in the mixed layer
+    /// down the slope of the isotherms that the deep layer returns.
     #[arg(long)]
-    ocean_eddies: bool,
-    /// The deep layer starts at the mixed layer's temperature, but no warmer
-    /// than this (K); `inf` for no limit.
+    no_ocean_eddies: bool,
+    /// Without currents (`--no-ocean-ekman --no-ocean-eddies`), the deep
+    /// layer starts at the mixed layer's temperature but no warmer than this
+    /// (K); `inf` for no limit. Ignored with currents, where the deep layer
+    /// always starts at the mixed layer's temperature.
     #[arg(long, default_value_t = OceanParams::default().deep_start_limit)]
     ocean_deep_start_limit: f64,
     /// Give sea ice and its snow the albedo of open water, which turns off
@@ -160,11 +163,11 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let ocean = OceanParams {
         diffusivity: args.ocean_diffusivity,
         convective_adjustment: !args.no_ocean_convection,
-        ekman: args.ocean_ekman.then(|| EkmanParams {
+        ekman: (!args.no_ocean_ekman).then(|| EkmanParams {
             sverdrup: !args.no_ocean_sverdrup,
             ..EkmanParams::default()
         }),
-        eddies: args.ocean_eddies.then(EddyParams::default),
+        eddies: (!args.no_ocean_eddies).then(EddyParams::default),
         deep_start_limit: args.ocean_deep_start_limit,
         ice: OceanParams::default().ice.map(|ice| {
             if args.no_ice_albedo {
@@ -457,21 +460,10 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean{}{} and a {} m soil store, CO₂ {} ppm",
+            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm",
             params.ocean.mixed_depth,
             params.ocean.deep_depth,
-            match params.ocean.ekman {
-                Some(EkmanParams { sverdrup: true, .. }) => {
-                    " with Ekman transport, Sverdrup at the equator"
-                }
-                Some(_) => " with Ekman transport",
-                None => "",
-            },
-            if params.ocean.eddies.is_some() {
-                " with eddy transport"
-            } else {
-                ""
-            },
+            currents(&params.ocean),
             params.land.soil_depth,
             params.co2
         ),
@@ -956,4 +948,50 @@ fn ocean_heat_transport(
         q[3].last().expect("bands")
     );
     Ok(line)
+}
+
+/// How the ocean's currents read in the run's description.
+fn currents(ocean: &OceanParams) -> &'static str {
+    match (ocean.ekman, ocean.eddies.is_some()) {
+        (Some(EkmanParams { sverdrup: true, .. }), true) => {
+            "with Ekman transport (Sverdrup at the equator) and eddy transport"
+        }
+        (Some(_), true) => "with Ekman and eddy transport",
+        (Some(EkmanParams { sverdrup: true, .. }), false) => {
+            "with Ekman transport (Sverdrup at the equator)"
+        }
+        (Some(_), false) => "with Ekman transport",
+        (None, true) => "with eddy transport",
+        (None, false) => "without currents",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_description_names_the_currents() {
+        let default = OceanParams::default();
+        assert_eq!(
+            currents(&default),
+            "with Ekman transport (Sverdrup at the equator) and eddy transport"
+        );
+        assert_eq!(currents(&OceanParams::still()), "without currents");
+        let plain = OceanParams {
+            ekman: Some(EkmanParams {
+                sverdrup: false,
+                ..EkmanParams::default()
+            }),
+            ..default
+        };
+        assert_eq!(currents(&plain), "with Ekman and eddy transport");
+        assert_eq!(
+            currents(&OceanParams {
+                ekman: None,
+                ..default
+            }),
+            "with eddy transport"
+        );
+    }
 }

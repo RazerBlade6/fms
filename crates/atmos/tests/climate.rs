@@ -326,11 +326,12 @@ fn energy_and_water_close_through_freezing_and_melting() {
         luminosity: 0.9,
         ..PlanetParams::earth()
     });
+    // One shallow layer, which can't carry currents: still water.
     let params = PhysicsParams {
         ocean: OceanParams {
             mixed_depth: 5.0,
             deep_depth: 0.0,
-            ..OceanParams::default()
+            ..OceanParams::still()
         },
         ..PhysicsParams::default()
     };
@@ -418,10 +419,11 @@ fn energy_and_water_close_with_a_seeded_ice_sheet() {
 
 #[test]
 fn energy_and_water_close_with_ekman_transport() {
-    // The wind moves the default ocean, against a continent's coasts.
+    // The wind alone moves the ocean, against a continent's coasts.
     let params = PhysicsParams {
         ocean: OceanParams {
             ekman: Some(EkmanParams::default()),
+            eddies: None,
             ..OceanParams::default()
         },
         ..PhysicsParams::default()
@@ -442,15 +444,13 @@ fn energy_and_water_close_with_ekman_transport() {
 
 #[test]
 fn energy_and_water_close_with_eddy_transport() {
-    // Eddies and the wind move the default ocean together.
-    let params = PhysicsParams {
-        ocean: OceanParams {
-            ekman: Some(EkmanParams::default()),
-            eddies: Some(EddyParams::default()),
-            ..OceanParams::default()
-        },
-        ..PhysicsParams::default()
-    };
+    // Eddies and the wind move the ocean together, as by default.
+    let params = PhysicsParams::default();
+    assert_eq!(
+        params.ocean.eddies,
+        Some(EddyParams::default()),
+        "the default ocean has eddies"
+    );
     let run = budget_run(&Planet::earth(), params, 45.0, continent_fraction);
     eprintln!(
         "energy residual {:+.5} W/m², water residual {:+.1e}, upwelling up to {:.1e} kg/m²/s",

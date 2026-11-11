@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.4.**
+**Next: M2.12.5.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -68,7 +68,7 @@ a visual check.
   - [x] 12.2. Sverdrup transport near the equator, limited for slow rotators
   - [x] 12.3. Gent–McWilliams eddy transport; eddy coefficients that scale
     with rotation
-  - [ ] 12.4. Aquaplanet runs against Bhatnagar et al. 2026: heat transport
+  - [x] 12.4. Aquaplanet runs against Bhatnagar et al. 2026: heat transport
     in PW by component, equatorial cold tongue, ice edge, against transport
     off
   - [ ] 12.5. Ocean mask and basins (O-11)

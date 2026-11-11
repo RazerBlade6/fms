@@ -183,7 +183,7 @@ cover, each with its own temperature, albedo, roughness and fluxes.
 
 A 50 m mixed layer over a 150 m deep layer in each cell with ocean; it knows
 nothing about the atmosphere. Heat moves by:
-- Ekman transport (off by default, `--ocean-ekman`): the wind stress on open
+- Ekman transport: the wind stress on open
   water drives a mass flux in the mixed layer across each edge between ocean
   cells. With `w = exp(−f²/ε²)` and `ε` = 10⁻⁵ s⁻¹ it is the Ekman transport
   `(1 − w)/f · (−k×τ)`, a frictional flow `(w/ε) τ`, and near the equator a
@@ -194,7 +194,7 @@ nothing about the atmosphere. Heat moves by:
   Temperatures are carried upstream, in sub-steps that keep them within their
   range, and heat is conserved to round-off. `--no-ocean-sverdrup` gives
   `M = (ετ − f k×τ)/(ε² + f²)` instead;
-- eddy transport (off by default, `--ocean-eddies`), after Gent & McWilliams:
+- eddy transport, after Gent & McWilliams:
   a second mass flux in the mixed layer, `−ρ κ s` with `κ` = 2000 m²/s, where
   `s` is the slope of the isotherms: the gradient of the two layers' mean
   temperature over their difference across 500 m, floored at 0.25 K. The slope
@@ -207,8 +207,15 @@ nothing about the atmosphere. Heat moves by:
 The diffusivity and `κ` are Earth's. On another planet both are multiplied by
 Earth's rotation rate over the planet's, at most 4.
 
-The deep layer starts no warmer than 4 °C. `OceanParams::slab(10.0)` is the old
-motionless 10 m slab, kept for pinned tests.
+The deep layer starts at the mixed layer's temperature.
+`OceanParams::still()` is the ocean without currents (`--no-ocean-ekman
+--no-ocean-eddies`), whose deep layer starts no warmer than 4 °C.
+`OceanParams::slab(10.0)` is the old motionless 10 m slab, kept for pinned
+tests.
+
+The climate run writes the northward heat transport of each of these (Ekman,
+eddies, diffusion) across each latitude, in PW, from every step of the final
+year.
 
 ## Sea ice (`fms-ocean/ice`)
 

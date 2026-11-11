@@ -257,8 +257,8 @@ orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 world's terrain (`--continent`, `--heightmap`), lightly smoothed
 ([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Each cell has an ocean tile, a
 50 m mixed layer over a 150 m deep layer, with heat moving by horizontal
-diffusion and convective adjustment, and sea ice (Ekman transport is available
-with `--ocean-ekman`; the rest of the currents arrive in M2 step 12), and in
+diffusion and convective adjustment, and sea ice (with Ekman and eddy transport;
+the gyres arrive later in M2 step 12), and in
 proportion to its land fraction a land tile, so a skin over a
 1 m soil heat store with a 150 mm bucket of soil water and a snow pack. A
 world with no land is an aquaplanet (see also O-22, O-24, O-25). The run starts at rest from a single-column radiative–convective
@@ -268,6 +268,8 @@ settle, so by default its temperatures start shaped by the year's sunlight and
 it jumps forward at the end of years 2 to 4, repeating each year's change for
 three more, before two years in true time. At 642 cells that is within 0.04 K
 of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check it.
+With currents the deep layer takes about 15–20 years to adjust, and the default
+jumps reach about year 12 of true time (O-44).
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -275,11 +277,12 @@ of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check i
 | `--ocean-jumps N` | 3 | Years, from the second on, that end with an ocean jump; 0 for true time. `--years` must be at least N + 3 |
 | `--jump-years Y` | 3 | Years of the ocean's change added by each jump |
 | `--jump-limit K` | 3 | Most any ocean temperature may change in one jump (K) |
-| `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean at Earth's rotation, m²/s; 0 for none |
+| `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean at Earth's rotation, m²/s; 0 for none. The paper's code uses 6250 without eddy transport |
 | `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
-| `--ocean-ekman` | off | Wind-driven Ekman transport in the mixed layer, blending into Sverdrup transport near the equator, returned by the deep layer, with upwelling between |
-| `--no-ocean-sverdrup` | off | With `--ocean-ekman`: no Sverdrup transport, so the flow near the equator is frictional only |
-| `--ocean-eddies` | off | Gent–McWilliams eddy transport: a flow in the mixed layer down the slope of the isotherms, returned by the deep layer |
+| `--no-ocean-ekman` | off | Turn off Ekman transport: the wind-driven flow in the mixed layer, blending into Sverdrup transport near the equator, returned by the deep layer, with upwelling between |
+| `--no-ocean-sverdrup` | off | No Sverdrup transport, so the flow near the equator is frictional only; ignored with `--no-ocean-ekman` |
+| `--no-ocean-eddies` | off | Turn off Gent–McWilliams eddy transport: the flow in the mixed layer down the slope of the isotherms, returned by the deep layer |
+| `--ocean-deep-start-limit K` | 277.15 | Without currents, the deep layer starts no warmer than this; ignored with currents |
 | `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
 | `--no-ice-sheet` | off | Land that stays snow-covered keeps seasonal snow's albedo and roughness |
 | `--ice-sheet-start-temperature K` | 267 | Land whose start temperature is below this begins as an ice sheet (O-39) |
@@ -302,6 +305,9 @@ Outputs in `output/climate/`:
 - `zonal_mean.csv` and `zonal_mean.png`: winds, layer temperatures and
   every summarised physics field by latitude; the chart shows surface
   temperature, winds, net radiation, precipitation, evaporation and cloud;
+- `ocean_heat_transport.csv` and `ocean_heat_transport.png`: northward ocean
+  heat transport across each latitude by Ekman transport, eddies and diffusion,
+  and their total (PW);
 - final-year mean maps: `rad.surface_temperature`, `rad.outgoing_longwave`,
   `rad.absorbed_shortwave`, `atm.water_vapour`, `atm.precipitation`,
   `atm.evaporation`, `atm.cloud_cover`, `atm.relative_humidity_lower`,

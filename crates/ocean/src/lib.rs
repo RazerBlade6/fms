@@ -6,14 +6,14 @@
 //! atmosphere, over a deep layer, which exchanges heat only with the mixed
 //! layer and its neighbours. Heat travels by, in this order:
 //!
-//! - **Ekman transport** (if asked for): the wind's stress drives a mass
+//! - **Ekman transport**: the wind's stress drives a mass
 //!   flux in the mixed layer (the paper's Eq. 4) across every edge between
 //!   two cells that have ocean, and the deep layer carries the same mass
 //!   back. Where the mixed layer's flow diverges, deep water wells up into
 //!   it; where it converges, mixed water sinks. Each layer's temperature is
 //!   carried upstream, which on hexagons replaces the paper's centred
 //!   meridional flux.
-//! - **Eddy transport** (if asked for): a second mass flux in the mixed
+//! - **Eddy transport**: a second mass flux in the mixed
 //!   layer, down the slope of the isotherms between the two layers, returned
 //!   and made up from below in the same way and in the same step. It
 //!   flattens the isotherms: heat moves towards the cold side at the surface
@@ -47,7 +47,9 @@ use ice::{SeaIce, Water};
 use rayon::prelude::*;
 
 /// The ocean's layers and how heat moves through them. [`Default`] is the
-/// two-layer ocean of Bhatnagar et al. (2026, Table A1).
+/// two-layer ocean of Bhatnagar et al. (2026, Table A1) with all its heat
+/// transport, the paper's Case 7; [`still`](Self::still) is the same ocean
+/// without currents.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OceanParams {
     /// Density of seawater (kg m⁻³).
@@ -63,9 +65,13 @@ pub struct OceanParams {
     pub diffusivity: f64,
     /// Whether a mixed layer colder than the deep layer overturns.
     pub convective_adjustment: bool,
-    /// The deep layer starts at the mixed layer's temperature, but no warmer
-    /// than this (K). Without Ekman transport the deep layer can only lose
-    /// heat, so a warmer start would come back as a false warm spell.
+    /// The deep layer starts at the mixed layer's temperature, but, in an
+    /// ocean with neither Ekman nor eddy transport, no warmer than this (K).
+    /// Still water's deep layer can only lose heat, so a warmer start would
+    /// come back as a false warm spell. With currents the deep layer gains
+    /// heat where the mixed layer sinks and ends up far warmer than this
+    /// (about 288 K on Earth's aquaplanet), so the limit doesn't apply: it
+    /// cost the aquaplanet more than a decade of spin-up.
     pub deep_start_limit: f64,
     /// Sea ice; `None` lets the water cool past freezing.
     pub ice: Option<IceParams>,
@@ -92,14 +98,31 @@ impl Default for OceanParams {
             convective_adjustment: true,
             deep_start_limit: 277.15,
             ice: Some(IceParams::default()),
-            ekman: None,
-            eddies: None,
+            ekman: Some(EkmanParams::default()),
+            eddies: Some(EddyParams::default()),
             rotation_scaling: true,
         }
     }
 }
 
 impl OceanParams {
+    /// The default ocean without currents: heat moves only by diffusion and
+    /// convective adjustment, and the deep layer starts no warmer than
+    /// [`deep_start_limit`](Self::deep_start_limit). The default before M2
+    /// step 12, and the paper's Case 2 with convection.
+    pub fn still() -> Self {
+        Self {
+            ekman: None,
+            eddies: None,
+            ..Self::default()
+        }
+    }
+
+    /// Whether any current moves the water: Ekman or eddy transport.
+    pub fn has_currents(&self) -> bool {
+        self.ekman.is_some() || self.eddies.is_some()
+    }
+
     /// A motionless slab of fresh water `depth` metres deep, with no deep
     /// layer: the ocean before M2 step 11, kept for short spin-ups, tuning
     /// runs and the tests pinned to it.
@@ -683,10 +706,12 @@ impl Ocean {
             .map(|(s, a)| s / a)
             .fold(0.0, f64::max);
         let floor = params.ice.map_or(f64::NEG_INFINITY, |p| p.freezing);
-        let deep = surface
-            .iter()
-            .map(|t| t.min(params.deep_start_limit).max(floor))
-            .collect();
+        let limit = if params.has_currents() {
+            f64::INFINITY
+        } else {
+            params.deep_start_limit
+        };
+        let deep = surface.iter().map(|t| t.min(limit).max(floor)).collect();
         let ekman = params.ekman.map(|p| {
             let frames = mesh
                 .cell_centers()
@@ -1264,6 +1289,20 @@ mod tests {
         assert_eq!(p.deep_capacity(), 1026.0 * 3994.0 * 150.0);
         // The paper's 8000 m²/s as its code applies it.
         assert_eq!(p.diffusivity, 8000.0 * 50.0 / (50.0 + 150.0));
+        // All of its heat transport, Case 7.
+        assert_eq!(p.ekman, Some(EkmanParams::default()));
+        assert_eq!(p.eddies, Some(EddyParams::default()));
+        assert!(p.convective_adjustment && p.has_currents());
+        let still = OceanParams::still();
+        assert!(!still.has_currents());
+        assert_eq!(
+            still,
+            OceanParams {
+                ekman: None,
+                eddies: None,
+                ..p
+            }
+        );
     }
 
     #[test]
@@ -1282,13 +1321,35 @@ mod tests {
     }
 
     #[test]
+    fn with_currents_the_deep_layer_starts_at_the_mixed_layers_temperature() {
+        let grid = Grid::new(8);
+        let land = vec![0.0; grid.n()];
+        let p = IceParams::default();
+        // Warm water well above the limit, and some below freezing.
+        let start = grid.each(|z| 300.0 - 40.0 * z * z);
+        for (ekman, eddies) in [(true, false), (false, true), (true, true)] {
+            let params = OceanParams {
+                ekman: ekman.then(EkmanParams::default),
+                eddies: eddies.then(EddyParams::default),
+                ..OceanParams::default()
+            };
+            assert_eq!(params.deep_start_limit, 277.15, "the limit is still set");
+            let ocean = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
+            for (d, s) in ocean.deep_temperature().iter().zip(&start) {
+                assert_eq!(*d, s.max(p.freezing), "Ekman {ekman}, eddies {eddies}");
+            }
+        }
+    }
+
+    #[test]
     fn the_deep_layer_starts_no_warmer_than_its_limit() {
+        // Still water only.
         let grid = Grid::new(8);
         let start = grid.each(|z| 288.0 - 20.0 * z * z);
         let land = vec![0.0; grid.n()];
         let params = OceanParams {
             ice: None,
-            ..OceanParams::default()
+            ..OceanParams::still()
         };
         let ocean = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
         for (d, s) in ocean.deep_temperature().iter().zip(&start) {
@@ -1335,7 +1396,7 @@ mod tests {
             .collect();
         let params = OceanParams {
             convective_adjustment: false,
-            ..OceanParams::default()
+            ..OceanParams::still()
         };
         for dt in [1800.0, 3.0e10] {
             let mut ocean = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
@@ -1390,7 +1451,7 @@ mod tests {
             convective_adjustment: false,
             deep_start_limit: f64::INFINITY,
             ice: None,
-            ..OceanParams::default()
+            ..OceanParams::still()
         };
         let start: Vec<f64> = p2.iter().map(|x| 20.0 * x).collect();
         let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
@@ -1449,7 +1510,7 @@ mod tests {
         let params = OceanParams {
             diffusivity: 0.0,
             deep_start_limit: 280.0,
-            ..OceanParams::default()
+            ..OceanParams::still()
         };
         // The deep layer starts at 280 K everywhere. The north's surface is
         // warmer than that; the south's is chilled 8 K below it.
@@ -1913,10 +1974,9 @@ mod tests {
         OceanParams {
             diffusivity: 0.0,
             convective_adjustment: false,
-            deep_start_limit: f64::INFINITY,
             ice: None,
             ekman: Some(EkmanParams::default()),
-            ..OceanParams::default()
+            ..OceanParams::still()
         }
     }
 
@@ -2087,11 +2147,16 @@ mod tests {
     fn tropical_easterlies_upwell_cold_water_on_the_equator() {
         let grid = Grid::new(16);
         let land = vec![0.0; grid.n()];
-        let params = OceanParams {
-            deep_start_limit: 285.0,
-            ..ekman_only()
-        };
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![300.0; grid.n()], ROTATION);
+        let mut ocean = Ocean::new(
+            ekman_only(),
+            &grid.ops(),
+            &land,
+            vec![300.0; grid.n()],
+            ROTATION,
+        );
+        // With currents the deep layer starts at the mixed layer's
+        // temperature; make it colder.
+        ocean.deep.fill(285.0);
         // Easterlies within 30° of the equator, strongest on it.
         let centers = grid.mesh.cell_centers();
         let easterly = |i: usize| {
@@ -2160,7 +2225,7 @@ mod tests {
             .collect();
         let new = || {
             Ocean::new(
-                OceanParams::default(),
+                OceanParams::still(),
                 &grid.ops(),
                 &land,
                 start.clone(),
@@ -2843,7 +2908,7 @@ mod tests {
         let land = vec![0.0; grid.n()];
         let params = OceanParams {
             diffusivity: 0.0,
-            ..OceanParams::default()
+            ..OceanParams::still()
         };
         let start = grid.each(|z| 280.0 + 10.0 * z);
         let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);

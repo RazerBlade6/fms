@@ -171,8 +171,9 @@ below-sea-level region connected to the open sea, leaving closed basins to hydro
 Narrow straits make connectivity unreliable.
 
 ### O-23: An ice-free aquaplanet runs warmer than Earth
-*Scheduled: M2.12, M2.15.* The ice-free four-layer slab settles at 290.7 K. Ice and
-ocean transport cool it further; M2.15 sets the final temperature.
+*Scheduled: M2.15.* The ice-free four-layer slab settles at 290.7 K. Ice and
+ocean transport cool it further; M2.15 sets the final temperature. With currents
+the tilted aquaplanet is heading for about 294 K.
 
 ### O-30: Terrain is smoothed, and spreads over coastal ocean
 *Watching.* Ten passes cut the persistent σ-coordinate wind error on Earth at 10k cells
@@ -236,7 +237,8 @@ tilt. Earth hasn't settled at year 20 either (−0.68 W/m² at the top).
 *Watching; revisit at M2.12.* On a no-tilt aquaplanet the poles never melt: snow piles
 up and floods into ice past the 10 m limit, as in the authors' code, and the top of the
 atmosphere stays near −1 W/m². Energy still closes, and the ice edge is set by the much
-thinner ice. A long-lived perennial world would need a snow limit or a thinner start.
+thinner ice. A long-lived perennial world would need a snow limit or a thinner start. With currents (M2.12.4) the polar ice thins over six years where it
+used to pile up, but the cap hasn't opened.
 
 ### O-39: Ice sheets are seeded from the start temperature
 *Watching; M2.11.7, M2.11.8, M2.15, M4.* A year of full snow cover alone made almost no
@@ -273,3 +275,22 @@ CERES radiation and cloud):
 Heat transport (M2.12) should warm the north and shrink the ice. Clouds, the subtropics'
 rain and the winds belong to M2.15's tuning pass; the bright clouds are likely the main
 reason the planet is cold.
+
+### O-43: The ocean carries about a quarter of the paper's heat
+*Scheduled: M2.15.* On the tilted aquaplanet (642 cells, 20–40 years) the ocean's
+transport peaks at 0.7–0.8 PW against Bhatnagar et al.'s 2.25–3.25. Eddies (0.5–0.65
+PW against ~0.7) and diffusion (under 0.2) are close; Ekman transport is ~0.4 PW. The
+wind stress is 4–5× weaker than Earth's (trades −0.011 to −0.014 N/m², westerlies
++0.015 to +0.026), and Ekman transport is linear in it. With no tilt the equator cools
+3–4 K against no transport (paper ~8) and 55–65° warms 3.5 K (paper 5–6), with the ice
+edge moving from 57° to 67°. Same at 2,562 cells. Not tuned here: fix the winds first
+(O-42).
+
+### O-44: With currents the ocean takes decades to settle
+*Watching; M2.12.8, M4.5.* The deep layer adjusts with an e-folding time of about 15–20
+years: on the tilted aquaplanet the top of the atmosphere is still +2 W/m² at year 20
+and +0.8 at year 40. The default jumps (three of 3 years) reach about year 12 of true
+time and overshoot the surface each time, because they extrapolate the mixed layer's
+fast response; longer or more jumps do little better. Idea: jump the deep layer alone
+and let the mixed layer follow. Until then, runs that need equilibrium take 30–40 years
+of true time.
