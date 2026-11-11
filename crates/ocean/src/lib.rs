@@ -119,12 +119,50 @@ pub struct EkmanParams {
     /// the wind, `−k × τ / f`; near the equator, where `|f| ≲ ε`, it turns
     /// to run with the wind, `τ / ε`.
     pub friction: f64,
+    /// Near the equator, replace the meridional part of the frictional flow
+    /// with the Sverdrup transport `curl τ / β`, as the paper's code does by
+    /// default (`slab_sverdrup` and `slab_tyeq`). With the weight `w =
+    /// exp(−f²/ε²)` the transport per unit width becomes
+    ///
+    /// `M = (1 − w)/f (−k × τ) + (w/ε) τ + w B (k · ∇ × τ) north`,
+    ///
+    /// which is the Ekman transport where `|f| ≫ ε` and is carried by the
+    /// friction and the wind's curl within a few degrees of the equator
+    /// (about 4° on Earth). The code keeps only the `−∂τₓ/∂y` half of the
+    /// curl; this is the whole curl. `B = β / (β² + (ε/R)²)`, with `β = 2Ω
+    /// cos φ / R`, is our own: it is `1/β` wherever `β ≫ ε/R` (0.5% less on
+    /// Earth's equator) but never more than `R/(2ε)`, and vanishes on a
+    /// planet that doesn't turn, where the paper notes the bare `1/β` makes
+    /// the transport unrealistically large. `false` is the paper's Eq. 4
+    /// everywhere.
+    pub sverdrup: bool,
 }
 
 impl Default for EkmanParams {
     fn default() -> Self {
-        Self { friction: 1e-5 }
+        Self {
+            friction: 1e-5,
+            sverdrup: true,
+        }
     }
+}
+
+/// `(1 − exp(−f²/ε²)) / f`, the Ekman weight of the Sverdrup blend (s): `1/f`
+/// where `|f| ≫ ε`, `f/ε²` as `f → 0`, and exactly zero at `f = 0`.
+fn ekman_factor(f: f64, epsilon: f64) -> f64 {
+    let x = (f / epsilon) * (f / epsilon);
+    if x == 0.0 {
+        f / (epsilon * epsilon)
+    } else {
+        -fms_math::exp_m1(-x) / f
+    }
+}
+
+/// `B = β / (β² + (ε/R)²)`, the limited `1/β` of the Sverdrup transport
+/// (m s), at most `R/(2ε)`.
+fn sverdrup_factor(beta: f64, epsilon: f64, radius: f64) -> f64 {
+    let damping = epsilon / radius;
+    beta / (beta * beta + damping * damping)
 }
 
 /// The ocean's temperatures at one moment, for [`Ocean::jump`].
@@ -166,6 +204,25 @@ struct Ekman {
     /// Eastward and northward stress on each cell's water, per m² of its
     /// ocean: the stress on open water times the share that is open (N m⁻²).
     stress: Vec<[f64; 2]>,
+    /// The stress's curl, for the Sverdrup blend.
+    curl: Option<StressCurl>,
+}
+
+/// The vertical component of the stress's curl at each vertex: the
+/// circulation of the stress around the triangle joining the vertex's three
+/// cell centres, as [`Operators::curl`] takes it of an edge field, the edge
+/// field being each link's mean stress along its normal.
+#[derive(Clone, Debug)]
+struct StressCurl {
+    /// Per vertex, the links of its three edges and the weight of each,
+    /// `t_{e,v} dₑ / (A_v R)` (m⁻¹); `None` where any of its cells has no
+    /// ocean, where the stress falls to nothing at the coast and that isn't
+    /// the wind's curl.
+    stencil: Vec<Option<[(u32, f64); 3]>>,
+    /// Each link's mean stress along its normal (N m⁻²).
+    along: Vec<f64>,
+    /// The curl at each vertex (N m⁻³).
+    vertex: Vec<f64>,
 }
 
 /// Where a link's Ekman flux is evaluated.
@@ -180,31 +237,88 @@ struct Face {
     coriolis: f64,
     /// Edge length times its opening (m).
     width: f64,
+    /// For the Sverdrup blend: the edge's two vertices, the northward unit
+    /// vector at the edge point (zero on a pole), and the weights of the
+    /// Ekman, frictional and Sverdrup terms, `(1 − w)/f` (s), `w/ε` (s) and
+    /// `w B` (m s).
+    vertices: [u32; 2],
+    north: DVec3,
+    blend: [f64; 3],
+}
+
+/// The mean stress of a link's two cells, each a tangent vector at its
+/// centre from its east and north `frames` (N m⁻²).
+fn link_stress(frames: &[[DVec3; 2]], stress: &[[f64; 2]], link: &Link) -> DVec3 {
+    let vector = |i: usize| {
+        let ([east, north], [e, n]) = (frames[i], stress[i]);
+        e * east + n * north
+    };
+    let [a, b] = link.cells.map(|c| c as usize);
+    0.5 * (vector(a) + vector(b))
 }
 
 impl Ekman {
-    /// Each cell's stress as a tangent vector at its centre (N m⁻²).
-    fn stress_vector(&self, i: usize) -> DVec3 {
-        let ([east, north], [e, n]) = (self.frames[i], self.stress[i]);
-        e * east + n * north
-    }
-
     /// The mixed layer's mass flux across each link (kg s⁻¹, positive from
-    /// `cells[0]` to `cells[1]`): the paper's Eq. 4, `M = (ε τ − f k × τ) /
-    /// (ε² + f²)` per unit width, with the stress the mean of the two cells'
-    /// and `f` and `k` those of the edge point, across the opened width.
-    fn mass_flux(&self, links: &[Link], flux: &mut [f64]) {
-        let epsilon = self.friction;
+    /// `cells[0]` to `cells[1]`), with the stress the mean of the two cells'
+    /// and `f` and `k` those of the edge point, across the opened width:
+    /// the paper's Eq. 4, `M = (ε τ − f k × τ) / (ε² + f²)` per unit width,
+    /// or its blend with the Sverdrup transport ([`EkmanParams::sverdrup`]),
+    /// where an edge's curl is the mean of its two vertices'. Work per link
+    /// and per vertex only, so the result doesn't depend on the thread
+    /// count.
+    fn mass_flux(&mut self, links: &[Link], flux: &mut [f64]) {
+        let Self {
+            friction: epsilon,
+            frames,
+            faces,
+            stress,
+            curl,
+        } = self;
+        let (epsilon, frames, stress) = (*epsilon, &*frames, &*stress);
+        let link_stress = |link: &Link| link_stress(frames, stress, link);
+        let Some(curl) = curl else {
+            flux.par_iter_mut()
+                .with_min_len(MIN_CHUNK)
+                .zip(links)
+                .zip(&*faces)
+                .for_each(|((flux, link), face)| {
+                    let tau = link_stress(link);
+                    let f = face.coriolis;
+                    let m =
+                        (epsilon * tau - f * face.point.cross(tau)) / (epsilon * epsilon + f * f);
+                    *flux = m.dot(face.normal) * face.width;
+                });
+            return;
+        };
+        curl.along
+            .par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(links)
+            .zip(&*faces)
+            .for_each(|((along, link), face)| *along = link_stress(link).dot(face.normal));
+        let along = &curl.along;
+        curl.vertex
+            .par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(&curl.stencil)
+            .for_each(|(out, stencil)| {
+                *out = stencil.map_or(0.0, |terms| {
+                    terms.iter().map(|&(l, w)| w * along[l as usize]).sum()
+                });
+            });
+        let vertex = &curl.vertex;
         flux.par_iter_mut()
             .with_min_len(MIN_CHUNK)
             .zip(links)
-            .zip(&self.faces)
+            .zip(&*faces)
             .for_each(|((flux, link), face)| {
-                let [a, b] = link.cells.map(|c| c as usize);
-                let tau = 0.5 * (self.stress_vector(a) + self.stress_vector(b));
-                let f = face.coriolis;
-                let m = (epsilon * tau - f * face.point.cross(tau)) / (epsilon * epsilon + f * f);
-                *flux = m.dot(face.normal) * face.width;
+                let tau = link_stress(link);
+                let [ekman, friction, sverdrup] = face.blend;
+                let m = -ekman * face.point.cross(tau) + friction * tau;
+                let [v0, v1] = face.vertices.map(|v| vertex[v as usize]);
+                let curl = 0.5 * (v0 + v1);
+                *flux = (m.dot(face.normal) + sverdrup * curl * face.north.dot(face.normal))
+                    * face.width;
             });
     }
 }
@@ -448,25 +562,75 @@ impl Ocean {
                     [east, x.cross(east)]
                 })
                 .collect();
+            let radius = ops.radius();
+            let epsilon = p.friction;
             let faces = links
                 .iter()
                 .map(|link| {
                     let e = link.edge as usize;
                     let [a, b] = link.cells.map(|c| open[c as usize]);
                     let point = geometry.edge_points[e];
+                    let coriolis = 2.0 * rotation * point.z;
+                    let east = DVec3::Z.cross(point);
+                    let length = east.length();
+                    let north = if length < 1e-12 {
+                        DVec3::ZERO
+                    } else {
+                        point.cross(east / length)
+                    };
+                    let weight = fms_math::exp(-(coriolis / epsilon) * (coriolis / epsilon));
+                    let beta = 2.0 * rotation * length / radius;
                     Face {
                         point,
                         normal: geometry.edge_normals[e],
-                        coriolis: 2.0 * rotation * point.z,
-                        width: a.min(b) * geometry.edge_lengths[e] * ops.radius(),
+                        coriolis,
+                        width: a.min(b) * geometry.edge_lengths[e] * radius,
+                        vertices: mesh.edges()[e].vertices,
+                        north,
+                        blend: [
+                            ekman_factor(coriolis, epsilon),
+                            weight / epsilon,
+                            weight * sverdrup_factor(beta, epsilon, radius),
+                        ],
                     }
                 })
                 .collect();
+            let curl = p.sverdrup.then(|| {
+                let mut link_of = vec![u32::MAX; mesh.edges().len()];
+                for (l, link) in links.iter().enumerate() {
+                    link_of[link.edge as usize] = l as u32;
+                }
+                let stencil = (0..mesh.n_vertices())
+                    .map(|v| {
+                        let wet = mesh.triangles()[v].iter().all(|&c| area[c as usize] > 0.0);
+                        let v = v as u32;
+                        let (edges, signs) = (mesh.vertex_edges(v), geometry.vertex_edge_signs(v));
+                        let scale = geometry.vertex_areas[v as usize] * radius;
+                        wet.then(|| {
+                            std::array::from_fn(|k| {
+                                let e = edges[k] as usize;
+                                debug_assert_ne!(
+                                    link_of[e],
+                                    u32::MAX,
+                                    "a wet vertex's edges are links"
+                                );
+                                (link_of[e], signs[k] * geometry.dual_edge_lengths[e] / scale)
+                            })
+                        })
+                    })
+                    .collect();
+                StressCurl {
+                    stencil,
+                    along: vec![0.0; links.len()],
+                    vertex: vec![0.0; mesh.n_vertices()],
+                }
+            });
             Ekman {
-                friction: p.friction,
+                friction: epsilon,
                 frames,
                 faces,
                 stress: vec![[0.0; 2]; n],
+                curl,
             }
         });
         Self {
@@ -554,7 +718,7 @@ impl Ocean {
     /// [wind stress](Self::set_wind_stress), diffusion in both layers, then
     /// convective adjustment.
     pub fn transport(&mut self, dt: f64) {
-        if let Some(ekman) = &self.ekman {
+        if let Some(ekman) = &mut self.ekman {
             ekman.mass_flux(&self.links, &mut self.mass_flux);
             self.overturning.advect(
                 &mut self.mixed,
@@ -1541,8 +1705,20 @@ mod tests {
         let deep: Vec<f64> = (0..grid.n())
             .map(|i| 271.0 + 30.0 * scatter(i, 4))
             .collect();
-        for (dt, calls) in [(1800.0, 20), (1.0e7, 3)] {
-            let mut ocean = Ocean::new(ekman_only(), &grid.ops(), &land, mixed.clone(), ROTATION);
+        for (sverdrup, dt, calls) in [
+            (true, 1800.0, 20),
+            (true, 1.0e7, 3),
+            (false, 1800.0, 20),
+            (false, 1.0e7, 3),
+        ] {
+            let params = OceanParams {
+                ekman: Some(EkmanParams {
+                    sverdrup,
+                    ..EkmanParams::default()
+                }),
+                ..ekman_only()
+            };
+            let mut ocean = Ocean::new(params, &grid.ops(), &land, mixed.clone(), ROTATION);
             ocean.deep.copy_from_slice(&deep);
             let (low, high) = layer_range(&ocean);
             let before = total(&ocean);
@@ -1555,7 +1731,7 @@ mod tests {
             // the total.
             let drift = (total(&ocean) - before) / before;
             let steps = ocean.overturning.steps;
-            eprintln!("dt {dt}: relative drift {drift:e}, {steps} sub-steps");
+            eprintln!("Sverdrup {sverdrup}, dt {dt}: relative drift {drift:e}, {steps} sub-steps");
             assert!(drift.abs() < 1e-14, "relative drift {drift} at dt {dt}");
             if dt > 1e6 {
                 assert!(steps > 1, "{steps} sub-steps");
@@ -1603,9 +1779,16 @@ mod tests {
 
     #[test]
     fn a_uniform_eastward_stress_drives_the_analytic_ekman_flux() {
+        // The paper's Eq. 4 everywhere, without the Sverdrup blend.
         let grid = Grid::new(16);
         let land = vec![0.0; grid.n()];
-        let params = ekman_only();
+        let params = OceanParams {
+            ekman: Some(EkmanParams {
+                sverdrup: false,
+                ..EkmanParams::default()
+            }),
+            ..ekman_only()
+        };
         let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
         let tau = 0.1;
         ocean.set_wind_stress(|_| [tau, 0.0]);
@@ -1764,5 +1947,254 @@ mod tests {
         };
         let land = vec![0.0; grid.n()];
         Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
+    }
+
+    /// The net northward mass flux across the parallel at `z0` per metre of
+    /// it (kg m⁻¹ s⁻¹), summing the links whose cells lie on either side.
+    fn northward_per_metre(grid: &Grid, ocean: &Ocean, z0: f64) -> f64 {
+        let centers = grid.mesh.cell_centers();
+        let crossing: f64 = ocean
+            .link_edges()
+            .zip(&ocean.mass_flux)
+            .map(|(e, f)| {
+                let [a, b] = grid.mesh.edges()[e as usize].cells;
+                match (centers[a as usize].z > z0, centers[b as usize].z > z0) {
+                    (false, true) => *f,
+                    (true, false) => -f,
+                    _ => 0.0,
+                }
+            })
+            .sum();
+        crossing / (std::f64::consts::TAU * RADIUS * (1.0 - z0 * z0).sqrt())
+    }
+
+    /// An eastward stress `T sin φ cos φ` (N m⁻²): none on the equator, where
+    /// its curl is `−T/R`.
+    fn sverdrup_wind(grid: &Grid, t: f64) -> impl Fn(usize) -> [f64; 2] + Sync + '_ {
+        move |i| {
+            let z = grid.mesh.cell_centers()[i].z;
+            [t * z * (1.0 - z * z).sqrt(), 0.0]
+        }
+    }
+
+    #[test]
+    fn the_ekman_factor_is_finite_and_exact_at_the_equator() {
+        let epsilon = 1e-5;
+        assert_eq!(ekman_factor(0.0, epsilon), 0.0);
+        for f in [1e-12, 1e-9, -3e-8] {
+            let small = ekman_factor(f, epsilon) / (f / (epsilon * epsilon));
+            assert!((small - 1.0).abs() < 1e-5, "{f}: {small}");
+        }
+        for f in [1e-3, -2e-4] {
+            assert_eq!(ekman_factor(f, epsilon), 1.0 / f);
+        }
+    }
+
+    #[test]
+    fn the_sverdrup_factor_is_one_over_beta_but_bounded() {
+        let (epsilon, beta_earth) = (1e-5, 2.0 * ROTATION / RADIUS);
+        let earth = sverdrup_factor(beta_earth, epsilon, RADIUS) * beta_earth;
+        // 0.5% below 1/β on Earth's equator.
+        assert!((0.99..0.996).contains(&earth), "{earth}");
+        let bound = RADIUS / (2.0 * epsilon);
+        for k in 0..60 {
+            let beta = beta_earth * fms_math::pow(10.0, -0.1 * f64::from(k));
+            let b = sverdrup_factor(beta, epsilon, RADIUS);
+            assert!(b.is_finite() && b <= bound * (1.0 + 1e-15), "{beta}: {b}");
+        }
+        assert_eq!(sverdrup_factor(0.0, epsilon, RADIUS), 0.0);
+    }
+
+    #[test]
+    fn the_stress_curl_is_the_grids_curl() {
+        let grid = Grid::new(16);
+        let land = vec![0.0; grid.n()];
+        let mut ocean = Ocean::new(
+            ekman_only(),
+            &grid.ops(),
+            &land,
+            vec![290.0; grid.n()],
+            ROTATION,
+        );
+        ocean.set_wind_stress(rough_wind);
+        ocean.transport(1800.0);
+        let curl = ocean.ekman.as_ref().unwrap().curl.as_ref().unwrap();
+        // All ocean: every edge is a link.
+        let mut along = vec![0.0; grid.mesh.edges().len()];
+        for (e, a) in ocean.link_edges().zip(&curl.along) {
+            along[e as usize] = *a;
+        }
+        let mut expected = vec![0.0; grid.mesh.n_vertices()];
+        grid.ops().curl(&along, &mut expected);
+        let scale = expected.iter().fold(0.0f64, |a, c| a.max(c.abs()));
+        let error = curl
+            .vertex
+            .iter()
+            .zip(&expected)
+            .fold(0.0f64, |a, (c, e)| a.max((c - e).abs()));
+        eprintln!("largest difference {error:e} of {scale:e} N/m³");
+        assert!(scale > 0.0 && error <= 1e-14 * scale, "{error} of {scale}");
+    }
+
+    #[test]
+    fn a_coastal_vertex_has_no_curl() {
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let mut ocean = Ocean::new(
+            ekman_only(),
+            &grid.ops(),
+            &land,
+            vec![290.0; grid.n()],
+            ROTATION,
+        );
+        ocean.set_wind_stress(rough_wind);
+        ocean.transport(1800.0);
+        let curl = ocean.ekman.as_ref().unwrap().curl.as_ref().unwrap();
+        let (mut coastal, mut wet) = (0, 0);
+        for (v, cells) in grid.mesh.triangles().iter().enumerate() {
+            if cells.iter().any(|&c| land[c as usize] == 1.0) {
+                coastal += 1;
+                assert!(curl.stencil[v].is_none(), "vertex {v}");
+                assert_eq!(curl.vertex[v], 0.0, "vertex {v}");
+            } else {
+                wet += 1;
+                assert!(curl.stencil[v].is_some(), "vertex {v}");
+            }
+        }
+        assert!(coastal > 0 && wet > 0, "{coastal} coastal, {wet} wet");
+        assert!(curl.vertex.iter().any(|c| *c != 0.0));
+    }
+
+    #[test]
+    fn the_wind_curl_drives_the_sverdrup_transport_across_the_equator() {
+        let grid = Grid::new(16);
+        let land = vec![0.0; grid.n()];
+        let params = ekman_only();
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
+        let t = 0.1;
+        ocean.set_wind_stress(sverdrup_wind(&grid, t));
+        ocean.transport(1800.0);
+        let epsilon = params.ekman.unwrap().friction;
+        let beta = 2.0 * ROTATION / RADIUS;
+        let damping = epsilon / RADIUS;
+        let expected = -t / (2.0 * ROTATION) * beta * beta / (beta * beta + damping * damping);
+        let measured = northward_per_metre(&grid, &ocean, 0.0);
+        let error = measured / expected - 1.0;
+        eprintln!("{measured} kg/m/s across the equator against {expected}: {error:+.4}");
+        assert!(error.abs() < 0.03, "{measured} vs {expected}");
+        // Measured 0.4% short. Without the blend only the Ekman and
+        // frictional flow of the edges a degree or two either side of the
+        // equator cross it, and much less does (measured 13%).
+        let mut plain = Ocean::new(
+            OceanParams {
+                ekman: Some(EkmanParams {
+                    sverdrup: false,
+                    ..EkmanParams::default()
+                }),
+                ..params
+            },
+            &grid.ops(),
+            &land,
+            vec![290.0; grid.n()],
+            ROTATION,
+        );
+        plain.set_wind_stress(sverdrup_wind(&grid, t));
+        plain.transport(1800.0);
+        let without = northward_per_metre(&grid, &plain, 0.0);
+        eprintln!("without Sverdrup: {without} kg/m/s");
+        assert!(without.abs() < 0.25 * expected.abs(), "{without}");
+    }
+
+    #[test]
+    fn away_from_the_equator_the_blend_is_pure_ekman_transport() {
+        let grid = Grid::new(16);
+        let land = vec![0.0; grid.n()];
+        let mut ocean = Ocean::new(
+            ekman_only(),
+            &grid.ops(),
+            &land,
+            vec![290.0; grid.n()],
+            ROTATION,
+        );
+        let tau = 0.1;
+        ocean.set_wind_stress(|_| [tau, 0.0]);
+        ocean.transport(1800.0);
+        let mut worst = 0.0f64;
+        for (k, e) in ocean.link_edges().enumerate() {
+            let e = e as usize;
+            let x = grid.geometry.edge_points[e];
+            let latitude = fms_math::asin(x.z).to_degrees().abs();
+            if !(15.0..=60.0).contains(&latitude) {
+                continue;
+            }
+            let stress = tau * DVec3::Z.cross(x).normalize();
+            let m = -x.cross(stress) / (2.0 * ROTATION * x.z);
+            let width = grid.geometry.edge_lengths[e] * RADIUS;
+            let exact = m.dot(grid.geometry.edge_normals[e]) * width;
+            worst = worst.max((ocean.mass_flux[k] - exact).abs() / (m.length() * width));
+        }
+        // Measured 2.7e-3, from the same averaging of east vectors as Eq. 4's.
+        eprintln!("largest error {worst:e} of |M| × width");
+        assert!(worst < 5e-3, "{worst}");
+    }
+
+    #[test]
+    fn without_rotation_only_the_friction_moves_the_water() {
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let mixed: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let mut ocean = Ocean::new(ekman_only(), &grid.ops(), &land, mixed, 0.0);
+        let before = total(&ocean);
+        for _ in 0..10 {
+            ocean.set_wind_stress(rough_wind);
+            ocean.transport(86_400.0);
+        }
+        let ekman = ocean.ekman.as_ref().unwrap();
+        let epsilon = ekman.friction;
+        for (k, link) in ocean.links.iter().enumerate() {
+            let tau = link_stress(&ekman.frames, &ekman.stress, link);
+            let face = &ekman.faces[k];
+            let friction = (1.0 / epsilon * tau).dot(face.normal) * face.width;
+            assert_eq!(ocean.mass_flux[k], friction, "link {k}");
+        }
+        assert!(ocean.mixed.iter().chain(&ocean.deep).all(|t| t.is_finite()));
+        let drift = (total(&ocean) - before) / before;
+        assert!(drift.abs() < 1e-14, "{drift}");
+    }
+
+    #[test]
+    fn slow_rotation_keeps_the_sverdrup_transport_bounded() {
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let params = ekman_only();
+        let epsilon = params.ekman.unwrap().friction;
+        let bound = RADIUS / (2.0 * epsilon);
+        for rotation in [ROTATION, 1e-5, 1e-6, 1e-7, 1e-8] {
+            let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], rotation);
+            ocean.deep.iter_mut().for_each(|t| *t = 280.0);
+            let before = total(&ocean);
+            ocean.set_wind_stress(sverdrup_wind(&grid, 0.1));
+            ocean.transport(86_400.0);
+            let ekman = ocean.ekman.as_ref().unwrap();
+            let curl = ekman.curl.as_ref().unwrap();
+            let mut largest = 0.0f64;
+            for face in &ekman.faces {
+                let edge_curl = 0.5
+                    * face
+                        .vertices
+                        .iter()
+                        .map(|&v| curl.vertex[v as usize])
+                        .sum::<f64>();
+                let part = (face.blend[2] * edge_curl * face.north.dot(face.normal)).abs();
+                assert!(part <= bound * edge_curl.abs(), "Ω {rotation}: {part}");
+                largest = largest.max(face.blend[2] / bound);
+            }
+            assert!(ocean.mass_flux.iter().all(|f| f.is_finite()));
+            let drift = (total(&ocean) - before) / before;
+            eprintln!("Ω {rotation:e}: largest w B is {largest:.3} of R/(2ε), drift {drift:e}");
+            assert!(drift.abs() < 1e-14, "Ω {rotation}: {drift}");
+        }
     }
 }

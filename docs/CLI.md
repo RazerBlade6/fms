@@ -277,7 +277,8 @@ of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check i
 | `--jump-limit K` | 3 | Most any ocean temperature may change in one jump (K) |
 | `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean, m²/s; 0 for none |
 | `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
-| `--ocean-ekman` | off | Wind-driven Ekman transport in the mixed layer, returned by the deep layer, with upwelling between |
+| `--ocean-ekman` | off | Wind-driven Ekman transport in the mixed layer, blending into Sverdrup transport near the equator, returned by the deep layer, with upwelling between |
+| `--no-ocean-sverdrup` | off | With `--ocean-ekman`: no Sverdrup transport, so the flow near the equator is frictional only |
 | `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
 | `--no-ice-sheet` | off | Land that stays snow-covered keeps seasonal snow's albedo and roughness |
 | `--ice-sheet-start-temperature K` | 267 | Land whose start temperature is below this begins as an ice sheet (O-39) |

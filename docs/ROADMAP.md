@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.2.**
+**Next: M2.12.3.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -65,7 +65,7 @@ a visual check.
 - [ ] 12. **Ocean heat transport by currents** (PLAN §4.3)
   - [x] 12.1. Ekman transport: wind stress from the atmosphere, mass fluxes
     across edges, the deep layer's return flow and upwelling
-  - [ ] 12.2. Sverdrup transport near the equator, limited for slow rotators
+  - [x] 12.2. Sverdrup transport near the equator, limited for slow rotators
   - [ ] 12.3. Gent–McWilliams eddy transport; eddy coefficients that scale
     with rotation
   - [ ] 12.4. Aquaplanet runs against Bhatnagar et al. 2026: heat transport

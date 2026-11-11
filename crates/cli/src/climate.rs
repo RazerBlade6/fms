@@ -60,6 +60,11 @@ pub struct ClimateArgs {
     /// returned by the deep layer, with upwelling and downwelling between.
     #[arg(long)]
     ocean_ekman: bool,
+    /// With `--ocean-ekman`, keep the paper's Eq. 4 at the equator instead
+    /// of blending in the Sverdrup transport of the wind's curl; ignored
+    /// without it.
+    #[arg(long)]
+    no_ocean_sverdrup: bool,
     /// Give sea ice and its snow the albedo of open water, which turns off
     /// the ice-albedo feedback.
     #[arg(long)]
@@ -146,7 +151,10 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let ocean = OceanParams {
         diffusivity: args.ocean_diffusivity,
         convective_adjustment: !args.no_ocean_convection,
-        ekman: args.ocean_ekman.then(EkmanParams::default),
+        ekman: args.ocean_ekman.then(|| EkmanParams {
+            sverdrup: !args.no_ocean_sverdrup,
+            ..EkmanParams::default()
+        }),
         ice: OceanParams::default().ice.map(|ice| {
             if args.no_ice_albedo {
                 IceParams {
@@ -427,10 +435,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             "; radiation and moisture over a {} m mixed layer on a {} m deep ocean{} and a {} m soil store, CO₂ {} ppm",
             params.ocean.mixed_depth,
             params.ocean.deep_depth,
-            if params.ocean.ekman.is_some() {
-                " with Ekman transport"
-            } else {
-                ""
+            match params.ocean.ekman {
+                Some(EkmanParams { sverdrup: true, .. }) => {
+                    " with Ekman transport, Sverdrup at the equator"
+                }
+                Some(_) => " with Ekman transport",
+                None => "",
             },
             params.land.soil_depth,
             params.co2
