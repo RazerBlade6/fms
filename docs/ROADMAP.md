@@ -141,3 +141,11 @@ View only; the viewer code is shared with `fms-geo`.
   - [ ] Sea level following ice volume, with land fractions and the ocean
     mask changing during a run
   - [ ] Ice thickness as an `.fmsmap` layer
+- [ ] Mountain glaciers and snow lines on the fine grid, from temperature and
+  snowfall against elevation
+- [ ] Finer orographic rain when downscaling onto the fine grid
+- [ ] Carbon–weathering thermostat: CO₂ drifting with temperature and land
+  area on long-run steps
+- [ ] Volcanic eruptions and impact winters as events that dim sunlight for a
+  few years
+- [ ] Sea-ice drift by wind and currents
