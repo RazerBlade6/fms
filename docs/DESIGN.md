@@ -183,6 +183,13 @@ cover, each with its own temperature, albedo, roughness and fluxes.
 
 A 50 m mixed layer over a 150 m deep layer in each cell with ocean; it knows
 nothing about the atmosphere. Heat moves by:
+- Ekman transport (off by default, `--ocean-ekman`): the wind stress on open
+  water drives a mass flux in the mixed layer,
+  `M = (ετ − f k×τ)/(ε² + f²)` with `ε` = 10⁻⁵ s⁻¹, across each edge between
+  ocean cells. The deep layer carries the same mass back, and each cell's
+  divergence wells up from below or sinks. Temperatures are carried upstream,
+  in sub-steps that keep them within their range, and heat is conserved to
+  round-off;
 - horizontal diffusion in both layers at 2000 m²/s, as fluxes across edges, each
   opened by the smaller of its cells' ocean fractions;
 - convective adjustment when the mixed layer is colder than the deep layer.

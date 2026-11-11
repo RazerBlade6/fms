@@ -257,8 +257,9 @@ orbit, day length, gravity, CO₂ and surface pressure (`--co2`,
 world's terrain (`--continent`, `--heightmap`), lightly smoothed
 ([OBSERVATIONS.md](OBSERVATIONS.md) O-30). Each cell has an ocean tile, a
 50 m mixed layer over a 150 m deep layer, with heat moving by horizontal
-diffusion and convective adjustment, and sea ice (currents arrive in M2 step
-12), and in proportion to its land fraction a land tile, so a skin over a
+diffusion and convective adjustment, and sea ice (Ekman transport is available
+with `--ocean-ekman`; the rest of the currents arrive in M2 step 12), and in
+proportion to its land fraction a land tile, so a skin over a
 1 m soil heat store with a 150 mm bucket of soil water and a snow pack. A
 world with no land is an aquaplanet (see also O-22, O-24, O-25). The run starts at rest from a single-column radiative–convective
 equilibrium with its humidity, in hydrostatic balance with the terrain, and
@@ -276,6 +277,7 @@ of a 30-year run in the global mean. Use `--ocean-jumps 0 --years 20` to check i
 | `--jump-limit K` | 3 | Most any ocean temperature may change in one jump (K) |
 | `--ocean-diffusivity D` | 2000 | Horizontal heat diffusivity of the ocean, m²/s; 0 for none |
 | `--no-ocean-convection` | off | Let a mixed layer colder than the deep layer stay on top |
+| `--ocean-ekman` | off | Wind-driven Ekman transport in the mixed layer, returned by the deep layer, with upwelling between |
 | `--no-ice-albedo` | off | Sea ice and its snow take open water's albedo: no ice-albedo feedback |
 | `--no-ice-sheet` | off | Land that stays snow-covered keeps seasonal snow's albedo and roughness |
 | `--ice-sheet-start-temperature K` | 267 | Land whose start temperature is below this begins as an ice sheet (O-39) |

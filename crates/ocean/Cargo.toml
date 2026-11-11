@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 fms-grid.workspace = true
 fms-math.workspace = true
+glam.workspace = true
 rayon.workspace = true
 
 [lints]

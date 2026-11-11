@@ -1,16 +1,24 @@
 //! The ocean: a two-layer slab after Codron (2012) and Bhatnagar et al.
-//! (2026) with sea ice ([`IceParams`]), and wind-driven transport to come
-//! (M2 step 12).
+//! (2026) with sea ice ([`IceParams`]) and wind-driven Ekman transport
+//! ([`EkmanParams`]).
 //!
 //! Each cell with any ocean has a mixed layer, which exchanges heat with the
 //! atmosphere, over a deep layer, which exchanges heat only with the mixed
-//! layer and its neighbours. Neither moves yet. Heat travels by:
+//! layer and its neighbours. Heat travels by, in this order:
 //!
+//! - **Ekman transport** (if asked for): the wind's stress drives a mass
+//!   flux in the mixed layer (the paper's Eq. 4) across every edge between
+//!   two cells that have ocean, and the deep layer carries the same mass
+//!   back. Where the mixed layer's flow diverges, deep water wells up into
+//!   it; where it converges, mixed water sinks. Each layer's temperature is
+//!   carried upstream, which on hexagons replaces the paper's centred
+//!   meridional flux.
 //! - **Horizontal diffusion** in both layers, as a flux across every edge
 //!   between two cells that have ocean, so the ocean's heat is conserved to
 //!   round-off and none crosses a coast. An edge's opening is the smaller of
 //!   its two cells' ocean fractions, which also keeps a nearly dry cell from
-//!   taking more heat than it can hold.
+//!   taking more heat than it can hold. Ekman transport crosses the same
+//!   openings.
 //! - **Convective adjustment**: a mixed layer colder than the deep layer
 //!   below it overturns, and both take their mass-weighted mean.
 //!
@@ -18,13 +26,14 @@
 //! 8000 m² s⁻¹, but its code scales that by 50 m over the ocean's total depth
 //! (`ocean_slab_mod.F90`), which is 2000 m² s⁻¹ for 50 m over 150 m.
 //!
-//! The crate knows nothing about the atmosphere: fluxes come in as numbers and
-//! temperatures go out.
+//! The crate knows nothing about the atmosphere: fluxes and stresses come in
+//! as numbers and temperatures go out.
 
 mod ice;
 
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
+use glam::DVec3;
 pub use ice::{IceForcing, IceParams};
 use ice::{SeaIce, Water};
 use rayon::prelude::*;
@@ -46,11 +55,14 @@ pub struct OceanParams {
     /// Whether a mixed layer colder than the deep layer overturns.
     pub convective_adjustment: bool,
     /// The deep layer starts at the mixed layer's temperature, but no warmer
-    /// than this (K). Without upwelling (M2 step 12) the deep layer can only
-    /// lose heat, so a warmer start would come back as a false warm spell.
+    /// than this (K). Without Ekman transport the deep layer can only lose
+    /// heat, so a warmer start would come back as a false warm spell.
     pub deep_start_limit: f64,
     /// Sea ice; `None` lets the water cool past freezing.
     pub ice: Option<IceParams>,
+    /// Wind-driven Ekman transport, which needs a deep layer; `None` keeps
+    /// the water still.
+    pub ekman: Option<EkmanParams>,
 }
 
 impl Default for OceanParams {
@@ -64,6 +76,7 @@ impl Default for OceanParams {
             convective_adjustment: true,
             deep_start_limit: 277.15,
             ice: Some(IceParams::default()),
+            ekman: None,
         }
     }
 }
@@ -82,6 +95,7 @@ impl OceanParams {
             convective_adjustment: false,
             deep_start_limit: f64::INFINITY,
             ice: None,
+            ekman: None,
         }
     }
 
@@ -96,6 +110,23 @@ impl OceanParams {
     }
 }
 
+/// Wind-driven Ekman transport after Codron (2012) and Bhatnagar et al.
+/// (2026, Sect. 2.3.1). [`Default`] is the paper's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EkmanParams {
+    /// Frictional damping ε of the mixed layer's flow (s⁻¹). Where the
+    /// Coriolis parameter `|f| ≫ ε` the flow is the Ekman transport across
+    /// the wind, `−k × τ / f`; near the equator, where `|f| ≲ ε`, it turns
+    /// to run with the wind, `τ / ε`.
+    pub friction: f64,
+}
+
+impl Default for EkmanParams {
+    fn default() -> Self {
+        Self { friction: 1e-5 }
+    }
+}
+
 /// The ocean's temperatures at one moment, for [`Ocean::jump`].
 #[derive(Clone, Debug)]
 pub struct OceanSnapshot {
@@ -106,6 +137,9 @@ pub struct OceanSnapshot {
 /// An edge between two cells that both have ocean.
 #[derive(Clone, Copy, Debug)]
 struct Link {
+    /// The mesh edge.
+    edge: u32,
+    /// Its cells, as the mesh orders them.
     cells: [u32; 2],
     /// Edge length over the distance between the cell centres, times the
     /// edge's opening.
@@ -115,6 +149,194 @@ struct Link {
 /// Largest share of the difference from its neighbours that a cell may close
 /// in one diffusion step. Explicit diffusion is monotonic up to 1.
 const MAX_DIFFUSION_NUMBER: f64 = 0.5;
+
+/// Largest share of a layer's mass that may leave a cell in one advection
+/// step. Donor-cell advection is monotonic up to 1.
+const MAX_ADVECTION_NUMBER: f64 = 0.5;
+
+/// What Ekman transport needs to turn the wind into mass fluxes.
+#[derive(Clone, Debug)]
+struct Ekman {
+    friction: f64,
+    /// Unit east and north vectors at each cell's centre; zero at a pole,
+    /// where east is undefined (as in `fms_grid::zonal::east_north`).
+    frames: Vec<[DVec3; 2]>,
+    /// One per link.
+    faces: Vec<Face>,
+    /// Eastward and northward stress on each cell's water, per m² of its
+    /// ocean: the stress on open water times the share that is open (N m⁻²).
+    stress: Vec<[f64; 2]>,
+}
+
+/// Where a link's Ekman flux is evaluated.
+#[derive(Clone, Copy, Debug)]
+struct Face {
+    /// The edge point, which is the local vertical `k`.
+    point: DVec3,
+    /// Unit normal at the edge point, from the link's `cells[0]` to
+    /// `cells[1]`.
+    normal: DVec3,
+    /// Coriolis parameter `2Ω sin φ` at the edge point (s⁻¹).
+    coriolis: f64,
+    /// Edge length times its opening (m).
+    width: f64,
+}
+
+impl Ekman {
+    /// Each cell's stress as a tangent vector at its centre (N m⁻²).
+    fn stress_vector(&self, i: usize) -> DVec3 {
+        let ([east, north], [e, n]) = (self.frames[i], self.stress[i]);
+        e * east + n * north
+    }
+
+    /// The mixed layer's mass flux across each link (kg s⁻¹, positive from
+    /// `cells[0]` to `cells[1]`): the paper's Eq. 4, `M = (ε τ − f k × τ) /
+    /// (ε² + f²)` per unit width, with the stress the mean of the two cells'
+    /// and `f` and `k` those of the edge point, across the opened width.
+    fn mass_flux(&self, links: &[Link], flux: &mut [f64]) {
+        let epsilon = self.friction;
+        flux.par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(links)
+            .zip(&self.faces)
+            .for_each(|((flux, link), face)| {
+                let [a, b] = link.cells.map(|c| c as usize);
+                let tau = 0.5 * (self.stress_vector(a) + self.stress_vector(b));
+                let f = face.coriolis;
+                let m = (epsilon * tau - f * face.point.cross(tau)) / (epsilon * epsilon + f * f);
+                *flux = m.dot(face.normal) * face.width;
+            });
+    }
+}
+
+/// Two-layer advection by mass fluxes across links: the mixed layer carries
+/// each link's flux and the deep layer carries it back, and what the mixed
+/// layer's flow leaves a cell short of is made up from below. Holds what the
+/// latest call left, and its scratch.
+#[derive(Clone, Debug)]
+struct Overturning {
+    /// Net horizontal outflow of each cell's mixed-layer mass, which the
+    /// deep layer makes up (kg s⁻¹; positive is upwelling).
+    rise: Vec<f64>,
+    /// Mass leaving each cell's mixed and deep layer (kg s⁻¹).
+    leaving: [Vec<f64>; 2],
+    /// Heat convergence in each layer in the current sub-step, per unit of
+    /// specific heat (kg K s⁻¹).
+    convergence: [Vec<f64>; 2],
+    /// Mean heating of each layer over the latest call (W per m² of ocean).
+    heating: [Vec<f64>; 2],
+    /// Sub-steps the latest call took.
+    steps: usize,
+}
+
+impl Overturning {
+    fn new(n: usize) -> Self {
+        Self {
+            rise: vec![0.0; n],
+            leaving: [vec![0.0; n], vec![0.0; n]],
+            convergence: [vec![0.0; n], vec![0.0; n]],
+            heating: [vec![0.0; n], vec![0.0; n]],
+            steps: 0,
+        }
+    }
+
+    /// Advect both layers for `dt` seconds by `flux`, the mixed layer's mass
+    /// flux across each link (kg s⁻¹, positive from `cells[0]` to
+    /// `cells[1]`), held fixed. Temperatures are taken upstream in each
+    /// layer and in the vertical, and the step is split so that no cell
+    /// loses more than [`MAX_ADVECTION_NUMBER`] of either layer's mass in one
+    /// sub-step, which keeps every new temperature a mean of old ones. Every
+    /// flux moves heat between two stores, so `Σ area (H_m T_m + H_d T_d)` is
+    /// conserved to round-off. Serial over links, so the result doesn't
+    /// depend on the thread count.
+    #[allow(clippy::too_many_arguments)] // Each is one of the ocean's fields.
+    fn advect(
+        &mut self,
+        mixed: &mut [f64],
+        deep: &mut [f64],
+        links: &[Link],
+        flux: &[f64],
+        area: &[f64],
+        params: &OceanParams,
+        dt: f64,
+    ) {
+        self.rise.fill(0.0);
+        for leaving in &mut self.leaving {
+            leaving.fill(0.0);
+        }
+        for (link, &f) in links.iter().zip(flux) {
+            let [a, b] = link.cells.map(|c| c as usize);
+            self.rise[a] += f;
+            self.rise[b] -= f;
+            // The mixed layer leaves the cell `f` leaves; the deep layer,
+            // carrying `−f`, leaves the other.
+            let (upstream, downstream) = if f > 0.0 { (a, b) } else { (b, a) };
+            self.leaving[0][upstream] += f.abs();
+            self.leaving[1][downstream] += f.abs();
+        }
+        // Mass per m² of ocean (kg m⁻²).
+        let mass = [
+            params.density * params.mixed_depth,
+            params.density * params.deep_depth,
+        ];
+        let mut largest = 0.0f64;
+        for (i, &a) in area.iter().enumerate() {
+            if a > 0.0 {
+                // Upwelling leaves the deep layer; downwelling the mixed one.
+                let w = self.rise[i];
+                let mixed_out = self.leaving[0][i] + (-w).max(0.0);
+                let deep_out = self.leaving[1][i] + w.max(0.0);
+                largest = largest
+                    .max(dt * mixed_out / (mass[0] * a))
+                    .max(dt * deep_out / (mass[1] * a));
+            }
+        }
+        let steps = (largest / MAX_ADVECTION_NUMBER).ceil().max(1.0);
+        let h = dt / steps;
+        for heating in &mut self.heating {
+            heating.fill(0.0);
+        }
+        let [mixed_in, deep_in] = &mut self.convergence;
+        let [mixed_heat, deep_heat] = &mut self.heating;
+        for _ in 0..steps as usize {
+            mixed_in.fill(0.0);
+            deep_in.fill(0.0);
+            for (link, &f) in links.iter().zip(flux) {
+                let [a, b] = link.cells.map(|c| c as usize);
+                let (tm, td) = if f > 0.0 {
+                    (mixed[a], deep[b])
+                } else {
+                    (mixed[b], deep[a])
+                };
+                mixed_in[a] -= f * tm;
+                mixed_in[b] += f * tm;
+                deep_in[a] += f * td;
+                deep_in[b] -= f * td;
+            }
+            for (i, &a) in area.iter().enumerate() {
+                if a > 0.0 {
+                    let w = self.rise[i];
+                    let t = if w > 0.0 { deep[i] } else { mixed[i] };
+                    mixed_in[i] += w * t;
+                    deep_in[i] -= w * t;
+                    mixed[i] += h * mixed_in[i] / (mass[0] * a);
+                    deep[i] += h * deep_in[i] / (mass[1] * a);
+                    mixed_heat[i] += h * mixed_in[i] / a;
+                    deep_heat[i] += h * deep_in[i] / a;
+                }
+            }
+        }
+        let scale = if dt > 0.0 {
+            params.specific_heat / dt
+        } else {
+            0.0
+        };
+        for heating in &mut self.heating {
+            heating.iter_mut().for_each(|q| *q *= scale);
+        }
+        self.steps = steps as usize;
+    }
+}
 
 /// The ocean's state on one mesh.
 #[derive(Clone, Debug)]
@@ -133,20 +355,30 @@ pub struct Ocean {
     /// Heat convergence per cell, reused between steps.
     convergence: Vec<f64>,
     ice: Option<SeaIce>,
+    ekman: Option<Ekman>,
+    /// The mixed layer's mass flux across each link in the latest
+    /// [`transport`](Ocean::transport) (kg s⁻¹, positive from `cells[0]` to
+    /// `cells[1]`).
+    mass_flux: Vec<f64>,
+    overturning: Overturning,
 }
 
 impl Ocean {
     /// An ocean on the mesh of `ops`, covering what `land_fraction` leaves
-    /// of each cell, with its mixed layer at `surface` (K).
+    /// of each cell, with its mixed layer at `surface` (K), on a planet
+    /// turning at `rotation` (Ω relative to the stars, rad s⁻¹), which sets
+    /// the Coriolis parameter `2Ω sin φ` of Ekman transport.
     ///
     /// # Panics
     /// If the lengths differ from the mesh's cells, a land fraction is
-    /// outside 0–1, or the mixed layer has no depth.
+    /// outside 0–1, the mixed layer has no depth, or Ekman transport is
+    /// asked for without a deep layer or without friction.
     pub fn new(
         params: OceanParams,
         ops: &Operators,
         land_fraction: &[f64],
         surface: Vec<f64>,
+        rotation: f64,
     ) -> Self {
         let (mesh, geometry) = (ops.mesh(), ops.geometry());
         let n = mesh.n_cells();
@@ -157,6 +389,16 @@ impl Ocean {
             "land fractions must be within 0–1"
         );
         assert!(params.mixed_depth > 0.0, "the mixed layer needs a depth");
+        if let Some(ekman) = params.ekman {
+            assert!(
+                params.deep_depth > 0.0,
+                "Ekman transport needs a deep layer to return its flow"
+            );
+            assert!(
+                ekman.friction > 0.0,
+                "Ekman transport needs friction to stay finite at the equator"
+            );
+        }
         let r2 = ops.radius() * ops.radius();
         let open: Vec<f64> = land_fraction.iter().map(|f| 1.0 - f).collect();
         let area: Vec<f64> = (0..n)
@@ -169,6 +411,7 @@ impl Ocean {
             .filter_map(|(e, edge)| {
                 let opening = open[edge.cells[0] as usize].min(open[edge.cells[1] as usize]);
                 (opening > 0.0).then(|| Link {
+                    edge: e as u32,
                     cells: edge.cells,
                     conductance: opening * geometry.edge_lengths[e] / geometry.dual_edge_lengths[e],
                 })
@@ -191,15 +434,53 @@ impl Ocean {
             .iter()
             .map(|t| t.min(params.deep_start_limit).max(floor))
             .collect();
+        let ekman = params.ekman.map(|p| {
+            let frames = mesh
+                .cell_centers()
+                .iter()
+                .map(|&x| {
+                    let east = DVec3::Z.cross(x);
+                    let length = east.length();
+                    if length < 1e-12 {
+                        return [DVec3::ZERO; 2];
+                    }
+                    let east = east / length;
+                    [east, x.cross(east)]
+                })
+                .collect();
+            let faces = links
+                .iter()
+                .map(|link| {
+                    let e = link.edge as usize;
+                    let [a, b] = link.cells.map(|c| open[c as usize]);
+                    let point = geometry.edge_points[e];
+                    Face {
+                        point,
+                        normal: geometry.edge_normals[e],
+                        coriolis: 2.0 * rotation * point.z,
+                        width: a.min(b) * geometry.edge_lengths[e] * ops.radius(),
+                    }
+                })
+                .collect();
+            Ekman {
+                friction: p.friction,
+                frames,
+                faces,
+                stress: vec![[0.0; 2]; n],
+            }
+        });
         Self {
             params,
             mixed: surface,
             deep,
             area,
+            mass_flux: vec![0.0; links.len()],
             links,
             largest_rate,
             convergence: vec![0.0; n],
             ice: params.ice.map(|p| SeaIce::new(p, n)),
+            ekman,
+            overturning: Overturning::new(n),
         }
     }
 
@@ -244,9 +525,47 @@ impl Ocean {
             });
     }
 
-    /// Move heat for `dt` seconds: diffusion in both layers, then convective
-    /// adjustment.
+    /// The wind's stress on each cell's open water, `stress(i)` eastward and
+    /// northward (N per m² of open water), for the Ekman transport of the
+    /// following [`transport`](Self::transport) calls. The ocean keeps it
+    /// scaled by the share of the cell's ocean that is open now. Does nothing
+    /// without Ekman transport.
+    pub fn set_wind_stress(&mut self, stress: impl Fn(usize) -> [f64; 2] + Sync) {
+        let Some(ekman) = &mut self.ekman else {
+            return;
+        };
+        let (area, ice) = (&self.area, self.ice.as_ref());
+        ekman
+            .stress
+            .par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .enumerate()
+            .for_each(|(i, s)| {
+                *s = if area[i] > 0.0 {
+                    let open = 1.0 - ice.map_or(0.0, |ice| ice.fraction[i]);
+                    stress(i).map(|t| open * t)
+                } else {
+                    [0.0; 2]
+                };
+            });
+    }
+
+    /// Move heat for `dt` seconds: Ekman transport under the latest
+    /// [wind stress](Self::set_wind_stress), diffusion in both layers, then
+    /// convective adjustment.
     pub fn transport(&mut self, dt: f64) {
+        if let Some(ekman) = &self.ekman {
+            ekman.mass_flux(&self.links, &mut self.mass_flux);
+            self.overturning.advect(
+                &mut self.mixed,
+                &mut self.deep,
+                &self.links,
+                &self.mass_flux,
+                &self.area,
+                &self.params,
+                dt,
+            );
+        }
         if self.params.diffusivity > 0.0 {
             let number = self.params.diffusivity * dt * self.largest_rate;
             let steps = (number / MAX_DIFFUSION_NUMBER).ceil().max(1.0);
@@ -281,6 +600,47 @@ impl Ocean {
             &mut self.convergence,
             amount,
         );
+    }
+
+    /// Heating of cell `i`'s column, both layers, by the latest
+    /// [`transport`](Self::transport)'s Ekman transport (W per m² of its
+    /// ocean); zero without it. It only moves heat, so its integral over the
+    /// ocean is zero.
+    pub fn ekman_heating(&self, i: usize) -> f64 {
+        self.overturning.heating[0][i] + self.overturning.heating[1][i]
+    }
+
+    /// Heating of cell `i`'s mixed layer alone by the latest
+    /// [`transport`](Self::transport)'s Ekman transport (W per m² of its
+    /// ocean); zero without it.
+    pub fn ekman_mixed_heating(&self, i: usize) -> f64 {
+        self.overturning.heating[0][i]
+    }
+
+    /// Deep water welling up into cell `i`'s mixed layer in the latest
+    /// [`transport`](Self::transport) (kg per m² of its ocean per second;
+    /// negative where the mixed layer sinks); zero without Ekman transport.
+    pub fn upwelling(&self, i: usize) -> f64 {
+        let a = self.area[i];
+        if a > 0.0 {
+            self.overturning.rise[i] / a
+        } else {
+            0.0
+        }
+    }
+
+    /// The mesh edge of each link between two cells that both have ocean,
+    /// in the order of [`ekman_mass_flux`](Self::ekman_mass_flux).
+    pub fn link_edges(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
+        self.links.iter().map(|link| link.edge)
+    }
+
+    /// The mixed layer's mass flux across each link in the latest
+    /// [`transport`](Self::transport) (kg s⁻¹, positive along the edge's
+    /// normal, from its `cells[0]` to its `cells[1]`); the deep layer
+    /// carries the opposite. Zero without Ekman transport.
+    pub fn ekman_mass_flux(&self) -> &[f64] {
+        &self.mass_flux
     }
 
     /// The sea-ice parameters, if the ocean has ice.
@@ -441,6 +801,8 @@ mod tests {
     use fms_grid::{LloydOptions, MeshGeometry, SphereMesh};
 
     const RADIUS: f64 = 6.371e6;
+    /// Earth's sidereal rotation rate (rad s⁻¹).
+    const ROTATION: f64 = 7.292e-5;
 
     struct Grid {
         mesh: SphereMesh,
@@ -506,7 +868,7 @@ mod tests {
         let start = grid.each(|z| 280.0 + 10.0 * z);
         let params = OceanParams::slab(10.0);
         let land = vec![0.0; grid.n()];
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, start.clone());
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
         ocean.transport(3600.0);
         assert_eq!(ocean.mixed_temperature(), &start[..]);
         ocean.add_surface_heat(1800.0, |i| i as f64);
@@ -524,7 +886,7 @@ mod tests {
             ice: None,
             ..OceanParams::default()
         };
-        let ocean = Ocean::new(params, &grid.ops(), &land, start.clone());
+        let ocean = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
         for (d, s) in ocean.deep_temperature().iter().zip(&start) {
             assert_eq!(*d, s.min(277.15));
         }
@@ -535,7 +897,13 @@ mod tests {
         let grid = Grid::new(16);
         let land = coasts(grid.n());
         let start = grid.each(|z| 285.0 + 12.0 * z);
-        let mut ocean = Ocean::new(OceanParams::default(), &grid.ops(), &land, start.clone());
+        let mut ocean = Ocean::new(
+            OceanParams::default(),
+            &grid.ops(),
+            &land,
+            start.clone(),
+            ROTATION,
+        );
         let before = total(&ocean);
         let (dt, flux) = (1800.0, |i: usize| 300.0 * (scatter(i, 2) - 0.5));
         ocean.add_surface_heat(dt, flux);
@@ -566,7 +934,7 @@ mod tests {
             ..OceanParams::default()
         };
         for dt in [1800.0, 3.0e10] {
-            let mut ocean = Ocean::new(params, &grid.ops(), &land, start.clone());
+            let mut ocean = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
             let open = |t: &[f64]| -> (f64, f64) {
                 t.iter()
                     .zip(&land)
@@ -596,7 +964,13 @@ mod tests {
         let grid = Grid::new(16);
         let land = coasts(grid.n());
         let start = vec![275.0; grid.n()];
-        let mut ocean = Ocean::new(OceanParams::default(), &grid.ops(), &land, start.clone());
+        let mut ocean = Ocean::new(
+            OceanParams::default(),
+            &grid.ops(),
+            &land,
+            start.clone(),
+            ROTATION,
+        );
         ocean.transport(1800.0);
         assert_eq!(ocean.mixed_temperature(), &start[..]);
         assert_eq!(ocean.deep_temperature(), &start[..]);
@@ -615,7 +989,7 @@ mod tests {
             ..OceanParams::default()
         };
         let start: Vec<f64> = p2.iter().map(|x| 20.0 * x).collect();
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, start);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
         let time = 1.0e9;
         let steps = 200;
         for _ in 0..steps {
@@ -648,7 +1022,7 @@ mod tests {
         let grid = Grid::new(16);
         let land = grid.each(|z| if z.abs() < 0.2 { 1.0 } else { 0.0 });
         let start = grid.each(|z| 280.0 + 15.0 * z);
-        let mut ocean = Ocean::new(OceanParams::default(), &grid.ops(), &land, start);
+        let mut ocean = Ocean::new(OceanParams::default(), &grid.ops(), &land, start, ROTATION);
         let side = |o: &Ocean, north: bool| -> f64 {
             let centers = grid.mesh.cell_centers();
             (0..grid.n())
@@ -676,7 +1050,7 @@ mod tests {
         // The deep layer starts at 280 K everywhere. The north's surface is
         // warmer than that; the south's is chilled 8 K below it.
         let start = grid.each(|z| if z < 0.0 { 280.0 } else { 290.0 });
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, start);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
         let centers = grid.mesh.cell_centers();
         let cooling = 8.0 * params.mixed_capacity();
         ocean.add_surface_heat(1.0, |i| if centers[i].z < 0.0 { -cooling } else { 0.0 });
@@ -705,7 +1079,7 @@ mod tests {
         let freezing = params.ice.unwrap().freezing;
         let land = vec![0.0; grid.n()];
         let start = vec![freezing - cold; grid.n()];
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, start);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
         ocean.rearrange_ice();
         (ocean, params)
     }
@@ -720,7 +1094,7 @@ mod tests {
         let p = params.ice.unwrap();
         let land = vec![0.0; grid.n()];
         let start = vec![p.freezing - 0.1; grid.n()];
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, start);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, start, ROTATION);
         assert_eq!(
             ocean.deep_temperature()[0],
             p.freezing,
@@ -1075,7 +1449,7 @@ mod tests {
             diffusivity: 0.0,
             ..OceanParams::default()
         };
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()]);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
         let start = ocean.snapshot();
         let c = params.mixed_capacity();
         ocean.add_surface_heat(1.0, |i| if i == 1 { 2.0 * c } else { 0.5 * c });
@@ -1094,7 +1468,7 @@ mod tests {
             diffusivity: 0.0,
             ..OceanParams::default()
         };
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![277.0; grid.n()]);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![277.0; grid.n()], ROTATION);
         let start = ocean.snapshot();
         ocean.add_surface_heat(1.0, |_| -params.mixed_capacity());
         ocean.jump(&start, 1.0, 10.0);
@@ -1111,7 +1485,7 @@ mod tests {
             diffusivity: 0.0,
             ..OceanParams::default()
         };
-        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![277.0; grid.n()]);
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![277.0; grid.n()], ROTATION);
         let before = total(&ocean);
         // Strong cooling chills the mixed layer below the deep layer's 277 K.
         ocean.add_surface_heat(86_400.0, |_| -400.0);
@@ -1128,5 +1502,267 @@ mod tests {
         }
         let removed = 86_400.0 * 400.0 * ocean.area.iter().sum::<f64>();
         assert!(((total(&ocean) - (before - removed)) / before).abs() < 1e-14);
+    }
+
+    /// The two-layer ocean with only Ekman transport moving heat.
+    fn ekman_only() -> OceanParams {
+        OceanParams {
+            diffusivity: 0.0,
+            convective_adjustment: false,
+            deep_start_limit: f64::INFINITY,
+            ice: None,
+            ekman: Some(EkmanParams::default()),
+            ..OceanParams::default()
+        }
+    }
+
+    /// A rough wind stress (N m⁻²) of up to 0.15 in each direction.
+    fn rough_wind(i: usize) -> [f64; 2] {
+        [0.3 * (scatter(i, 5) - 0.5), 0.3 * (scatter(i, 6) - 0.5)]
+    }
+
+    /// Lowest and highest temperature of either layer where there is ocean.
+    fn layer_range(ocean: &Ocean) -> (f64, f64) {
+        (0..ocean.area.len())
+            .filter(|&i| ocean.area[i] > 0.0)
+            .flat_map(|i| [ocean.mixed[i], ocean.deep[i]])
+            .fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(t), b.max(t)))
+    }
+
+    #[test]
+    fn ekman_transport_conserves_heat_to_round_off_and_stays_within_its_range() {
+        // Rough winds, coasts and temperatures, at a normal step and at one
+        // long enough to need sub-steps.
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let mixed: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let deep: Vec<f64> = (0..grid.n())
+            .map(|i| 271.0 + 30.0 * scatter(i, 4))
+            .collect();
+        for (dt, calls) in [(1800.0, 20), (1.0e7, 3)] {
+            let mut ocean = Ocean::new(ekman_only(), &grid.ops(), &land, mixed.clone(), ROTATION);
+            ocean.deep.copy_from_slice(&deep);
+            let (low, high) = layer_range(&ocean);
+            let before = total(&ocean);
+            for _ in 0..calls {
+                ocean.set_wind_stress(rough_wind);
+                ocean.transport(dt);
+            }
+            // Measured 2.5e-15, which is the sum in `total` itself: the
+            // change in the sum of each cell's heat above 271 K is 6e-17 of
+            // the total.
+            let drift = (total(&ocean) - before) / before;
+            let steps = ocean.overturning.steps;
+            eprintln!("dt {dt}: relative drift {drift:e}, {steps} sub-steps");
+            assert!(drift.abs() < 1e-14, "relative drift {drift} at dt {dt}");
+            if dt > 1e6 {
+                assert!(steps > 1, "{steps} sub-steps");
+            }
+            let (new_low, new_high) = layer_range(&ocean);
+            assert!(
+                new_low >= low && new_high <= high,
+                "{new_low}–{new_high} from {low}–{high}"
+            );
+            assert!(ocean.mass_flux.iter().any(|f| *f != 0.0));
+        }
+    }
+
+    #[test]
+    fn a_uniform_ocean_stays_uniform_under_wind() {
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let start = vec![275.0; grid.n()];
+        let mut ocean = Ocean::new(
+            OceanParams {
+                ekman: Some(EkmanParams::default()),
+                ..OceanParams::default()
+            },
+            &grid.ops(),
+            &land,
+            start.clone(),
+            ROTATION,
+        );
+        for dt in [1800.0, 1.0e7] {
+            ocean.set_wind_stress(rough_wind);
+            ocean.transport(dt);
+        }
+        // Each cell's mass budget closes only to round-off, so the heat
+        // carried in and out of a uniform cell can differ by round-off, a few
+        // units in the last place of 275 K (6e-14 K) per sub-step. Measured
+        // exactly 0.
+        let error = (0..grid.n())
+            .filter(|&i| land[i] < 1.0)
+            .flat_map(|i| [ocean.mixed[i], ocean.deep[i]])
+            .map(|t| (t - 275.0).abs())
+            .fold(0.0, f64::max);
+        eprintln!("largest departure {error:e} K");
+        assert!(error < 1e-10, "{error} K");
+    }
+
+    #[test]
+    fn a_uniform_eastward_stress_drives_the_analytic_ekman_flux() {
+        let grid = Grid::new(16);
+        let land = vec![0.0; grid.n()];
+        let params = ekman_only();
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
+        let tau = 0.1;
+        ocean.set_wind_stress(|_| [tau, 0.0]);
+        ocean.transport(1800.0);
+        let epsilon = params.ekman.unwrap().friction;
+        // Each link against Eq. 4 at its edge point. The scheme's stress
+        // there is the mean of the two cells' east vectors, which is short of
+        // the edge point's by the square of their longitude difference: the
+        // error grows towards the poles, to 9e-3 at 75°.
+        let mut worst = 0.0f64;
+        for (k, &e) in ocean.link_edges().collect::<Vec<_>>().iter().enumerate() {
+            let e = e as usize;
+            let x = grid.geometry.edge_points[e];
+            let latitude = fms_math::asin(x.z).to_degrees().abs();
+            if !(15.0..=60.0).contains(&latitude) {
+                continue;
+            }
+            let east = DVec3::Z.cross(x).normalize();
+            let stress = tau * east;
+            let f = 2.0 * ROTATION * x.z;
+            let m = (epsilon * stress - f * x.cross(stress)) / (epsilon * epsilon + f * f);
+            let width = grid.geometry.edge_lengths[e] * RADIUS;
+            let exact = m.dot(grid.geometry.edge_normals[e]) * width;
+            worst = worst.max((ocean.mass_flux[k] - exact).abs() / (m.length() * width));
+        }
+        // Measured 2.8e-3.
+        eprintln!("largest error {worst:e} of |M| × width");
+        assert!(worst < 5e-3, "{worst}");
+        // The net northward flux across 45° N, per metre of the parallel,
+        // is the Ekman transport −τ/f.
+        let z0 = fms_math::sin(45f64.to_radians());
+        let centers = grid.mesh.cell_centers();
+        let crossing: f64 = ocean
+            .link_edges()
+            .zip(&ocean.mass_flux)
+            .map(|(e, f)| {
+                let [a, b] = grid.mesh.edges()[e as usize].cells;
+                match (centers[a as usize].z > z0, centers[b as usize].z > z0) {
+                    (false, true) => *f,
+                    (true, false) => -f,
+                    _ => 0.0,
+                }
+            })
+            .sum();
+        let per_metre = crossing / (std::f64::consts::TAU * RADIUS * (1.0 - z0 * z0).sqrt());
+        let ekman = -tau / (2.0 * ROTATION * z0);
+        // Measured 2.1% short, 0.9% of it the friction's ε²/f².
+        eprintln!("{per_metre} kg/m/s against −τ/f = {ekman}");
+        assert!(
+            (per_metre / ekman - 1.0).abs() < 0.04,
+            "{per_metre} vs {ekman}"
+        );
+    }
+
+    #[test]
+    fn tropical_easterlies_upwell_cold_water_on_the_equator() {
+        let grid = Grid::new(16);
+        let land = vec![0.0; grid.n()];
+        let params = OceanParams {
+            deep_start_limit: 285.0,
+            ..ekman_only()
+        };
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, vec![300.0; grid.n()], ROTATION);
+        // Easterlies within 30° of the equator, strongest on it.
+        let centers = grid.mesh.cell_centers();
+        let easterly = |i: usize| {
+            let z: f64 = centers[i].z;
+            [-0.1 * (1.0 - (z / 0.5).powi(2)).max(0.0), 0.0]
+        };
+        ocean.set_wind_stress(easterly);
+        ocean.transport(86_400.0);
+        let mut equatorial = 0;
+        for (i, x) in centers.iter().enumerate() {
+            if x.z.abs() < 0.04 {
+                equatorial += 1;
+                assert!(ocean.upwelling(i) > 0.0, "cell {i}: {}", ocean.upwelling(i));
+                assert!(ocean.mixed[i] < 300.0, "cell {i}: {}", ocean.mixed[i]);
+                assert!(ocean.ekman_mixed_heating(i) < 0.0);
+            }
+        }
+        assert!(equatorial > 0);
+        let a = &ocean.area;
+        let net: f64 = (0..grid.n()).map(|i| a[i] * ocean.ekman_heating(i)).sum();
+        let gross: f64 = (0..grid.n())
+            .map(|i| a[i] * ocean.ekman_heating(i).abs())
+            .sum();
+        eprintln!("net {net:e} W of gross {gross:e} W");
+        assert!(
+            gross > 0.0 && (net / gross).abs() < 1e-12,
+            "{net} of {gross}"
+        );
+    }
+
+    #[test]
+    fn no_stress_moves_no_water() {
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let start: Vec<f64> = (0..grid.n())
+            .map(|i| 272.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let params = OceanParams {
+            ice: Some(IceParams::default()),
+            ..ekman_only()
+        };
+        // Full ice cover takes all of the wind's stress; so does no wind.
+        let mut iced = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
+        iced.ice.as_mut().unwrap().fraction.fill(1.0);
+        let mut calm = Ocean::new(params, &grid.ops(), &land, start.clone(), ROTATION);
+        let (mixed, deep) = (iced.mixed.clone(), iced.deep.clone());
+        iced.set_wind_stress(rough_wind);
+        calm.set_wind_stress(|_| [0.0; 2]);
+        for ocean in [&mut iced, &mut calm] {
+            ocean.transport(1800.0);
+            assert!(ocean.mass_flux.iter().all(|f| *f == 0.0));
+            assert_eq!(ocean.mixed, mixed);
+            assert_eq!(ocean.deep, deep);
+            assert!(
+                (0..grid.n()).all(|i| ocean.upwelling(i) == 0.0 && ocean.ekman_heating(i) == 0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn without_ekman_the_wind_changes_nothing() {
+        let grid = Grid::new(16);
+        let land = coasts(grid.n());
+        let start: Vec<f64> = (0..grid.n())
+            .map(|i| 272.0 + 30.0 * scatter(i, 3))
+            .collect();
+        let new = || {
+            Ocean::new(
+                OceanParams::default(),
+                &grid.ops(),
+                &land,
+                start.clone(),
+                ROTATION,
+            )
+        };
+        let (mut windy, mut still) = (new(), new());
+        for _ in 0..5 {
+            windy.set_wind_stress(rough_wind);
+            windy.transport(1800.0);
+            still.transport(1800.0);
+        }
+        assert_eq!(windy.mixed, still.mixed);
+        assert_eq!(windy.deep, still.deep);
+    }
+
+    #[test]
+    #[should_panic(expected = "Ekman transport needs a deep layer")]
+    fn ekman_transport_needs_a_deep_layer() {
+        let grid = Grid::new(4);
+        let params = OceanParams {
+            ekman: Some(EkmanParams::default()),
+            ..OceanParams::slab(50.0)
+        };
+        let land = vec![0.0; grid.n()];
+        Ocean::new(params, &grid.ops(), &land, vec![290.0; grid.n()], ROTATION);
     }
 }

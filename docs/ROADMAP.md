@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.12.1.**
+**Next: M2.12.2.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -63,7 +63,7 @@ a visual check.
   - [x] 11.8. Earth run and close-out; terrain, jump and seeding defaults kept
   - [x] 11.9. Earth reference values (`reference/earth`) and a comparison script
 - [ ] 12. **Ocean heat transport by currents** (PLAN §4.3)
-  - [ ] 12.1. Ekman transport: wind stress from the atmosphere, mass fluxes
+  - [x] 12.1. Ekman transport: wind stress from the atmosphere, mass fluxes
     across edges, the deep layer's return flow and upwelling
   - [ ] 12.2. Sverdrup transport near the equator, limited for slow rotators
   - [ ] 12.3. Gent–McWilliams eddy transport; eddy coefficients that scale

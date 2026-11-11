@@ -9,8 +9,8 @@ use fms_atmos::column_physics::{
 };
 use fms_atmos::williamson::{GRAVITY, RADIUS};
 use fms_atmos::{
-    ColumnPhysics, Forcing, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
-    LayeredSemiImplicitOptions, Levels, OceanParams, PhysicsParams,
+    ColumnPhysics, EkmanParams, Forcing, Gas, HyperdiffusionOptions, LayeredModel,
+    LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels, OceanParams, PhysicsParams,
 };
 use fms_grid::{LatitudeBands, LloydOptions, MeshGeometry, Operators, SphereMesh};
 use fms_planet::{Planet, PlanetParams};
@@ -415,6 +415,30 @@ fn energy_and_water_close_with_a_seeded_ice_sheet() {
     assert!(run.most_sheet > 0.1, "ice sheets {}", run.most_sheet);
 }
 
+#[test]
+fn energy_and_water_close_with_ekman_transport() {
+    // The wind moves the default ocean, against a continent's coasts.
+    let params = PhysicsParams {
+        ocean: OceanParams {
+            ekman: Some(EkmanParams::default()),
+            ..OceanParams::default()
+        },
+        ..PhysicsParams::default()
+    };
+    let run = budget_run(&Planet::earth(), params, 45.0, continent_fraction);
+    eprintln!(
+        "energy residual {:+.5} W/m², water residual {:+.1e}, upwelling up to {:.1e} kg/m²/s",
+        run.energy, run.water, run.most_upwelling
+    );
+    assert!(
+        run.energy.abs() < 0.1,
+        "energy residual {} W/m²",
+        run.energy
+    );
+    assert!(run.water.abs() < 1e-11, "water residual {}", run.water);
+    assert!(run.most_upwelling > 0.0, "the water never moved");
+}
+
 /// The budgets of a run on [`CLIMATE_LEVELS`] at 642 cells.
 struct BudgetRun {
     /// Energy residual (W/m²).
@@ -429,6 +453,8 @@ struct BudgetRun {
     most_ice: f64,
     /// The most of the planet that was ever ice sheet.
     most_sheet: f64,
+    /// The fastest upwelling anywhere (kg m⁻² s⁻¹).
+    most_upwelling: f64,
 }
 
 fn budget_run(
@@ -442,6 +468,7 @@ fn budget_run(
     let (mut previous, mut largest, mut when): (Option<Vec<f64>>, f64, f64) = (None, 0.0, 0.0);
     let (mut least_ice, mut most_ice) = (f64::INFINITY, 0.0f64);
     let mut most_sheet = 0.0f64;
+    let mut most_upwelling = 0.0f64;
     let levels = Levels::new(&CLIMATE_LEVELS);
     run_on(
         planet,
@@ -484,6 +511,9 @@ fn budget_run(
                 .sum::<f64>()
                 / (4.0 * std::f64::consts::PI);
             most_sheet = most_sheet.max(sheet);
+            most_upwelling = field("ocean.upwelling")
+                .iter()
+                .fold(most_upwelling, |a, &w| a.max(w));
             if row.3 > DAY {
                 let ice = field("ocean.ice_fraction")
                     .iter()
@@ -517,6 +547,7 @@ fn budget_run(
         least_ice,
         most_ice,
         most_sheet,
+        most_upwelling,
     }
 }
 

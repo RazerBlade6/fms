@@ -18,7 +18,7 @@ use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
-use fms_ocean::{IceParams, OceanParams};
+use fms_ocean::{EkmanParams, IceParams, OceanParams};
 use glam::DVec3;
 
 use crate::chart::{self, Series, TimeAxis};
@@ -56,6 +56,10 @@ pub struct ClimateArgs {
     /// Let a mixed layer colder than the deep layer stay on top.
     #[arg(long)]
     no_ocean_convection: bool,
+    /// Move the ocean with the wind: Ekman transport in the mixed layer,
+    /// returned by the deep layer, with upwelling and downwelling between.
+    #[arg(long)]
+    ocean_ekman: bool,
     /// Give sea ice and its snow the albedo of open water, which turns off
     /// the ice-albedo feedback.
     #[arg(long)]
@@ -142,6 +146,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let ocean = OceanParams {
         diffusivity: args.ocean_diffusivity,
         convective_adjustment: !args.no_ocean_convection,
+        ekman: args.ocean_ekman.then(EkmanParams::default),
         ice: OceanParams::default().ice.map(|ice| {
             if args.no_ice_albedo {
                 IceParams {
@@ -419,8 +424,16 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         setup.dt,
         (args.years * world.planet.year_seconds() / 86_400.0).round(),
         &format!(
-            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean and a {} m soil store, CO₂ {} ppm",
-            params.ocean.mixed_depth, params.ocean.deep_depth, params.land.soil_depth, params.co2
+            "; radiation and moisture over a {} m mixed layer on a {} m deep ocean{} and a {} m soil store, CO₂ {} ppm",
+            params.ocean.mixed_depth,
+            params.ocean.deep_depth,
+            if params.ocean.ekman.is_some() {
+                " with Ekman transport"
+            } else {
+                ""
+            },
+            params.land.soil_depth,
+            params.co2
         ),
     );
     eprintln!("climate: {description}");

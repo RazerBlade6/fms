@@ -9,7 +9,8 @@
 //! - **Surface**: each cell has an ocean, a sea-ice and a land tile, weighted
 //!   by its land fraction and ice cover, each with its own temperature,
 //!   albedo, roughness and fluxes. The ocean tile is the mixed layer of
-//!   [`fms_ocean::Ocean`], which moves heat sideways and down, and the ice
+//!   [`fms_ocean::Ocean`], which moves heat sideways and down (with the
+//!   open water's wind stress, if it has Ekman transport), and the ice
 //!   tile is its ice; the land tile is a skin with no heat
 //!   capacity over a soil heat store, with a bucket of soil water and a pack
 //!   of snow. Each absorbs sunlight and longwave, emits as a black
@@ -913,6 +914,7 @@ impl<'a> ColumnPhysics<'a> {
             model.operators(),
             &land_fraction,
             surface_temperature.clone(),
+            planet.rotation_rate(),
         );
         let mut physics = Self {
             params,
@@ -1622,6 +1624,11 @@ impl Forcing for ColumnPhysics<'_> {
                 sublimation: FUSION_HEAT * surface[i].tiles[ICE].evaporation.max(0.0),
                 snowfall: moist[i].snow,
             });
+            // The open water's stress on the air, turned round.
+            self.ocean.set_wind_stress(|i| {
+                let water = &surface[i].tiles[OCEAN];
+                [-water.stress_east, -water.stress_north]
+            });
             self.ocean.transport(dt);
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
@@ -1821,6 +1828,30 @@ impl Forcing for ColumnPhysics<'_> {
                 "Deep-layer temperature (its start where a cell has no ocean)",
                 "K",
                 self.ocean.deep_temperature().to_vec(),
+            ),
+            field(
+                "ocean.ekman_heating",
+                "Heating of the ocean's two layers by Ekman transport, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.ekman_heating(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.ekman_mixed_heating",
+                "Heating of the mixed layer by Ekman transport, per unit area of ocean",
+                "W m-2",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.ekman_mixed_heating(i))
+                    .collect(),
+            ),
+            field(
+                "ocean.upwelling",
+                "Deep water welling up into the mixed layer (negative where it sinks), per unit area of ocean",
+                "kg m-2 s-1",
+                (0..self.land_fraction.len())
+                    .map(|i| self.ocean.upwelling(i))
+                    .collect(),
             ),
             field(
                 "rad.surface_temperature",
