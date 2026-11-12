@@ -12,18 +12,20 @@ Most other things are customizable.
 The project is divded into 4 modules:
 
 - `fms-editor`: A Rust GUI App for editing and designing custom planets and terrain. Not built.
+- `fms-climate`: The atmospheric GCM + Vegetation + Hydrological model, generating biomes, weather, water,
+  currently in progress.
 - `fms-geo`: A Geological/Tectonic plate simulator for generating physical and relief features,
-  continental drift, and probably more (IDK haven't designed it yet).
-- `fms-climate`: The atmospheric GCM + Vegetation + Hydrological model, generating biomes, weather, water
-  and more. Currently in progress.
+  continental drift, carbonate-silicate cycle.
 - `fms-civ`: A civilisation simulator, with factions, culture, religion, and probably more (Also not designed yet).
 
 Written in Rust (egui + wgpu).
 
-**Status:** Currently building `fms-climate`; M2 (the headless GCM) is complete, currently starting M3 (The Vegetation Layer)
+**Status:** Currently building `fms-climate`; M2 (the headless GCM) is in progress; fully built, requires tuning now.
 
 This code is licensed under the PolyForm Non-Commercial License; Free for personal, hobbyist or academic use.
 Commercial Use (for example, in a video game or a paid service) requires permission.
+
+Since currently only climate works, this command will run the fms-climate module
 
 ```sh
 cargo test --workspace                             # run all tests
@@ -33,7 +35,7 @@ cargo run -p fms-viewer                            # viewer (placeholder)
 
 ## Documentation
 
-- [Plan](docs/PLAN.md): the `fms` family and its family-wide decisions
+- [Plan](docs/PLAN.md): the `fms` family
 - [Climate plan](docs/climate/PLAN.md): goals and key decisions of `fms-climate`
 - [Roadmap](docs/climate/ROADMAP.md): milestones and progress
 - [Design](docs/climate/DESIGN.md): how each subsystem works
@@ -41,6 +43,5 @@ cargo run -p fms-viewer                            # viewer (placeholder)
 - [`.fmsmap`](docs/FMSMAP.md): the file every module exchanges
 - [CLI](docs/climate/CLI.md): the headless `fms-climate` runner and its image output
 - [Benchmarks](docs/climate/BENCHMARKS.md): how to run them, and baseline numbers
-- [Development](docs/DEVELOPMENT.md): setup, git workflow, determinism rules, conventions
 - [Observations](docs/climate/OBSERVATIONS.md): known limitations and ideas parked for later
 - [References](REFERENCES.md): the papers and data the design cites, with DOIs

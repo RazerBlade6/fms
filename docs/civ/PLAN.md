@@ -25,27 +25,27 @@ very limited god game, and not a strategy game or a model of real history.
 
 ## 2. Key decisions
 
-| Area | Decision |
-|---|---|
-| Simulated unit | Provinces, each with a population, a food capacity, culture and religion shares, and a main town |
-| Provinces | Generated along rivers, ridges and coasts to a target count; borders you draw become province edges; provinces can be merged, split and renamed |
-| Resource | Food capacity only |
-| Faction traits | A few sliders the simulation reads, plus name, colour and free lore text it ignores |
+| Area                 | Decision                                                                                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Simulated unit       | Provinces, each with a population, a food capacity, culture and religion shares, and a main town                                                   |
+| Provinces            | Generated along rivers, ridges and coasts to a target count; borders you draw become province edges; provinces can be merged, split and renamed    |
+| Resource             | Food capacity only                                                                                                                                 |
+| Faction traits       | A few sliders the simulation reads, plus name, colour and free lore text it ignores                                                                |
 | Culture and religion | Their own layers, independent of political borders, held as shares per province; one effect: breakaways and war are likelier between unlike people |
-| Conflict | Wars as dated, named events; no armies |
-| Unclaimed land | Empty until settled |
-| Sea | Nobody owns it; fishing on coasts and short crossings |
-| Disasters | Eruptions and earthquakes, storms and floods, droughts and cold years; natural or triggered by hand |
-| Time | One step per year; typical runs of 200–2,000 years |
-| Interaction | A run takes no input while playing; at pause you can edit anything or trigger a disaster |
-| Timeline | Every year recorded and scrubbable; changing an earlier year discards what followed |
-| Names | Generated per culture from the seed; anything can be renamed |
-| The world | Read-only; civ writes only its own layers |
-| Outputs | Animated map with timeline, chronicle, per-faction graphs, layers in `.fmsmap` with name tables |
-| Application | Its own GUI program on the shared render crate, with the simulation as a headless library |
-| Determinism | Seed, setup and the log of edits and disasters reproduce a history exactly |
-| Validation | Behaviour tests, plus one look at Earth for tuning |
-| First milestone | Headless core |
+| Conflict             | Wars as dated, named events; no armies                                                                                                             |
+| Unclaimed land       | Empty until settled                                                                                                                                |
+| Sea                  | Nobody owns it; fishing on coasts and short crossings                                                                                              |
+| Disasters            | Eruptions and earthquakes, storms and floods, droughts and cold years; natural or triggered by hand                                                |
+| Time                 | One step per year; typical runs of 200–2,000 years                                                                                                 |
+| Interaction          | A run takes no input while playing; at pause you can edit anything or trigger a disaster                                                           |
+| Timeline             | Every year recorded and scrubbable; changing an earlier year discards what followed                                                                |
+| Names                | Generated per culture from the seed; anything can be renamed                                                                                       |
+| The world            | Read-only; civ writes only its own layers                                                                                                          |
+| Outputs              | Animated map with timeline, chronicle, per-faction graphs, layers in `.fmsmap` with name tables                                                    |
+| Application          | Its own GUI program on the shared render crate, with the simulation as a headless library                                                          |
+| Determinism          | Seed, setup and the log of edits and disasters reproduce a history exactly                                                                         |
+| Validation           | Behaviour tests, plus one look at Earth for tuning                                                                                                 |
+| First milestone      | Headless core                                                                                                                                      |
 
 ## 3. The world as civ sees it
 
@@ -63,17 +63,20 @@ simulation runs per province; maps are drawn per cell.
 The only resource: how many people a province's land can feed. It is computed
 from whatever layers the file has.
 
-| Input | Source |
-|---|---|
+| Input                    | Source                                                                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Temperature and rainfall | `fms-climate` results; else the biome → typical-climate table, with its warning ([../FMSMAP.md](../FMSMAP.md)); else a crude guess from latitude and altitude, with a stronger warning |
-| Rivers and lakes | The file's river and lake layers |
-| Coast | Fishing in coastal provinces |
-| Slope and altitude | From `terrain.elevation` |
-| Soil | A bonus from `fms-geo`'s sediment thickness and volcanic rock, when present |
+| Rivers and lakes         | The file's river and lake layers                                                                                                                                                       |
+| Coast                    | Fishing in coastal provinces                                                                                                                                                           |
+| Slope and altitude       | From `terrain.elevation`                                                                                                                                                               |
+| Soil                     | A bonus from `fms-geo`'s sediment thickness and volcanic rock, when present                                                                                                            |
 
 The capacity a faction gets from a province also depends on its way of life
 (§4.1). The world is read-only: farming, clearing and irrigation are not
 modelled, and civ never changes a layer it did not write.
+
+If a world has very limited or no lakes and rivers (because the user did not draw or generate any)
+they are warned about the lack of fresh water.
 
 ### 3.3 Towns
 
@@ -89,12 +92,12 @@ A faction has a name, a colour, free lore text the simulation ignores, a
 capital, and a few sliders it reads. The intended sliders (exact list fixed when
 built):
 
-| Trait | Effect |
-|---|---|
-| Expansionism | How readily spare people settle new provinces |
-| Militancy | How readily it goes to war, and part of its strength |
-| Cohesion | How well it holds distant or unlike provinces |
-| Way of life | Farming, herding or seafaring: which land feeds it best, and how far it reaches over water |
+| Trait        | Effect                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| Expansionism | How readily spare people settle new provinces                                              |
+| Militancy    | How readily it goes to war, and part of its strength                                       |
+| Cohesion     | How well it holds distant or unlike provinces                                              |
+| Way of life  | Farming, herding or seafaring: which land feeds it best, and how far it reaches over water |
 
 ### 4.2 Population and settling
 
@@ -139,11 +142,11 @@ themselves in v1. The drift rates are fixed when built.
 
 ## 6. Disasters
 
-| Disaster | Natural rate and place from |
-|---|---|
-| Eruptions and earthquakes | `fms-geo`'s volcanism and seismic-hazard layers |
-| Storms and floods | `fms-climate`'s storm and flood statistics |
-| Droughts and cold years | `fms-climate`'s year-to-year swings in rain and temperature |
+| Disaster                  | Natural rate and place from                                 |
+| ------------------------- | ----------------------------------------------------------- |
+| Eruptions and earthquakes | `fms-geo`'s volcanism and seismic-hazard layers             |
+| Storms and floods         | `fms-climate`'s storm and flood statistics                  |
+| Droughts and cold years   | `fms-climate`'s year-to-year swings in rain and temperature |
 
 Natural disasters strike by seeded chance at those rates; when the layers are
 missing civ uses defaults and warns. You can also trigger any of them by hand,
@@ -200,14 +203,14 @@ guarantee is the family's ([../PLAN.md](../PLAN.md) §2).
 
 Names and encodings are fixed when each is built.
 
-| Layer | Notes |
-|---|---|
-| Province | Id per cell |
-| Faction | Id per cell; none for unclaimed or stateless land |
-| Culture | Majority per cell |
-| Religion | Majority per cell |
-| Population density | People per area |
-| Towns | The cell of each province's town |
+| Layer              | Notes                                             |
+| ------------------ | ------------------------------------------------- |
+| Province           | Id per cell                                       |
+| Faction            | Id per cell; none for unclaimed or stateless land |
+| Culture            | Majority per cell                                 |
+| Religion           | Majority per cell                                 |
+| Population density | People per area                                   |
+| Towns              | The cell of each province's town                  |
 
 Each id layer comes with a small table giving every id its name and colour, a
 format addition ([../FMSMAP.md](../FMSMAP.md)). Label placement and styling stay
@@ -246,23 +249,26 @@ Building starts no earlier than `fms-editor`'s first milestone (the shared
 render and editing code) and `fms-climate` M3 step 0 (the `.fmsmap` crate).
 Headless, with scripted setups and PNG dumps, until the GUI stage.
 
-| Stage | Contents |
-|---|---|
-| Provinces and food | Province generation, food capacity with its fallbacks |
-| Population | Growth, famine, settling, the sea |
-| War | Wars, capitals, conquest |
-| Culture and religion | Shares, drift, breakaways |
-| Disasters | Natural rates from geo and climate layers, effects |
-| Chronicle and names | Events, name generator, graphs data |
-| GUI | Drawing, trait panels, timeline, disaster triggers, mid-run edits |
-| Export | `.fmsmap` layers and name tables, project file |
+| Stage                | Contents                                                          |
+| -------------------- | ----------------------------------------------------------------- |
+| Provinces and food   | Province generation, food capacity with its fallbacks             |
+| Population           | Growth, famine, settling, the sea                                 |
+| War                  | Wars, capitals, conquest                                          |
+| Culture and religion | Shares, drift, breakaways                                         |
+| Disasters            | Natural rates from geo and climate layers, effects                |
+| Chronicle and names  | Events, name generator, graphs data                               |
+| GUI                  | Drawing, trait panels, timeline, disaster triggers, mid-run edits |
+| Export               | `.fmsmap` layers and name tables, project file                    |
 
-## 13. Reserved for later
+## 13. Future Possibilities
+
+None of these are guaranteed features, and several of these will likely never
+be implemented. Still, ideas to keep in mind.
 
 - **Technology and ages.**
 - **Trade.**
 - **Diplomacy and alliances.**
-- **Rulers and dynasties.**
+- **Rulers and dynasties.** (as anything other than flavour)
 - **Armies and navies.**
 - **An economy beyond food**: materials such as metal or salt would need
   `fms-geo`'s mineral layer.
