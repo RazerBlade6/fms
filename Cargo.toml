@@ -29,6 +29,7 @@ fms-ocean = { path = "crates/ocean" }
 fms-hydro = { path = "crates/hydro" }
 fms-climatology = { path = "crates/climatology" }
 fms-sim = { path = "crates/sim" }
+fms-restart = { path = "crates/restart" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

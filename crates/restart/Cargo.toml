@@ -1,0 +1,13 @@
+[package]
+name = "fms-restart"
+description = "Restart files: a run's state as named arrays, saved and loaded bit for bit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

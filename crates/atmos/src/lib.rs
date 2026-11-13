@@ -40,6 +40,7 @@ pub use column_physics::{
 };
 pub use diffusion::{Hyperdiffusion, HyperdiffusionOptions};
 pub use fms_ocean::{EARTH_ROTATION, EddyParams, EkmanParams, GyreParams, JumpLayers, OceanParams};
+pub use fms_restart::{Restart, RestartError};
 pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};
 pub use helmholtz::{Helmholtz, SolveReport};

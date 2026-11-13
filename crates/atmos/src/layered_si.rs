@@ -74,9 +74,17 @@
 //! [`LayeredSemiImplicit::water_budget`] accounts for every kilogram:
 //! because leapfrog advances two interleaved levels, the water it closes on
 //! is the mean of the two current levels ([`LayeredSemiImplicit::water`]).
+//!
+//! # Restarts
+//!
+//! [`LayeredSemiImplicit::save_restart`] saves what the stepper carries
+//! between steps, and [`LayeredSemiImplicit::load_restart`] loads it over a
+//! freshly built stepper's; with the same settings the run continues bit for
+//! bit.
 
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
+use fms_restart::{Restart, RestartError};
 use rayon::prelude::*;
 
 use crate::forcing::EnergyTerms;
@@ -415,6 +423,158 @@ impl<'a> LayeredSemiImplicit<'a> {
     /// Helmholtz solver totals (all modes).
     pub fn solver_stats(&self) -> SolverStats {
         self.stats
+    }
+
+    /// A restart holding everything the stepper carries between steps,
+    /// under `dynamics.`: both leapfrog levels, the modal potentials (the
+    /// solver's first guess, which the next step's bits depend on), the
+    /// energy and water budgets, the solver totals and the step count, with
+    /// the σ interfaces to check against on loading.
+    ///
+    /// Settings are not saved: the time step, the reference state and the
+    /// operators built from it, the filter and solver options all come from
+    /// the stepper that loads it.
+    pub fn save_restart(&self) -> Restart {
+        let mut r = Restart::new(self.ops.mesh().fingerprint(), self.steps);
+        r.put(SIGMA, self.model.levels().interfaces());
+        for (prefix, level) in [(CURRENT, &self.current), (PREVIOUS, &self.previous)] {
+            for (name, values) in level_arrays(prefix, level) {
+                r.put(&name, values);
+            }
+        }
+        for (k, m) in self.modal.iter().enumerate() {
+            r.put(&format!("{MODAL}{k}"), m);
+        }
+        let (e, w, s) = (&self.budget, &self.water, &self.stats);
+        r.put(
+            ENERGY_BUDGET,
+            &[
+                e.diffusion.kinetic,
+                e.diffusion.thermal,
+                e.forcing.kinetic,
+                e.forcing.thermal,
+            ],
+        );
+        r.put(
+            WATER_BUDGET,
+            &[
+                w.sources,
+                w.filter,
+                w.fixer,
+                w.borrowed,
+                f64::from(w.max_substeps),
+            ],
+        );
+        r.put(
+            SOLVER_STATS,
+            &[s.solves as f64, s.iterations as f64, s.worst_residual],
+        );
+        r
+    }
+
+    /// Load a state saved by [`save_restart`](Self::save_restart) over this
+    /// stepper's, including the step count. All or nothing: on an error the
+    /// stepper is unchanged.
+    ///
+    /// Refused if the file is from another mesh, other σ levels, or a moist
+    /// state into a dry stepper (or the reverse). The reference state stays
+    /// the one this stepper built from its own starting state, not the
+    /// file's, so the continuation is bit for bit only when this stepper was
+    /// built as the saved one was (same model, starting state, time step and
+    /// options); otherwise it is a warm start.
+    pub fn load_restart(&mut self, from: &Restart) -> Result<(), RestartError> {
+        let run = self.ops.mesh().fingerprint();
+        if from.grid() != run {
+            return Err(RestartError::DifferentGrid {
+                file: from.grid(),
+                run,
+            });
+        }
+        let sigma = self.model.levels().interfaces();
+        let same_levels = match from.get(SIGMA, sigma.len()) {
+            Ok(saved) => saved
+                .iter()
+                .zip(sigma)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            Err(RestartError::WrongLength { .. }) => false,
+            Err(e) => return Err(e),
+        };
+        if !same_levels {
+            return Err(RestartError::Mismatch(format!(
+                "its σ levels differ from this run's {sigma:?} (a state on other levels would need vertical regridding)"
+            )));
+        }
+        let moist = self.transport.is_some();
+        if from.contains(&format!("{CURRENT}q_ps.0")) != moist {
+            let (file, run) = if moist {
+                ("dry", "moist")
+            } else {
+                ("moist", "dry")
+            };
+            return Err(RestartError::Mismatch(format!(
+                "its atmosphere is {file} and this run's is {run}"
+            )));
+        }
+
+        // Check everything before changing anything.
+        let mut levels = Vec::new();
+        for (prefix, level) in [(CURRENT, &self.current), (PREVIOUS, &self.previous)] {
+            let saved = level_arrays(prefix, level)
+                .into_iter()
+                .map(|(name, values)| from.get(&name, values.len()))
+                .collect::<Result<Vec<_>, _>>()?;
+            levels.push(saved);
+        }
+        let modal = self
+            .modal
+            .iter()
+            .enumerate()
+            .map(|(k, m)| from.get(&format!("{MODAL}{k}"), m.len()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let e = from.get(ENERGY_BUDGET, 4)?;
+        let w = from.get(WATER_BUDGET, 5)?;
+        let s = from.get(SOLVER_STATS, 3)?;
+        let max_substeps = count(WATER_BUDGET, w[4])?;
+        let max_substeps = u32::try_from(max_substeps).map_err(|_| {
+            RestartError::Mismatch(format!("{WATER_BUDGET} has an impossible substep count"))
+        })?;
+        let (solves, iterations) = (count(SOLVER_STATS, s[0])?, count(SOLVER_STATS, s[1])?);
+
+        for (level, saved) in [&mut self.current, &mut self.previous]
+            .into_iter()
+            .zip(levels)
+        {
+            for (to, from) in level_arrays_mut(level).into_iter().zip(saved) {
+                to.copy_from_slice(from);
+            }
+        }
+        for (to, from) in self.modal.iter_mut().zip(modal) {
+            to.copy_from_slice(from);
+        }
+        self.budget = EnergyBudget {
+            diffusion: EnergyTerms {
+                kinetic: e[0],
+                thermal: e[1],
+            },
+            forcing: EnergyTerms {
+                kinetic: e[2],
+                thermal: e[3],
+            },
+        };
+        self.water = WaterBudget {
+            sources: w[0],
+            filter: w[1],
+            fixer: w[2],
+            borrowed: w[3],
+            max_substeps,
+        };
+        self.stats = SolverStats {
+            solves,
+            iterations,
+            worst_residual: s[2],
+        };
+        self.steps = from.step();
+        Ok(())
     }
 
     /// The longest stable step (s) for winds up to `max_wind` (m s⁻¹) at
@@ -833,6 +993,48 @@ impl<'a> LayeredSemiImplicit<'a> {
             self.stats.worst_residual = self.stats.worst_residual.max(r.relative_residual);
         }
         reports
+    }
+}
+
+// Restart array names.
+const SIGMA: &str = "dynamics.sigma";
+const CURRENT: &str = "dynamics.";
+const PREVIOUS: &str = "dynamics.previous.";
+const MODAL: &str = "dynamics.modal.";
+const ENERGY_BUDGET: &str = "dynamics.energy_budget";
+const WATER_BUDGET: &str = "dynamics.water_budget";
+const SOLVER_STATS: &str = "dynamics.solver_stats";
+
+/// A level's arrays and their restart names: `ps`, then `u.{k}`,
+/// `theta_ps.{k}` and (moist) `q_ps.{k}` per layer, top first.
+fn level_arrays<'s>(prefix: &str, s: &'s LayeredState) -> Vec<(String, &'s [f64])> {
+    let mut arrays = vec![(format!("{prefix}ps"), s.ps.as_slice())];
+    for (field, layers) in [("u", &s.u), ("theta_ps", &s.theta_ps), ("q_ps", &s.q_ps)] {
+        for (k, values) in layers.iter().enumerate() {
+            arrays.push((format!("{prefix}{field}.{k}"), values.as_slice()));
+        }
+    }
+    arrays
+}
+
+/// [`level_arrays`]' arrays, mutably and in the same order.
+fn level_arrays_mut(s: &mut LayeredState) -> Vec<&mut [f64]> {
+    let mut arrays = vec![s.ps.as_mut_slice()];
+    for layers in [&mut s.u, &mut s.theta_ps, &mut s.q_ps] {
+        arrays.extend(layers.iter_mut().map(Vec::as_mut_slice));
+    }
+    arrays
+}
+
+/// A counter stored as `f64`, which must be a whole number in range.
+fn count(name: &str, value: f64) -> Result<u64, RestartError> {
+    // 2⁶⁴ as f64: every whole number below it fits a u64.
+    if (0.0..18_446_744_073_709_551_616.0).contains(&value) && value.fract() == 0.0 {
+        Ok(value as u64)
+    } else {
+        Err(RestartError::Mismatch(format!(
+            "{name} holds {value}, not a count"
+        )))
     }
 }
 

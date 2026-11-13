@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.13.5.1.**
+**Next: M2.13.5.2.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -87,7 +87,7 @@ a visual check.
   - [x] 13.4. Close-out
 - [ ] 13.5. **Restart files**: save a spun-up state and start runs from it
   (a plain state dump; the versioned format is M4.2).
-  - [ ] 13.5.1. Restart file reader and writer; save and load for the dynamics, resuming bit for bit
+  - [x] 13.5.1. Restart file reader and writer; save and load for the dynamics, resuming bit for bit
   - [ ] 13.5.2. Save and load for the physics, ocean and sea ice, resuming bit for bit
   - [ ] 13.5.3. `climate --save-restart` and `--restart`; warm start with changed settings
   - [ ] 13.5.4. Close-out

@@ -80,6 +80,7 @@ crates/
   worldgen/     heightmap import, idealized terrain
   atmos/        layered GCM (dynamics + physics)
   ocean/        slab ocean, wind-driven currents, sea ice
+  restart/      restart files: named arrays of state, saved bit for bit
   hydro/        runoff, flow routing, depression filling, lakes, basins
   climatology/  rolling monthly stats, Köppen, vegetation
   sim/          orchestration, spin-up, long runs, save/load

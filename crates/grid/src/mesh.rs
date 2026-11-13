@@ -488,6 +488,25 @@ impl SphereMesh {
             max_centroid_offset,
         }
     }
+
+    /// A 64-bit fingerprint of the mesh, for telling whether arrays saved on
+    /// one mesh fit another: FNV-1a over whole 64-bit words of the cell and
+    /// edge counts, the bits of every cell centre, and every edge's two cells
+    /// in order. The edges are included because edge arrays depend on the
+    /// edges' numbering, which the cell centres alone don't fix.
+    pub fn fingerprint(&self) -> u64 {
+        let words = [self.n_cells() as u64, self.n_edges() as u64]
+            .into_iter()
+            .chain(
+                self.cell_centers
+                    .iter()
+                    .flat_map(|p| p.to_array().map(f64::to_bits)),
+            )
+            .chain(self.edges.iter().flat_map(|e| e.cells.map(u64::from)));
+        words.fold(0xcbf2_9ce4_8422_2325u64, |h, w| {
+            (h ^ w).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
 }
 
 /// Frequencies at or below this are optimized directly by Lloyd's algorithm.
@@ -513,7 +532,17 @@ fn refinement_levels(frequency: u32) -> Vec<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::refinement_levels;
+    use super::{SphereMesh, refinement_levels};
+
+    #[test]
+    fn fingerprint_tells_meshes_apart() {
+        let mesh = SphereMesh::geodesic(4);
+        assert_eq!(mesh.fingerprint(), SphereMesh::geodesic(4).fingerprint());
+        assert_ne!(mesh.fingerprint(), SphereMesh::geodesic(5).fingerprint());
+        let ordered = mesh.hilbert_ordered();
+        assert_ne!(mesh.fingerprint(), ordered.fingerprint());
+        assert_eq!(ordered.fingerprint(), mesh.hilbert_ordered().fingerprint());
+    }
 
     #[test]
     fn refinement_chains() {

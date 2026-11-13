@@ -323,6 +323,7 @@ dependencies = [
  "fms-math",
  "fms-ocean",
  "fms-planet",
+ "fms-restart",
  "fms-sched",
  "glam",
  "rayon",
@@ -411,6 +412,10 @@ dependencies = [
  "glam",
  "rayon",
 ]
+
+[[package]]
+name = "fms-restart"
+version = "0.1.0"
 
 [[package]]
 name = "fms-sched"

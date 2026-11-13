@@ -272,6 +272,24 @@ the freezing point (271.35 K) at the base.
 - **Albedo** per band rises with thickness from the water's towards 0.57 visible
   and 0.31 near-infrared over a 0.3 m scale, blending to snow's 0.65 with cover.
 
+## Restart files (`fms-restart`)
+
+A restart holds state only, never settings. It is a header (magic `FMSRSTRT`,
+version, array count, grid fingerprint, step count) then uniquely named `f64`
+arrays, little-endian, values kept bit for bit. Saving writes a temporary file
+beside the target and renames it.
+
+- **Grid fingerprint** is a hash of the mesh's cell centres and edge list; a
+  file from another grid is refused.
+- **Dynamical core** is the only part that saves and loads so far, under
+  `dynamics.` names: both leapfrog time levels, the Helmholtz solver's
+  first-guess potentials, the energy and water budgets, the solver totals and
+  the step count. The time step, reference state and options come from the
+  stepper that loads the file. Other σ levels, or a moist/dry mismatch, are
+  refused, and a refused load changes nothing.
+- **Resuming**: loaded into a stepper built the same way, the run continues bit
+  for bit, on any thread count.
+
 ## Climate run and spin-up (`fms-cli`)
 
 `fms-climate climate` starts at rest from a radiative–convective equilibrium in
