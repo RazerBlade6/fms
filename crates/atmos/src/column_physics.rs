@@ -78,6 +78,8 @@
 //! from them. With `n` cells and `L` layers:
 //!
 //! - `physics.land_fraction` (`n`): checked on loading, not loaded;
+//! - `physics.intervals` (2): the radiation's and the ocean transport's
+//!   intervals (s), compared on loading;
 //! - `physics.clock` (6): model time (s), when the year ends (s), steps
 //!   since radiation and since the ocean's transport, years ended and jumps
 //!   done;
@@ -94,6 +96,9 @@
 //!   `7 + 5L`), each record's fields in declaration order;
 //! - while a year is measured for an ocean jump,
 //!   `physics.year_start.{mixed,deep}` (`n` each), the ocean at its start.
+//!
+//! Loaded into physics built with other intervals, another spin-up
+//! schedule or another ocean, the state is adapted and loading says how.
 
 use fms_grid::Operators;
 use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
@@ -342,6 +347,11 @@ pub struct PhysicsParams {
     /// stepped every step whatever this is.
     pub transport_interval: f64,
 }
+
+/// How close (s) model time must come to the end of a year for it to end:
+/// time is summed step by step, so a step that should land on it may fall
+/// just short.
+const YEAR_TOLERANCE: f64 = 1e-6;
 
 /// The longest time between radiation calls (s): clouds and temperatures
 /// change over a few hours whatever the length of the day.
@@ -1335,6 +1345,68 @@ impl<'a> ColumnPhysics<'a> {
             .sum()
     }
 
+    /// Fit the spin-up's clock, loaded from a restart, to this run's
+    /// schedule, and return a sentence for each change; with the saved run's
+    /// schedule there is none. While jumps remain a year ends on the step
+    /// that reaches `next_year`, and the year in progress is measured (has
+    /// `year_start`) exactly when it ends in a jump; the year-end code
+    /// relies on both. Over a prescribed surface years aren't counted.
+    fn reconcile_spin_up(&mut self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if self.prescribed {
+            return notes;
+        }
+        let spin_up = self.params.spin_up;
+        let year = self.planet.year_seconds();
+        let counting = self.jumps_done < spin_up.jumps;
+        // A saved run that had stopped counting (no jumps left, or a
+        // prescribed surface) left `next_year` behind: count the years
+        // since as ended, or one would end every step until it caught up.
+        if counting && self.time >= self.next_year - YEAR_TOLERANCE {
+            let behind = ((self.time - (self.next_year - YEAR_TOLERANCE)) / year).floor() + 1.0;
+            self.years_ended = self.years_ended.saturating_add(behind as u32);
+            self.next_year += behind * year;
+            // A year measured then has ended.
+            let dropped = if self.year_start.take().is_some() {
+                ", and the ocean it measured at the start of an earlier year is dropped"
+            } else {
+                ""
+            };
+            notes.push(format!(
+                "this run's ocean spin-up has jumps left and the saved run had stopped counting \
+                 years: {behind} more are counted as ended, so year {} is in progress{dropped}",
+                self.years_ended + 1
+            ));
+        }
+        let wanted = counting && spin_up.ends_in_jump(self.years_ended + 1);
+        let in_progress = self.years_ended + 1;
+        match (self.year_start.is_some(), wanted) {
+            (true, false) => {
+                self.year_start = None;
+                notes.push(format!(
+                    "year {in_progress} was being measured for an ocean jump that this run's \
+                     schedule doesn't have: the measurement is dropped"
+                ));
+            }
+            (false, true) => {
+                if (self.time - (self.next_year - year)).abs() <= YEAR_TOLERANCE {
+                    self.year_start = Some(self.ocean.snapshot());
+                    notes.push(format!(
+                        "this run's schedule ends year {in_progress} in an ocean jump that the saved \
+                         state wasn't measuring: the restart is at the year's start, so it is measured from here"
+                    ));
+                } else {
+                    notes.push(format!(
+                        "this run's schedule ends year {in_progress} in an ocean jump that the saved \
+                         state wasn't measuring: the restart is part way through the year, so that jump is skipped"
+                    ));
+                }
+            }
+            _ => {}
+        }
+        notes
+    }
+
     /// A model year has ended: jump if it was measured, and start measuring
     /// the next if that ends in a jump.
     fn end_spin_up_year(&mut self) {
@@ -2016,7 +2088,7 @@ impl Forcing for ColumnPhysics<'_> {
         self.time += dt;
         if self.jumps_done < self.params.spin_up.jumps
             && !self.prescribed
-            && self.time >= self.next_year - 1e-6
+            && self.time >= self.next_year - YEAR_TOLERANCE
         {
             self.next_year += self.planet.year_seconds();
             self.end_spin_up_year();
@@ -2041,8 +2113,8 @@ impl Forcing for ColumnPhysics<'_> {
     fn save_restart(&self, out: &mut Restart) {
         let Self {
             // Settings, and what is built from them, the mesh, the planet,
-            // the land and the terrain.
-            params: _,
+            // the land and the terrain; the intervals are saved to compare.
+            params,
             gas: _,
             levels,
             gravity: _,
@@ -2087,6 +2159,10 @@ impl Forcing for ColumnPhysics<'_> {
         } = self;
         let layers = levels.count();
         out.put(LAND_FRACTION, land_fraction);
+        out.put(
+            INTERVALS,
+            &[params.radiation_interval, params.transport_interval],
+        );
         out.put(
             CLOCK,
             &[
@@ -2148,7 +2224,7 @@ impl Forcing for ColumnPhysics<'_> {
         ocean.save_restart(out);
     }
 
-    fn load_restart(&mut self, from: &Restart) -> Result<(), RestartError> {
+    fn load_restart(&mut self, from: &Restart) -> Result<Vec<String>, RestartError> {
         let n = self.land_fraction.len();
         let layers = self.levels.count();
         if !from.contains(LAND_FRACTION) {
@@ -2169,6 +2245,7 @@ impl Forcing for ColumnPhysics<'_> {
         }
 
         // Check everything, the ocean last, before changing anything.
+        let intervals = from.get_array::<2>(INTERVALS)?;
         let clock = from.get_array::<6>(CLOCK)?;
         let since_radiation: u32 = count(CLOCK, clock[2])?;
         let since_transport: u32 = count(CLOCK, clock[3])?;
@@ -2204,7 +2281,7 @@ impl Forcing for ColumnPhysics<'_> {
             None
         };
         // All or nothing itself.
-        self.ocean.load_restart(from)?;
+        let ocean_notes = self.ocean.load_restart(from)?;
 
         [self.time, self.next_year] = [clock[0], clock[1]];
         self.since_radiation = since_radiation;
@@ -2241,7 +2318,26 @@ impl Forcing for ColumnPhysics<'_> {
         self.surface = surface;
         self.moist = moist;
         self.year_start = year_start;
-        Ok(())
+
+        let mut notes = Vec::new();
+        let [radiation_interval, transport_interval] = intervals;
+        let (run_radiation, run_transport) = (
+            self.params.radiation_interval,
+            self.params.transport_interval,
+        );
+        if radiation_interval.to_bits() != run_radiation.to_bits()
+            || transport_interval.to_bits() != run_transport.to_bits()
+        {
+            notes.push(format!(
+                "the radiation and ocean-transport intervals changed from {radiation_interval} s and \
+                 {transport_interval} s to {run_radiation} s and {run_transport} s: the steps since \
+                 the last of each are loaded as they are, and one at or past its new interval runs \
+                 on the next step"
+            ));
+        }
+        notes.extend(self.reconcile_spin_up());
+        notes.extend(ocean_notes);
+        Ok(notes)
     }
 
     fn budget(&self) -> Option<ForcingBudget> {
@@ -2778,6 +2874,7 @@ impl Forcing for ColumnPhysics<'_> {
 
 // Restart array names (see the module documentation).
 const LAND_FRACTION: &str = "physics.land_fraction";
+const INTERVALS: &str = "physics.intervals";
 const CLOCK: &str = "physics.clock";
 const BUDGET: &str = "physics.budget";
 const LAND_STATE: [&str; 5] = [

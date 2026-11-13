@@ -430,10 +430,11 @@ impl<'a> LayeredSemiImplicit<'a> {
     /// under `dynamics.`: both leapfrog levels, the modal potentials (the
     /// solver's first guess, which the next step's bits depend on), the
     /// energy and water budgets, the solver totals and the step count, with
-    /// the σ interfaces to check against on loading; then the forcing's own
-    /// state ([`Forcing::save_restart`](crate::Forcing::save_restart)).
+    /// the σ interfaces to check against on loading and the time step to
+    /// re-base the step count by; then the forcing's own state
+    /// ([`Forcing::save_restart`](crate::Forcing::save_restart)).
     ///
-    /// Settings are not saved: the time step, the reference state and the
+    /// Settings are not loaded: the time step, the reference state and the
     /// operators built from it, the filter and solver options all come from
     /// the stepper that loads it.
     pub fn save_restart(&self) -> Restart {
@@ -471,6 +472,7 @@ impl<'a> LayeredSemiImplicit<'a> {
             SOLVER_STATS,
             &[s.solves as f64, s.iterations as f64, s.worst_residual],
         );
+        r.put(DT, &[self.dt]);
         if let Some(forcing) = self.model.forcing() {
             forcing.save_restart(&mut r);
         }
@@ -489,7 +491,13 @@ impl<'a> LayeredSemiImplicit<'a> {
     /// starting state, not the file's, so the continuation is bit for bit
     /// only when this stepper was built as the saved one was (same model,
     /// starting state, time step and options); otherwise it is a warm start.
-    pub fn load_restart(&mut self, from: &Restart) -> Result<(), RestartError> {
+    ///
+    /// Returns a sentence for each way the state was adapted to this
+    /// stepper's settings, its own then the forcing's; none means nothing
+    /// was. With another time step the two leapfrog levels are loaded as
+    /// they are and the step count is re-based so that steps × step stays
+    /// the model time.
+    pub fn load_restart(&mut self, from: &Restart) -> Result<Vec<String>, RestartError> {
         let run = self.ops.mesh().fingerprint();
         if from.grid() != run {
             return Err(RestartError::DifferentGrid {
@@ -543,10 +551,29 @@ impl<'a> LayeredSemiImplicit<'a> {
         let s = from.get(SOLVER_STATS, 3)?;
         let max_substeps = count(WATER_BUDGET, w[4])?;
         let (solves, iterations) = (count(SOLVER_STATS, s[0])?, count(SOLVER_STATS, s[1])?);
+        let [saved_dt] = from.get_array(DT)?;
+        let mut notes = Vec::new();
+        let steps = if saved_dt.to_bits() == self.dt.to_bits() {
+            from.step()
+        } else {
+            if !(saved_dt > 0.0 && saved_dt.is_finite()) {
+                return Err(RestartError::Mismatch(format!(
+                    "{DT} holds {saved_dt}, not a time step"
+                )));
+            }
+            let steps = (from.step() as f64 * saved_dt / self.dt).round() as u64;
+            notes.push(format!(
+                "the time step changed from {saved_dt} s to {} s: both leapfrog levels are loaded as they are, \
+                 and the {} steps taken are counted as {steps} of the new step, the nearest to the same model time",
+                self.dt,
+                from.step()
+            ));
+            steps
+        };
         // The forcing checks its own part and loads it, all or nothing; the
         // copies below cannot fail.
         if let Some(forcing) = self.model.forcing_mut() {
-            forcing.load_restart(from)?;
+            notes.extend(forcing.load_restart(from)?);
         }
 
         for (level, saved) in [&mut self.current, &mut self.previous]
@@ -582,8 +609,8 @@ impl<'a> LayeredSemiImplicit<'a> {
             iterations,
             worst_residual: s[2],
         };
-        self.steps = from.step();
-        Ok(())
+        self.steps = steps;
+        Ok(notes)
     }
 
     /// The longest stable step (s) for winds up to `max_wind` (m s⁻¹) at
@@ -1013,6 +1040,7 @@ const MODAL: &str = "dynamics.modal.";
 const ENERGY_BUDGET: &str = "dynamics.energy_budget";
 const WATER_BUDGET: &str = "dynamics.water_budget";
 const SOLVER_STATS: &str = "dynamics.solver_stats";
+const DT: &str = "dynamics.dt";
 
 /// A level's arrays and their restart names: `ps`, then `u.{k}`,
 /// `theta_ps.{k}` and (moist) `q_ps.{k}` per layer, top first.

@@ -304,12 +304,39 @@ first line of `summary.txt` records the schedule.
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion |
+| `--save-restart FILE` | none | Write the run's final state to FILE when it reaches its last step, before the maps and summary |
+| `--restart FILE` | none | Start from a state saved by `--save-restart`. `--years` counts from the restart and may be 1 |
 
 In the layered runs (`climate`, `held-suarez`, `baroclinic`) a day is the planet's
 solar day. The step divides it, with at least 24 steps a day, and radiation runs every
 whole number of steps within 3 h and an eighth of the day. Rates in mm/day are per
 86,400 s on every planet. The first line of the description printed at the start
 (and kept in `summary.txt`) gives the steps per solar day, the radiation interval and the ocean transport interval.
+
+**Restarts.** `--save-restart` saves the state at the end of a run, so a spin-up
+can be run in legs or a changed setting tried from a spun-up climate.
+`--restart` starts from that state. Every setting comes from the command line,
+never from the file: the run is built as a fresh one and the file is loaded
+over it. `--years` counts from the restart, and the statistics come from its
+last year. Steps, days, years and months go on from the file's. The run reports
+on stderr and in `summary.txt` either "an exact continuation" or "a warm start
+... not an exact continuation", with a line for each adaptation. A start is warm
+when the state is adapted: for a changed time step, radiation or ocean-transport
+interval, or ocean-jump schedule, or Ekman transport, eddy transport, gyres or
+sea ice switched on or off (one switched on starts fresh, one switched off is
+dropped). A file from another grid, other σ levels or a different land
+fraction, a file with no physics state, and a file that is not a restart or is
+damaged are refused. With `--save-restart` the check that two true-time years
+follow the last ocean jump is a warning, not an error, so a spin-up can be run
+in legs; it applies to the end year, the years already run plus `--years`.
+
+- The outputs cover only the new run, and replace those of an earlier run
+  written to the same `--out-dir`. `monthly_zonal.csv` holds only the new months,
+  with their absolute year and month numbers.
+- A run that blows up saves nothing.
+- An exact continuation (bit for bit, on any thread count) needs the same
+  settings and the same build. The settings note says that something differs,
+  not which setting.
 
 Outputs in `output/climate/`:
 - `summary.txt`: final-year global means (surface temperature, absorbed
@@ -400,4 +427,6 @@ fms-climate williamson --case 5 --terrain-frequency 90             # flow over a
 fms-climate baroclinic --terrain-frequency 90                      # a storm life cycle on a jet, 30 days
 fms-climate held-suarez --terrain-frequency 64 --climate-frequency 32  # the dynamical-core benchmark, 1200 days
 fms-climate climate --terrain-frequency 32 --climate-frequency 16 --co2 840  # a doubled-CO₂ climate, 4 years
+fms-climate climate --terrain-frequency 32 --climate-frequency 16 --save-restart output/spun.fmsrst  # a run that saves its state
+fms-climate climate --terrain-frequency 32 --climate-frequency 16 --restart output/spun.fmsrst --years 1  # one more year from it
 ```

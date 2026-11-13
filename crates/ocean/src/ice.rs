@@ -303,6 +303,11 @@ impl SeaIce {
         Ok(saved)
     }
 
+    /// No ice anywhere, as when built.
+    pub(crate) fn clear(&mut self) {
+        *self = Self::new(self.params, self.fraction.len());
+    }
+
     /// Copy in arrays checked by [`read_restart`](Self::read_restart).
     pub(crate) fn load(&mut self, saved: [&[f64]; 9]) {
         for (to, from) in self.state_mut().into_iter().zip(saved) {

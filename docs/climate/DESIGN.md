@@ -283,24 +283,41 @@ beside the target and renames it.
   file from another grid is refused.
 - **One call saves everything.** The stepper saves the dynamics under
   `dynamics.` (both leapfrog time levels, the Helmholtz solver's first-guess
-  potentials, the energy and water budgets, the solver totals, the step count),
-  then its forcing's state. The column physics saves under `physics.` (its clock
-  and counters, budget totals, land temperatures, soil water, snow, the last
+  potentials, the energy and water budgets, the solver totals, the time step,
+  the step count), then its forcing's state. The column physics saves under
+  `physics.` (its clock and counters, the radiation and ocean-transport
+  intervals, budget totals, land temperatures, soil water, snow, the last
   radiation call, surface fluxes and moist physics, and the ocean at the start
-  of a year being measured for a jump), the ocean under `ocean.` (both layers'
-  temperatures, the wind stress and its running mean, the gyres' streamfunction,
-  the latest mass fluxes, the transport totals and diagnostics) and the sea ice
-  under `ice.`.
+  of a year being measured for a jump), the ocean under `ocean.` (which
+  components it has, both layers' temperatures, the wind stress and its running
+  mean, the gyres' streamfunction, the latest mass fluxes, the transport totals
+  and diagnostics) and the sea ice under `ice.`.
 - **What is saved**: everything that changes as the model runs or that its
-  outputs read, never settings or what is built from them (the time step,
-  reference state, options, geometry). Each save function names every field of
-  its struct, so a new field does not compile until it is classed as state or
-  not.
-- **Refusals**: another grid, other σ levels, a moist/dry mismatch, a different
-  land fraction, or sea ice, wind stress or gyres present on one side only. A
-  load is all or nothing, and arrays a loader does not know are ignored.
-- **Resuming**: loaded into a stepper built the same way, the run continues bit
-  for bit, on any thread count.
+  outputs read, never settings or what is built from them (reference state,
+  options, geometry). Each save function names every field of its struct, so a
+  new field does not compile until it is classed as state or not.
+- **Refused**: another grid, other σ levels, a moist/dry mismatch, a different
+  land fraction, a file with no physics state, and a file that is not a restart
+  or is damaged. A load is all or nothing, and arrays a loader does not know
+  are ignored.
+- **Warm starts**: each loader returns the adaptations it made, and an empty
+  list means an exact continuation. A changed time step loads both time levels
+  as they are and re-bases the step count to the nearest count of the new step
+  that keeps the model time. Changed radiation or ocean-transport intervals
+  load the counters as they are. A changed ocean-jump schedule drops a year's
+  measurement the new schedule does not want; a jump it wants is measured from
+  the restart if that is at the year's start, and skipped otherwise. Ekman
+  transport, eddy transport, the gyres or sea ice switched on start fresh
+  (gyres from rest, no ice); switched off, they are dropped, with their mass
+  fluxes left at zero, and dropping sea ice drops its ice and snow with their
+  heat and water.
+- **Resuming**: loaded into a stepper built with the same settings and the same
+  build, the run continues bit for bit, on any thread count.
+- **In the CLI**: `--save-restart` writes the state, with a fingerprint of the
+  settings that shape the computation (`run.settings`), when the run reaches
+  its last step. `--restart` builds the run from its own command line, loads
+  the file over it and reports an exact continuation or a warm start. `--years`
+  counts from the restart; step, year and month numbers go on from the file's.
 
 ## Climate run and spin-up (`fms-cli`)
 

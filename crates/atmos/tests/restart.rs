@@ -198,7 +198,8 @@ fn resumed(
     restart: &Restart,
 ) -> LayeredSemiImplicit<'static> {
     let mut c = build();
-    c.load_restart(restart).expect("the restart loads");
+    let notes = c.load_restart(restart).expect("the restart loads");
+    assert!(notes.is_empty(), "the same stepper adapted: {notes:?}");
     assert_eq!(c.steps(), SAVED_AT);
     run_to(&mut c, STEPS);
     c
@@ -442,6 +443,10 @@ struct World {
     sea_level: Option<f64>,
     /// Sea temperatures held fixed.
     prescribed: bool,
+    /// The design wind, which sets the step (m s⁻¹).
+    max_wind: f64,
+    /// Steps between the ocean's transports, instead of the radiation's.
+    ocean_steps: Option<f64>,
 }
 
 impl World {
@@ -454,6 +459,8 @@ impl World {
             relief: flat,
             sea_level: None,
             prescribed: false,
+            max_wind: 120.0,
+            ocean_steps: None,
         }
     }
 
@@ -476,16 +483,20 @@ impl World {
                 .collect(),
         );
         let (state, ts) = initial_state(&model, planet, &self.params);
-        let dt = step_for(&model, 120.0);
+        let dt = step_for(&model, self.max_wind);
         let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
         let surface = match self.sea_level {
             Some(t) => initial_surface_temperature_by_latitude(&model, planet, &self.params, t),
             None => vec![ts; m.n_cells()],
         };
+        let mut params = self.params.with_step(dt, planet.solar_day());
+        if let Some(steps) = self.ocean_steps {
+            params.transport_interval = steps * dt;
+        }
         let physics = ColumnPhysics::with_land(
             &model,
             planet,
-            self.params.with_step(dt, planet.solar_day()),
+            params,
             0.0,
             &state,
             surface,
@@ -583,7 +594,8 @@ fn resume_coupled(build: impl Fn() -> Stepper, saved_at: u64, steps: u64) -> Cou
     run_to(&mut b, saved_at);
     let file = through_bytes(&b.save_restart());
     let mut c = build();
-    c.load_restart(&file).expect("the restart loads");
+    let notes = c.load_restart(&file).expect("the restart loads");
+    assert!(notes.is_empty(), "the same stepper adapted: {notes:?}");
     assert_eq!(c.steps(), saved_at);
     assert!(
         c.save_restart().to_bytes() == file.to_bytes(),
@@ -668,7 +680,7 @@ fn a_world_with_land_resumes_bit_for_bit_across_a_jump() {
         land: continent,
         relief: ridge,
         sea_level: Some(282.0),
-        prescribed: false,
+        ..World::aquaplanet()
     };
     let per_day = (DAY / world.build().dt()).round() as u64;
     let (saved_at, steps) = (10 * per_day + 1, 20 * per_day + 3);
@@ -731,7 +743,7 @@ fn a_coupled_run_saved_on_one_thread_resumes_on_four() {
     });
     let c = four.install(|| {
         let mut c = world.build();
-        c.load_restart(&file).unwrap();
+        assert!(c.load_restart(&file).unwrap().is_empty());
         run_to(&mut c, steps);
         c
     });
@@ -799,7 +811,7 @@ fn coupled_restarts_that_do_not_fit_are_refused() {
     assert!(matches!(err, RestartError::Mismatch(_)), "{err}");
     eprintln!("{err}");
 
-    // Ice in the file and not in the run, and the reverse.
+    // Ice in the file and not in the run, and the reverse: warm starts.
     let no_ice = World {
         params: PhysicsParams {
             ocean: OceanParams {
@@ -810,26 +822,31 @@ fn coupled_restarts_that_do_not_fit_are_refused() {
         },
         ..world
     };
-    let err = refused_coupled(&mut no_ice.build(), &good);
+    let notes = no_ice.build().load_restart(&good).unwrap();
     assert!(
-        matches!(&err, RestartError::Mismatch(m) if m.contains("sea ice")),
-        "{err}"
+        notes.len() == 1 && notes[0].contains("sea ice is off"),
+        "{notes:?}"
     );
-    let err = refused_coupled(&mut si, &no_ice.build().save_restart());
+    let notes = world
+        .build()
+        .load_restart(&no_ice.build().save_restart())
+        .unwrap();
     assert!(
-        matches!(&err, RestartError::Mismatch(m) if m.contains("sea ice")),
-        "{err}"
+        notes.len() == 1 && notes[0].contains("sea ice is on"),
+        "{notes:?}"
     );
-    eprintln!("{err}");
 
     // An array of the physics, the ocean or the ice missing, or one value
     // short. The ice's last array is the last checked: the dynamics and
     // the physics are untouched when it fails.
     for name in [
+        "dynamics.dt",
+        "physics.intervals",
         "physics.clock",
         "physics.soil_water",
         "physics.surface",
         "physics.moist",
+        "ocean.components",
         "ocean.mixed",
         "ocean.mass_flux.gyre",
         "ocean.gyres.stats",
@@ -859,6 +876,234 @@ fn coupled_restarts_that_do_not_fit_are_refused() {
     // And the good file loads, ignoring arrays it doesn't know.
     let mut file = good.clone();
     file.put("cli.something", &[1.0]);
-    si.load_restart(&file).unwrap();
+    assert!(si.load_restart(&file).unwrap().is_empty());
     assert!(si.save_restart().to_bytes() == good.to_bytes());
+}
+
+// Warm starts: a file loaded into a run built with other settings is
+// adapted to them, and says how.
+
+/// The stepper is healthy at the end of each of `days` more days.
+fn runs_on(si: &mut Stepper, days: u64) {
+    let per_day = (DAY / si.dt()).round() as u64;
+    for _ in 0..days {
+        run_to(si, si.steps() + per_day);
+        si.check().expect("the warm start stays healthy");
+    }
+}
+
+#[test]
+fn a_changed_step_rebases_the_step_count() {
+    let world = World::aquaplanet();
+    let mut b = world.build();
+    run_to(&mut b, 40);
+    let file = through_bytes(&b.save_restart());
+    let slower = World {
+        max_wind: 240.0,
+        ..world
+    };
+    let mut si = slower.build();
+    assert!(si.dt() < b.dt());
+    let notes = si.load_restart(&file).unwrap();
+    eprintln!("{notes:#?}");
+    let expected = (40.0 * b.dt() / si.dt()).round() as u64;
+    assert_eq!(si.steps(), expected);
+    assert!(
+        notes[0].contains("time step changed")
+            && notes[0].contains(&format!("counted as {expected} ")),
+        "{notes:?}"
+    );
+    // The radiation and the ocean's transport follow the step.
+    assert!(
+        notes.iter().any(|n| n.contains("intervals changed")),
+        "{notes:?}"
+    );
+    runs_on(&mut si, 3);
+}
+
+#[test]
+fn changed_physics_intervals_are_noted() {
+    let world = World::aquaplanet();
+    let mut b = world.build();
+    run_to(&mut b, 13);
+    let file = through_bytes(&b.save_restart());
+    let every_step = World {
+        ocean_steps: Some(1.0),
+        ..world
+    };
+    let mut si = every_step.build();
+    let notes = si.load_restart(&file).unwrap();
+    eprintln!("{notes:#?}");
+    assert!(
+        notes.len() == 1 && notes[0].contains("intervals changed"),
+        "{notes:?}"
+    );
+    assert_eq!(si.steps(), 13);
+    runs_on(&mut si, 2);
+}
+
+/// A 20-day year with one ocean jump, ending year `first_year`.
+fn one_jump(first_year: u32) -> World {
+    World {
+        planet: short_year,
+        params: PhysicsParams {
+            spin_up: OceanSpinUp {
+                jumps: 1,
+                first_year,
+                every: 1,
+                ..OceanSpinUp::default()
+            },
+            ..PhysicsParams::default()
+        },
+        ..World::aquaplanet()
+    }
+}
+
+/// Jumps done, and the heat they added.
+fn jumps(si: &Stepper) -> (f64, f64) {
+    let r = si.save_restart();
+    (clock(&r)[5], array(&r, "physics.budget")[9])
+}
+
+#[test]
+fn a_changed_jump_schedule_is_reconciled() {
+    // Saved with the jump at the end of year 3: half way through year 1,
+    // which isn't measured, and at the start of year 2. Then with it at the
+    // end of year 1: half way through year 1, being measured.
+    let late = one_jump(3);
+    let mut b = late.build();
+    let per_day = (DAY / b.dt()).round() as u64;
+    run_to(&mut b, 10 * per_day);
+    let mid_year = through_bytes(&b.save_restart());
+    run_to(&mut b, 20 * per_day);
+    let year_start = through_bytes(&b.save_restart());
+    let [time, next_year, ..] = clock(&year_start);
+    assert!(
+        (next_year - time - 20.0 * DAY).abs() < 1e-6,
+        "not at a year's start: {time} {next_year}"
+    );
+    assert!(!mid_year.contains("physics.year_start.mixed"));
+    assert!(!year_start.contains("physics.year_start.mixed"));
+    let mut b = one_jump(1).build();
+    run_to(&mut b, 10 * per_day);
+    let measured = through_bytes(&b.save_restart());
+    assert!(measured.contains("physics.year_start.mixed"));
+
+    // No jump wanted where the file measures one: dropped, and the year
+    // ends without one.
+    let mut si = late.build();
+    let notes = si.load_restart(&measured).unwrap();
+    eprintln!("{notes:#?}");
+    assert!(
+        notes.len() == 1 && notes[0].contains("dropped"),
+        "{notes:?}"
+    );
+    run_to(&mut si, 21 * per_day);
+    assert_eq!(jumps(&si), (0.0, 0.0));
+
+    // A jump wanted at the end of year 2, loaded at its start: measured from
+    // the loaded ocean, and it jumps.
+    let mut si = one_jump(2).build();
+    let notes = si.load_restart(&year_start).unwrap();
+    eprintln!("{notes:#?}");
+    assert!(
+        notes.len() == 1 && notes[0].contains("measured from here"),
+        "{notes:?}"
+    );
+    run_to(&mut si, 41 * per_day);
+    let (done, heat) = jumps(&si);
+    assert!(done == 1.0 && heat != 0.0, "no jump: {done} {heat}");
+
+    // A jump wanted at the end of year 1, loaded half way through it: that
+    // jump is skipped.
+    let mut si = one_jump(1).build();
+    let notes = si.load_restart(&mid_year).unwrap();
+    eprintln!("{notes:#?}");
+    assert!(
+        notes.len() == 1 && notes[0].contains("skipped"),
+        "{notes:?}"
+    );
+    run_to(&mut si, 21 * per_day);
+    assert_eq!(jumps(&si), (0.0, 0.0));
+    si.check().expect("healthy");
+}
+
+#[test]
+fn years_a_saved_run_did_not_count_are_counted_on_loading() {
+    // Over prescribed sea temperatures years aren't counted: saved a day
+    // into year 2, its year still ends at day 20. Loaded where a jump ends
+    // year 2, year 1 is counted as ended, once, and year 2's jump skipped.
+    let prescribed = World {
+        prescribed: true,
+        ..one_jump(1)
+    };
+    let mut b = prescribed.build();
+    let per_day = (DAY / b.dt()).round() as u64;
+    run_to(&mut b, 21 * per_day);
+    let file = through_bytes(&b.save_restart());
+    let [time, next_year, _, _, years_ended, _] = clock(&file);
+    assert!(time > next_year && years_ended == 0.0, "{time} {next_year}");
+    // Measured from the start, for the jump at the end of year 1 that a
+    // prescribed surface never takes.
+    assert!(file.contains("physics.year_start.mixed"));
+    let mut si = one_jump(2).build();
+    let notes = si.load_restart(&file).unwrap();
+    eprintln!("{notes:#?}");
+    assert!(
+        notes.len() == 2
+            && notes[0].contains("1 more are counted as ended, so year 2 is in progress, and")
+            && notes[1].contains("skipped"),
+        "{notes:?}"
+    );
+    run_to(&mut si, 23 * per_day);
+    let [_, next_year, _, _, years_ended, jumps_done] = clock(&si.save_restart());
+    assert_eq!((years_ended, jumps_done), (1.0, 0.0));
+    assert!((next_year - 40.0 * DAY).abs() < 1e-6, "{next_year}");
+}
+
+#[test]
+fn ocean_components_switched_on_or_off_start_warm_in_a_coupled_run() {
+    // A continent, so the gyres are solved; the file has every component.
+    let world = World {
+        land: continent,
+        ..World::aquaplanet()
+    };
+    let mut b = world.build();
+    run_to(&mut b, 13);
+    let full = through_bytes(&b.save_restart());
+    let without = |ocean: OceanParams| World {
+        params: PhysicsParams {
+            ocean,
+            ..PhysicsParams::default()
+        },
+        ..world
+    };
+    let base = OceanParams::default();
+    for other in [
+        OceanParams {
+            ekman: None,
+            ..base
+        },
+        OceanParams {
+            eddies: None,
+            ..base
+        },
+        OceanParams {
+            gyres: None,
+            ..base
+        },
+        OceanParams { ice: None, ..base },
+    ] {
+        let mut si = without(other).build();
+        let notes = si.load_restart(&full).unwrap();
+        eprintln!("{notes:?}");
+        assert!(notes.len() == 1 && notes[0].contains(" off "), "{notes:?}");
+        runs_on(&mut si, 1);
+        let mut si = world.build();
+        let mut b = without(other).build();
+        run_to(&mut b, 13);
+        let notes = si.load_restart(&b.save_restart()).unwrap();
+        assert!(notes.len() == 1 && notes[0].contains(" on "), "{notes:?}");
+        runs_on(&mut si, 1);
+    }
 }

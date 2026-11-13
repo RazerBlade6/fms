@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use fms_atmos::column_physics::{
@@ -15,7 +15,7 @@ use fms_atmos::column_physics::{
     initial_surface_temperature_by_latitude,
 };
 use fms_atmos::moisture::{CloudParams, MoistureParams};
-use fms_atmos::{ColumnPhysics, Forcing, PhysicsParams, ZonalClimatology};
+use fms_atmos::{ColumnPhysics, Forcing, LayeredSemiImplicit, PhysicsParams, ZonalClimatology};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
 use fms_ocean::{
@@ -31,6 +31,7 @@ use crate::layered_run::{
 };
 use crate::ocean_transport::{edge_latitudes, northward_transport};
 use crate::render::write_png;
+use crate::restart;
 use crate::{ImageArgs, WorldArgs, build_world};
 
 /// Design wind for the step: radiatively driven jets and storms reach
@@ -151,6 +152,19 @@ pub struct ClimateArgs {
     /// GIF frames per second.
     #[arg(long, default_value_t = 12)]
     fps: u16,
+    /// Write the run's final state to FILE when it has run to the end, to
+    /// continue from with `--restart`. A run that saves its state may end
+    /// before two years in true time follow the last ocean jump.
+    #[arg(long, value_name = "FILE")]
+    save_restart: Option<PathBuf>,
+    /// Start from the state saved in FILE by `--save-restart`. Every setting
+    /// still comes from this command line, never from the file; the run says
+    /// whether it continues the saved one exactly or is a warm start, and
+    /// how the state was adapted to changed settings. `--years` counts from
+    /// the restart and may be 1; steps, days, years and months go on from
+    /// the file's.
+    #[arg(long, value_name = "FILE")]
+    restart: Option<PathBuf>,
     #[command(flatten)]
     dynamics: DynamicsArgs,
     #[command(flatten)]
@@ -278,6 +292,21 @@ fn check_years(years: f64, spin_up: &OceanSpinUp) -> Result<(), String> {
     Ok(())
 }
 
+/// [`check_years`] for a run whose last year is `years`, counted from the
+/// spin-up's start; one that saves a restart (`saving`) may end sooner, to
+/// be continued, with a warning.
+fn check_end_year(years: f64, spin_up: &OceanSpinUp, saving: bool) -> Result<(), String> {
+    match check_years(years, spin_up) {
+        Err(e) if saving => {
+            eprintln!(
+                "warning: {e}; running anyway, as --save-restart saves the state to continue from"
+            );
+            Ok(())
+        }
+        checked => checked,
+    }
+}
+
 /// Writes the final year's mean of each field for every cell, with the
 /// height of the terrain the atmosphere sees (m), to compare runs over a part
 /// of the map such as an ice sheet.
@@ -313,10 +342,20 @@ fn write_annual_cells(
 pub fn run(args: ClimateArgs) -> Result<(), String> {
     let ocean = args.ocean();
     let (spin_up, years) = args.spin_up(ocean.has_currents());
-    if years <= 1.0 {
-        return Err("--years must be more than 1 (the last year is averaged)".into());
+    let saving = args.save_restart.is_some();
+    if args.restart.is_some() {
+        // Checked against the spin-up once the restart says where it is.
+        if years.is_nan() || years < 1.0 {
+            return Err(
+                "--years must be at least 1 with --restart (the last year is averaged)".into(),
+            );
+        }
+    } else {
+        if years <= 1.0 {
+            return Err("--years must be more than 1 (the last year is averaged)".into());
+        }
+        check_end_year(years, &spin_up, saving)?;
     }
-    check_years(years, &spin_up)?;
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let planet_params = *world.planet.params();
@@ -554,6 +593,29 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .with_dissipative_heating();
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
     let nc = mesh.n_cells();
+    let land = world.fields.read(world.core.terrain.land_fraction).to_vec();
+    let relief = world
+        .fields
+        .read(world.core.terrain.surface_height_stddev)
+        .to_vec();
+    let surface_height = world
+        .fields
+        .read(world.core.terrain.surface_height)
+        .to_vec();
+    let settings = restart::Settings {
+        planet: &planet_params,
+        physics: &params,
+        sigma: model.levels().interfaces(),
+        dt: setup.dt,
+        diffusion: model.hyperdiffusion().map(|d| d.options()),
+        terrain: [
+            model.surface_geopotential(),
+            &relief,
+            &surface_height,
+            &land,
+        ],
+    }
+    .fingerprint();
     let (state, surface_temperature) = initial_state(&model, &world.planet, &params);
     eprintln!("climate: single-column start at {surface_temperature:.1} K");
     let physics = ColumnPhysics::with_land(
@@ -568,15 +630,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             &params,
             surface_temperature,
         ),
-        world.fields.read(world.core.terrain.land_fraction).to_vec(),
+        land.clone(),
     )
-    .with_relief(
-        world
-            .fields
-            .read(world.core.terrain.surface_height_stddev)
-            .to_vec(),
-        &world.fields.read(world.core.terrain.surface_height),
-    );
+    .with_relief(relief, &surface_height);
     // Where each wanted field sits in the physics' list.
     let fields_now = physics.cell_fields();
     let index: Vec<usize> = names
@@ -623,7 +679,6 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             .position(|f| f.name == n)
             .expect("the physics reports the ocean's transport")
     });
-    let land = world.fields.read(world.core.terrain.land_fraction).to_vec();
     let model = model.with_forcing(Box::new(physics));
     let bands = args
         .bands
@@ -655,10 +710,27 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
 
     let dt = setup.dt;
     let per_year = (world.planet.year_seconds() / dt).round() as u64;
-    let total = (years * per_year as f64).round() as u64;
+    let mut si = stepper(model, state, dt);
+    // Steps, days, years and months count on from a restart's.
+    let mut description = description;
+    let start_step = match &args.restart {
+        Some(path) => {
+            let notes = restart::load(path, &mut si, settings)?;
+            let report = restart::report(path, &si, &notes, per_year, setup.day);
+            eprintln!("climate: {report}");
+            description.push('\n');
+            description.push_str(&report);
+            let years_run = si.steps() as f64 / per_year as f64;
+            check_end_year(years_run + years, &spin_up, saving)?;
+            si.steps()
+        }
+        None => 0,
+    };
+    let total = start_step + (years * per_year as f64).round() as u64;
     let stats_from = total - per_year;
-    let movie_from =
-        total.saturating_sub((args.movie_days * setup.steps_per_day as f64).round() as u64);
+    let movie_from = total
+        .saturating_sub((args.movie_days * setup.steps_per_day as f64).round() as u64)
+        .max(start_step);
     let out = Output {
         command: "climate",
         dir: args.image.out_dir.join("climate"),
@@ -670,11 +742,34 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         frames: u64::from(args.frames),
         frames_from: movie_from,
     };
-    let mut si = stepper(model, state, dt);
     let mut sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; names.len()];
     let mut samples = 0.0;
-    let mut start = None;
-    let mut gained_start: Option<(u64, Vec<Vec<f64>>)> = None;
+    // The budgets and the ocean's transported heat at the start of the
+    // statistics year.
+    let snapshot = |si: &LayeredSemiImplicit| {
+        let forcing = si.model().forcing().expect("climate has forcing");
+        let fields = forcing.cell_fields();
+        let start = (
+            si.model().diagnostics(si.state()),
+            si.energy_budget(),
+            forcing.budget().expect("physics keeps a budget"),
+            si.water(),
+            si.water_budget(),
+        );
+        let gained: Vec<Vec<f64>> = gained_index
+            .iter()
+            .map(|&k| fields[k].values.clone())
+            .collect();
+        (start, (si.steps(), gained))
+    };
+    // A restart may begin the statistics year.
+    let (mut start, mut gained_start) = if stats_from <= si.steps() {
+        let (start, gained) = snapshot(&si);
+        (Some(start), Some(gained))
+    } else {
+        (None, None)
+    };
+    let mut saved = Ok(());
     std::fs::create_dir_all(&out.dir)
         .map_err(|e| format!("cannot create {}: {e}", out.dir.display()))?;
     world.fields.write(basin_id).copy_from_slice(&basins);
@@ -695,9 +790,18 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     };
     let mut month_sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; monthly.len() + 2];
     let mut month_samples = 0.0;
-    let mut month_done = 0_u64;
     let steps_in_month = |month: u64| (month as f64 * per_year as f64 / 12.0).round() as u64;
+    // Months already complete when a restart begins.
+    let mut month_done = 0_u64;
+    while steps_in_month(month_done + 1) <= start_step {
+        month_done += 1;
+    }
     integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
+        if si.steps() == total
+            && let Some(path) = &args.save_restart
+        {
+            saved = restart::save(path, si, settings);
+        }
         let forcing = si.model().forcing().expect("climate has forcing");
         {
             let fields = forcing.cell_fields();
@@ -748,21 +852,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             month_done += 1;
         }
         if start.is_none() && si.steps() >= stats_from {
-            start = Some((
-                si.model().diagnostics(si.state()),
-                si.energy_budget(),
-                forcing.budget().expect("physics keeps a budget"),
-                si.water(),
-                si.water_budget(),
-            ));
-            let fields = forcing.cell_fields();
-            gained_start = Some((
-                si.steps(),
-                gained_index
-                    .iter()
-                    .map(|&k| fields[k].values.clone())
-                    .collect(),
-            ));
+            let (now, gained) = snapshot(si);
+            start = Some(now);
+            gained_start = Some(gained);
         }
         if si.steps() > stats_from {
             climate.sample(si.model(), si.state());
@@ -775,6 +867,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             samples += 1.0;
         }
     })?;
+    saved?;
     monthly_result.map_err(|e| format!("cannot write the monthly means: {e}"))?;
     let means: Vec<Vec<f64>> = sums
         .iter()

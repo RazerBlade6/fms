@@ -30,6 +30,7 @@ mod layered_run;
 mod ocean_transport;
 mod patterns;
 mod render;
+mod restart;
 mod run_log;
 mod view;
 mod williamson;

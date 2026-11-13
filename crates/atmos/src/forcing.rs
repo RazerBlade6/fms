@@ -43,11 +43,12 @@ pub trait Forcing: Send + Sync {
     fn save_restart(&self, _out: &mut Restart) {}
 
     /// Load the state saved by [`save_restart`](Self::save_restart) over
-    /// this forcing's, which was built with the same settings. All or
-    /// nothing: on an error nothing has changed. Arrays it doesn't know are
-    /// ignored. Default: nothing.
-    fn load_restart(&mut self, _from: &Restart) -> Result<(), RestartError> {
-        Ok(())
+    /// this forcing's. All or nothing: on an error nothing has changed.
+    /// Arrays it doesn't know are ignored. Returns a sentence for each way
+    /// the state was adapted because this forcing's settings differ from
+    /// the saved one's; none means it continues exactly. Default: nothing.
+    fn load_restart(&mut self, _from: &Restart) -> Result<Vec<String>, RestartError> {
+        Ok(Vec::new())
     }
 }
 
