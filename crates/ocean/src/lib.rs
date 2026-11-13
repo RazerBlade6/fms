@@ -56,6 +56,10 @@
 //!
 //! The ocean's basins ([`Basins`]) are found when it is built, and the
 //! gyres' matrices with them.
+//!
+//! [`Ocean::save_restart`] saves the ocean's state (its ice, wind and gyres
+//! included) as restart arrays, and [`Ocean::load_restart`] loads them over
+//! an ocean built with the same settings, which then runs on bit for bit.
 
 pub mod basins;
 pub mod gyres;
@@ -64,6 +68,7 @@ mod ice;
 pub use basins::{Basin, Basins, CoastGroup, MIN_BASIN_VERTICES, WET_OCEAN_FRACTION};
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
+use fms_restart::{Restart, RestartError, count};
 use glam::DVec3;
 pub use gyres::{Component, GyreParams, Gyres, SolveStats, edge_stress};
 pub use ice::{IceForcing, IceParams};
@@ -313,6 +318,24 @@ pub struct OceanSnapshot {
     deep: Vec<f64>,
 }
 
+impl OceanSnapshot {
+    /// Add the snapshot to a restart as `{prefix}mixed` and `{prefix}deep`.
+    pub fn save_restart(&self, out: &mut Restart, prefix: &str) {
+        let Self { mixed, deep } = self;
+        out.put(&format!("{prefix}mixed"), mixed);
+        out.put(&format!("{prefix}deep"), deep);
+    }
+
+    /// A snapshot of an ocean of `cells` cells saved by
+    /// [`save_restart`](Self::save_restart) under `prefix`.
+    pub fn load_restart(from: &Restart, prefix: &str, cells: usize) -> Result<Self, RestartError> {
+        Ok(Self {
+            mixed: from.get(&format!("{prefix}mixed"), cells)?.to_vec(),
+            deep: from.get(&format!("{prefix}deep"), cells)?.to_vec(),
+        })
+    }
+}
+
 /// Which layers an [`Ocean::jump`] moves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum JumpLayers {
@@ -422,6 +445,24 @@ fn link_stress(frames: &[[DVec3; 2]], stress: &[[f64; 2]], link: &Link) -> DVec3
 }
 
 impl Ekman {
+    /// Ekman transport has nothing to save in a restart: its friction, faces
+    /// and the curl's stencil come from the settings and the mesh, and the
+    /// curl's `along` and `vertex` are overwritten before every use. Every
+    /// field is named so that one added later must be classified too.
+    fn holds_no_state(&self) {
+        let Self {
+            friction: _,
+            faces: _,
+            curl,
+        } = self;
+        if let Some(StressCurl {
+            stencil: _,
+            along: _,
+            vertex: _,
+        }) = curl
+        {}
+    }
+
     /// The mixed layer's mass flux across each link (kg s⁻¹, positive from
     /// `cells[0]` to `cells[1]`), with the stress the mean of the two cells'
     /// and `f` and `k` those of the edge point, across the opened width:
@@ -1500,6 +1541,222 @@ impl Ocean {
         }
     }
 
+    /// Add the ocean's state to a restart: everything that changes as it
+    /// runs, its ice, wind and gyres included, and the latest transport's
+    /// fluxes and heating that its accessors report. Under `ocean.`, the
+    /// ice's under `ice.` and the gyres' under `ocean.gyres.`:
+    ///
+    /// - per cell: `ocean.mixed`, `ocean.deep`, `ocean.diffusion_heating`,
+    ///   `ocean.heating.{ekman,eddy,gyre}.{mixed,deep}`,
+    ///   `ocean.rise.{ekman,eddy}` and
+    ///   `ocean.transported.{ekman,eddy,diffusion,gyre}`;
+    /// - per link: `ocean.mass_flux.{ekman,eddy,gyre}`;
+    /// - `ocean.counts`: transports so far, and the latest one's advection
+    ///   sub-steps;
+    /// - with Ekman transport or gyres, the wind: `ocean.wind.stress`
+    ///   (eastward and northward per cell, row-major) and
+    ///   `ocean.wind.samples`;
+    /// - with gyres: `ocean.gyres.mean` (as the wind's stress),
+    ///   `ocean.gyres.clock` (time since the last solve, and solves so far),
+    ///   `ocean.gyres.psi` (per vertex), `ocean.gyres.group_psi` (per coast
+    ///   group) and `ocean.gyres.stats` (per component);
+    /// - with ice, `ice.{fraction,thickness,temperature,interface,snow,
+    ///   fallen,bottom,top,limited}`, per cell.
+    ///
+    /// Settings, and what is built from them, the mesh and the land (the
+    /// links, the basins, the gyres' matrices), are not saved.
+    pub fn save_restart(&self, out: &mut Restart) {
+        let Self {
+            // Settings, and what is built from them, the mesh and the land.
+            params: _,
+            area: _,
+            links: _,
+            largest_rate: _,
+            eddy_scale: _,
+            basins: _,
+            ekman,
+            // Scratch, overwritten before every use.
+            convergence: _,
+            mixed,
+            deep,
+            ice,
+            wind,
+            gyres,
+            mass_flux,
+            overturning,
+            diffusion_heating,
+            transported,
+            transports,
+        } = self;
+        if let Some(ekman) = ekman {
+            ekman.holds_no_state();
+        }
+        let Overturning {
+            rise,
+            // Scratch, overwritten before every use.
+            leaving: _,
+            convergence: _,
+            heating,
+            steps,
+        } = overturning;
+        out.put(MIXED, mixed);
+        out.put(DEEP, deep);
+        out.put(COUNTS, &[*transports as f64, *steps as f64]);
+        for (name, flux) in MASS_FLUX.into_iter().zip(mass_flux) {
+            out.put(name, flux);
+        }
+        for (names, layers) in HEATING.into_iter().zip(heating) {
+            for (name, layer) in names.into_iter().zip(layers) {
+                out.put(name, layer);
+            }
+        }
+        for (name, rise) in RISE.into_iter().zip(rise) {
+            out.put(name, rise);
+        }
+        out.put(DIFFUSION_HEATING, diffusion_heating);
+        for (name, heat) in TRANSPORTED.into_iter().zip(transported) {
+            out.put(name, heat);
+        }
+        if let Some(Wind {
+            // Geometry.
+            frames: _,
+            stress,
+            samples,
+        }) = wind
+        {
+            out.put(WIND_STRESS, stress.as_flattened());
+            out.put(WIND_SAMPLES, &[f64::from(*samples)]);
+        }
+        if let Some(GyreFlow {
+            // Settings, and what is built from them and the mesh.
+            params: _,
+            solved: _,
+            edges: _,
+            offsets: _,
+            vertices: _,
+            // Scratch, overwritten before every solve.
+            along: _,
+            solver,
+            mean,
+            since,
+            solves,
+        }) = gyres
+        {
+            out.put(GYRE_MEAN, mean.as_flattened());
+            out.put(GYRE_CLOCK, &[*since, *solves as f64]);
+            solver.save_restart(out, GYRES);
+        }
+        if let Some(ice) = ice {
+            ice.save_restart(out);
+        }
+    }
+
+    /// Load a state saved by [`save_restart`](Self::save_restart) over this
+    /// ocean's, which must have been built with the same settings, mesh and
+    /// land for the run to go on bit for bit. All or nothing: on an error
+    /// the ocean is unchanged. Arrays it doesn't know are ignored.
+    ///
+    /// Refused ([`RestartError::Mismatch`]) if the file has sea ice, the
+    /// wind (Ekman transport or gyres) or gyres and this ocean doesn't, or
+    /// the reverse; missing or mis-sized arrays are
+    /// [`Missing`](RestartError::Missing) and
+    /// [`WrongLength`](RestartError::WrongLength). The grid isn't checked
+    /// here: the stepper that saves and loads the ocean's atmosphere does.
+    pub fn load_restart(&mut self, from: &Restart) -> Result<(), RestartError> {
+        for (component, run, name) in [
+            ("sea ice", self.ice.is_some(), SeaIce::RESTART[0]),
+            (
+                "a wind stress (Ekman transport or gyres)",
+                self.wind.is_some(),
+                WIND_STRESS,
+            ),
+            ("wind-driven gyres", self.gyres.is_some(), GYRE_MEAN),
+        ] {
+            let file = from.contains(name);
+            if file != run {
+                let (with, without) = if file {
+                    ("the file's ocean", "this run's")
+                } else {
+                    ("this run's ocean", "the file's")
+                };
+                return Err(RestartError::Mismatch(format!(
+                    "{with} has {component} and {without} has not"
+                )));
+            }
+        }
+
+        // Check everything before changing anything.
+        let (n, links) = (self.mixed.len(), self.links.len());
+        let mixed = from.get(MIXED, n)?;
+        let deep = from.get(DEEP, n)?;
+        let [transports, steps] = from.get_array(COUNTS)?;
+        let (transports, steps): (u64, usize) = (count(COUNTS, transports)?, count(COUNTS, steps)?);
+        let mass_flux = get_all(from, MASS_FLUX, links)?;
+        let mut heating = [[&[][..]; 2]; 3];
+        for (to, names) in heating.iter_mut().zip(HEATING) {
+            *to = get_all(from, names, n)?;
+        }
+        let rise = get_all(from, RISE, n)?;
+        let diffusion_heating = from.get(DIFFUSION_HEATING, n)?;
+        let transported = get_all(from, TRANSPORTED, n)?;
+        let wind = match &self.wind {
+            Some(_) => {
+                let stress = from.get(WIND_STRESS, 2 * n)?;
+                let [samples] = from.get_array(WIND_SAMPLES)?;
+                Some((stress, count::<u32>(WIND_SAMPLES, samples)?))
+            }
+            None => None,
+        };
+        let gyres = match &self.gyres {
+            Some(g) => {
+                let mean = from.get(GYRE_MEAN, 2 * n)?;
+                let [since, solves] = from.get_array(GYRE_CLOCK)?;
+                let solves: usize = count(GYRE_CLOCK, solves)?;
+                let solver = g.solver.read_restart(from, GYRES)?;
+                Some((mean, since, solves, solver))
+            }
+            None => None,
+        };
+        let ice = match &self.ice {
+            Some(ice) => Some(ice.read_restart(from)?),
+            None => None,
+        };
+
+        self.mixed.copy_from_slice(mixed);
+        self.deep.copy_from_slice(deep);
+        self.transports = transports;
+        self.overturning.steps = steps;
+        for (to, from) in self.mass_flux.iter_mut().zip(mass_flux) {
+            to.copy_from_slice(from);
+        }
+        for (to, from) in self.overturning.heating.iter_mut().zip(heating) {
+            for (to, from) in to.iter_mut().zip(from) {
+                to.copy_from_slice(from);
+            }
+        }
+        for (to, from) in self.overturning.rise.iter_mut().zip(rise) {
+            to.copy_from_slice(from);
+        }
+        self.diffusion_heating.copy_from_slice(diffusion_heating);
+        for (to, from) in self.transported.iter_mut().zip(transported) {
+            to.copy_from_slice(from);
+        }
+        if let (Some(to), Some((stress, samples))) = (&mut self.wind, wind) {
+            to.stress.copy_from_slice(stress.as_chunks().0);
+            to.samples = samples;
+        }
+        if let (Some(to), Some((mean, since, solves, solver))) = (&mut self.gyres, gyres) {
+            to.mean.copy_from_slice(mean.as_chunks().0);
+            to.since = since;
+            to.solves = solves;
+            to.solver.load(solver);
+        }
+        if let (Some(to), Some(saved)) = (&mut self.ice, ice) {
+            to.load(saved);
+        }
+        Ok(())
+    }
+
     /// Mix each column whose mixed layer is colder than its deep layer.
     fn adjust(&mut self) {
         let (hm, hd) = (self.params.mixed_depth, self.params.deep_depth);
@@ -1515,6 +1772,52 @@ impl Ocean {
                 *deep = mean;
             });
     }
+}
+
+// Restart array names (see `Ocean::save_restart`).
+const MIXED: &str = "ocean.mixed";
+const DEEP: &str = "ocean.deep";
+const COUNTS: &str = "ocean.counts";
+/// Indexed by [`EKMAN`], [`EDDY`] and [`GYRE`].
+const MASS_FLUX: [&str; 3] = [
+    "ocean.mass_flux.ekman",
+    "ocean.mass_flux.eddy",
+    "ocean.mass_flux.gyre",
+];
+/// As [`Overturning::heating`]: by flux, then by layer.
+const HEATING: [[&str; 2]; 3] = [
+    ["ocean.heating.ekman.mixed", "ocean.heating.ekman.deep"],
+    ["ocean.heating.eddy.mixed", "ocean.heating.eddy.deep"],
+    ["ocean.heating.gyre.mixed", "ocean.heating.gyre.deep"],
+];
+/// As [`Overturning::rise`].
+const RISE: [&str; 2] = ["ocean.rise.ekman", "ocean.rise.eddy"];
+const DIFFUSION_HEATING: &str = "ocean.diffusion_heating";
+/// As [`Ocean::transported_heat`].
+const TRANSPORTED: [&str; 4] = [
+    "ocean.transported.ekman",
+    "ocean.transported.eddy",
+    "ocean.transported.diffusion",
+    "ocean.transported.gyre",
+];
+const WIND_STRESS: &str = "ocean.wind.stress";
+const WIND_SAMPLES: &str = "ocean.wind.samples";
+const GYRE_MEAN: &str = "ocean.gyres.mean";
+const GYRE_CLOCK: &str = "ocean.gyres.clock";
+/// The prefix of the gyre solver's own arrays.
+const GYRES: &str = "ocean.gyres.";
+
+/// The arrays `names` in `from`, each of `len` values.
+fn get_all<'r, const N: usize>(
+    from: &'r Restart,
+    names: [&str; N],
+    len: usize,
+) -> Result<[&'r [f64]; N], RestartError> {
+    let mut found = [&[][..]; N];
+    for (slot, name) in found.iter_mut().zip(names) {
+        *slot = from.get(name, len)?;
+    }
+    Ok(found)
 }
 
 /// One explicit diffusion step of `field`, where `amount` is the diffusivity
@@ -3931,5 +4234,318 @@ mod tests {
             moved = moved.max((a - sst[i]).abs());
         }
         assert!(moved > 1e-4, "the wind moved nothing: {moved}");
+    }
+
+    // Restarts.
+
+    /// Steps of the straight run, and of the run that is saved; the ocean
+    /// moves heat every third step, so the save falls between two
+    /// transports, with two winds summed.
+    const RESTART_STEPS: u64 = 20;
+    const RESTART_SAVED_AT: u64 = 8;
+    const RESTART_DT: f64 = 3600.0;
+
+    /// Every part of the ocean on, round a continent with coasts: Ekman and
+    /// eddy transport, diffusion, gyres solved about every other transport,
+    /// and ice where the water starts below freezing.
+    fn busy_ocean(grid: &Grid) -> Ocean {
+        let params = OceanParams {
+            gyres: Some(GyreParams {
+                averaging: 20.0 * RESTART_DT,
+                interval: 5.0 * RESTART_DT,
+                ..GyreParams::default()
+            }),
+            ..OceanParams::default()
+        };
+        restart_ocean(grid, params)
+    }
+
+    /// An ocean with `params` round the continent, starting at scattered
+    /// temperatures, some below freezing (ice where it has any).
+    fn restart_ocean(grid: &Grid, params: OceanParams) -> Ocean {
+        let land = continent_coasts(grid, &coasts(grid.n()));
+        let mixed = (0..grid.n())
+            .map(|i| 268.0 + 35.0 * scatter(i, 3))
+            .collect();
+        let mut ocean = Ocean::new(params, &grid.ops(), &land, mixed, ROTATION);
+        ocean.rearrange_ice();
+        ocean
+    }
+
+    /// Step `step` (from 1) of a run: surface heat, the ice's forcing and the
+    /// wind, all changing from step to step; every third step the ice is
+    /// rearranged and the ocean moves heat.
+    fn drive(ocean: &mut Ocean, step: u64) {
+        let dt = RESTART_DT;
+        let t = step as f64;
+        let wave = |i: usize, seed: u64| fms_math::sin(0.7 * t + 6.0 * scatter(i, seed));
+        ocean.add_surface_heat(dt, |i| 60.0 * wave(i, 7) - 10.0);
+        ocean.step_ice(dt, |i| IceForcing {
+            net: 40.0 * wave(i, 8) - 30.0,
+            skin: 262.0 + 8.0 * scatter(i, 9),
+            stress: 0.1 * scatter(i, 10),
+            sublimation: 2.0 * scatter(i, 11),
+            snowfall: 2e-5 * (1.0 + wave(i, 12)),
+        });
+        ocean.set_wind_stress(|i| {
+            let [e, n] = rough_wind(i);
+            [e * (1.0 + 0.3 * wave(i, 13)), n]
+        });
+        if step.is_multiple_of(3) {
+            ocean.rearrange_ice();
+            ocean.transport(3.0 * dt);
+        }
+    }
+
+    fn drive_to(ocean: &mut Ocean, from: u64, to: u64) {
+        for step in from + 1..=to {
+            drive(ocean, step);
+        }
+    }
+
+    fn saved(ocean: &Ocean) -> Restart {
+        let mut r = Restart::new(0, 0);
+        ocean.save_restart(&mut r);
+        r
+    }
+
+    fn through_bytes(r: &Restart) -> Restart {
+        Restart::read_from(&mut r.to_bytes().as_slice()).unwrap()
+    }
+
+    /// Everything the ocean reports, as bits.
+    fn reported(ocean: &Ocean) -> Vec<u64> {
+        let n = ocean.mixed.len();
+        let mut x: Vec<f64> = Vec::new();
+        x.extend(ocean.mixed_temperature());
+        x.extend(ocean.deep_temperature());
+        for i in 0..n {
+            x.push(ocean.heat(i));
+            x.push(ocean.diffusion_heating(i));
+            x.extend(ocean.transported_heat(i));
+            x.extend([
+                ocean.ekman_heating(i),
+                ocean.ekman_mixed_heating(i),
+                ocean.eddy_heating(i),
+                ocean.eddy_mixed_heating(i),
+                ocean.gyre_heating(i),
+                ocean.gyre_mixed_heating(i),
+                ocean.gyre_streamfunction(i),
+                ocean.upwelling(i),
+                ocean.ice_fraction(i),
+                ocean.ice_thickness(i),
+                ocean.ice_temperature(i),
+                ocean.ice_interface_temperature(i),
+                ocean.snow_on_ice(i),
+                ocean.ice_limit_heat(i),
+            ]);
+            x.extend(ocean.gyre_wind(i));
+            x.extend(ocean.ice_albedo(i, [0.06, 0.07]));
+            if ocean.ice.is_some() {
+                let (a, b) = ocean.ice_balance(i, RESTART_DT);
+                x.extend([a, b]);
+            }
+        }
+        x.extend(ocean.ekman_mass_flux());
+        x.extend(ocean.eddy_mass_flux());
+        x.extend(ocean.gyre_mass_flux());
+        x.extend([
+            ocean.transports() as f64,
+            ocean.advection_steps() as f64,
+            ocean.gyre_solves() as f64,
+        ]);
+        if let Some(g) = ocean.gyres() {
+            x.extend(g.streamfunction());
+            x.extend(g.group_streamfunction());
+            for s in g.stats().iter() {
+                x.extend(s.map_or([-1.0; 3], |s| {
+                    [
+                        s.iterations as f64,
+                        s.residual,
+                        f64::from(u8::from(s.converged)),
+                    ]
+                }));
+            }
+        }
+        x.iter().map(|v| v.to_bits()).collect()
+    }
+
+    /// Run `build`'s ocean straight to the end, and saved part way, through
+    /// bytes, loaded into a fresh one and run on; both end the same bit for
+    /// bit. Returns the file saved part way and the straight run.
+    fn resumes(build: impl Fn() -> Ocean) -> (Restart, Ocean) {
+        let mut a = build();
+        drive_to(&mut a, 0, RESTART_STEPS);
+        let mut b = build();
+        drive_to(&mut b, 0, RESTART_SAVED_AT);
+        let file = through_bytes(&saved(&b));
+        let mut c = build();
+        c.load_restart(&file).unwrap();
+        // Loaded and saved at once, the file comes back; and the loaded
+        // ocean reports what the saved one did.
+        assert!(saved(&c).to_bytes() == file.to_bytes());
+        assert!(reported(&c) == reported(&b));
+        drive_to(&mut c, RESTART_SAVED_AT, RESTART_STEPS);
+        assert!(saved(&a).to_bytes() == saved(&c).to_bytes());
+        assert!(reported(&a) == reported(&c));
+        (file, a)
+    }
+
+    #[test]
+    fn a_saved_ocean_resumes_bit_for_bit() {
+        let grid = Grid::new(16);
+        let (file, a) = resumes(|| busy_ocean(&grid));
+        // The save point is between transports, with ice, a solved gyre
+        // and every flux moving.
+        assert_eq!(file.get_array::<1>(WIND_SAMPLES).unwrap(), [2.0]);
+        let [since, solves] = file.get_array(GYRE_CLOCK).unwrap();
+        assert!(since > 0.0 && solves == 1.0, "{since} {solves}");
+        assert!(
+            file.get(SeaIce::RESTART[0], grid.n())
+                .unwrap()
+                .iter()
+                .any(|&f| f > 0.0)
+        );
+        let links = a.links.len();
+        for name in MASS_FLUX {
+            assert!(
+                file.get(name, links).unwrap().iter().any(|&f| f != 0.0),
+                "{name}"
+            );
+        }
+        assert!(a.gyre_solves() >= 3 && a.transports() == RESTART_STEPS / 3);
+        assert!(
+            a.gyres().unwrap().stats().iter().flatten().count() > 0,
+            "a component is solved"
+        );
+        assert!((0..grid.n()).any(|i| a.snow_on_ice(i) > 0.0));
+    }
+
+    #[test]
+    fn a_still_ocean_and_a_slab_resume_bit_for_bit() {
+        let grid = Grid::new(8);
+        let (file, _) = resumes(|| restart_ocean(&grid, OceanParams::still()));
+        assert!(file.contains(SeaIce::RESTART[0]) && !file.contains(WIND_STRESS));
+        let (file, _) = resumes(|| restart_ocean(&grid, OceanParams::slab(10.0)));
+        assert!(!file.contains(SeaIce::RESTART[0]) && !file.contains(GYRE_MEAN));
+    }
+
+    /// Loading `from` into `ocean` fails, and leaves it as it was.
+    fn refused(ocean: &mut Ocean, from: &Restart) -> RestartError {
+        let before = (saved(ocean).to_bytes(), reported(ocean));
+        let err = ocean
+            .load_restart(from)
+            .expect_err("the restart should be refused");
+        assert!(
+            (saved(ocean).to_bytes(), reported(ocean)) == before,
+            "a refused load changed the ocean ({err})"
+        );
+        err
+    }
+
+    /// A copy of `r` with `edit` applied to each array (`None` drops it).
+    fn edited(r: &Restart, edit: impl Fn(&str, &[f64]) -> Option<Vec<f64>>) -> Restart {
+        let mut out = Restart::new(r.grid(), r.step());
+        for (name, values) in r.arrays() {
+            if let Some(values) = edit(name, values) {
+                out.put(name, &values);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn ocean_restarts_that_do_not_fit_are_refused() {
+        let grid = Grid::new(16);
+        let mut b = busy_ocean(&grid);
+        drive_to(&mut b, 0, RESTART_SAVED_AT);
+        let good = saved(&b);
+        let mut ocean = busy_ocean(&grid);
+        drive_to(&mut ocean, 0, 2);
+
+        // Each array dropped in turn, or one value short.
+        let names: Vec<String> = good.names().map(str::to_owned).collect();
+        assert!(names.len() > 30, "{names:?}");
+        for dropped in &names {
+            let file = edited(&good, |name, v| (name != dropped).then(|| v.to_vec()));
+            let err = refused(&mut ocean, &file);
+            match &err {
+                // Dropping the array that shows a component is there is a
+                // component missing.
+                RestartError::Mismatch(_) => assert!(
+                    [SeaIce::RESTART[0], WIND_STRESS, GYRE_MEAN].contains(&dropped.as_str()),
+                    "{dropped}: {err}"
+                ),
+                RestartError::Missing { name } => assert_eq!(name, dropped),
+                _ => panic!("{dropped}: {err}"),
+            }
+            let file = edited(&good, |name, v| {
+                let mut v = v.to_vec();
+                if name == dropped {
+                    v.pop();
+                }
+                Some(v)
+            });
+            if good.get(dropped, 0).is_ok() {
+                continue;
+            }
+            let err = refused(&mut ocean, &file);
+            assert!(
+                matches!(&err, RestartError::WrongLength { name, .. } if name == dropped),
+                "{dropped}: {err}"
+            );
+        }
+
+        // Counters and flags that aren't.
+        for (name, at, value) in [
+            (COUNTS, 0, 0.5),
+            (COUNTS, 1, -1.0),
+            (WIND_SAMPLES, 0, 1e10),
+            (GYRE_CLOCK, 1, f64::NAN),
+            ("ocean.gyres.stats", 0, 2.0),
+        ] {
+            let file = edited(&good, |n, v| {
+                let mut v = v.to_vec();
+                if n == name {
+                    v[at] = value;
+                }
+                Some(v)
+            });
+            let err = refused(&mut ocean, &file);
+            assert!(matches!(err, RestartError::Mismatch(_)), "{name}: {err}");
+        }
+
+        // Components in the file but not in the run, and the reverse.
+        let without = |params: OceanParams| restart_ocean(&grid, params);
+        let busy = *busy_ocean(&grid).params();
+        for (other, component) in [
+            (OceanParams { ice: None, ..busy }, "sea ice"),
+            (OceanParams::still(), "wind stress"),
+            (
+                OceanParams {
+                    gyres: None,
+                    ..busy
+                },
+                "gyres",
+            ),
+        ] {
+            let err = refused(&mut ocean, &saved(&without(other)));
+            assert!(
+                matches!(&err, RestartError::Mismatch(m) if m.contains(component)),
+                "{component}: {err}"
+            );
+            let err = refused(&mut without(other), &good);
+            assert!(
+                matches!(&err, RestartError::Mismatch(m) if m.contains(component)),
+                "{component}: {err}"
+            );
+            eprintln!("{err}");
+        }
+
+        // And the good file loads, ignoring arrays it doesn't know.
+        let mut file = good.clone();
+        file.put("cli.something", &[1.0, 2.0]);
+        ocean.load_restart(&file).unwrap();
+        assert!(saved(&ocean).to_bytes() == good.to_bytes());
     }
 }

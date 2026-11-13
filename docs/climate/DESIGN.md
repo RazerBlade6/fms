@@ -281,12 +281,24 @@ beside the target and renames it.
 
 - **Grid fingerprint** is a hash of the mesh's cell centres and edge list; a
   file from another grid is refused.
-- **Dynamical core** is the only part that saves and loads so far, under
-  `dynamics.` names: both leapfrog time levels, the Helmholtz solver's
-  first-guess potentials, the energy and water budgets, the solver totals and
-  the step count. The time step, reference state and options come from the
-  stepper that loads the file. Other σ levels, or a moist/dry mismatch, are
-  refused, and a refused load changes nothing.
+- **One call saves everything.** The stepper saves the dynamics under
+  `dynamics.` (both leapfrog time levels, the Helmholtz solver's first-guess
+  potentials, the energy and water budgets, the solver totals, the step count),
+  then its forcing's state. The column physics saves under `physics.` (its clock
+  and counters, budget totals, land temperatures, soil water, snow, the last
+  radiation call, surface fluxes and moist physics, and the ocean at the start
+  of a year being measured for a jump), the ocean under `ocean.` (both layers'
+  temperatures, the wind stress and its running mean, the gyres' streamfunction,
+  the latest mass fluxes, the transport totals and diagnostics) and the sea ice
+  under `ice.`.
+- **What is saved**: everything that changes as the model runs or that its
+  outputs read, never settings or what is built from them (the time step,
+  reference state, options, geometry). Each save function names every field of
+  its struct, so a new field does not compile until it is classed as state or
+  not.
+- **Refusals**: another grid, other σ levels, a moist/dry mismatch, a different
+  land fraction, or sea ice, wind stress or gyres present on one side only. A
+  load is all or nothing, and arrays a loader does not know are ignored.
 - **Resuming**: loaded into a stepper built the same way, the run continues bit
   for bit, on any thread count.
 

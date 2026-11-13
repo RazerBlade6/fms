@@ -273,6 +273,61 @@ impl Fluxes {
     pub fn total_water(&self) -> f64 {
         self.water.iter().sum()
     }
+
+    /// Values in a restart row of a column with `layers` layers.
+    pub(crate) fn restart_width(layers: usize) -> usize {
+        7 + 2 * layers
+    }
+
+    /// Append the fluxes to `row` as a restart row, in declaration order
+    /// with each per-layer field written in full.
+    ///
+    /// # Panics
+    /// If a per-layer field doesn't have `layers` values.
+    pub(crate) fn push_restart_row(&self, layers: usize, row: &mut Vec<f64>) {
+        let Self {
+            absorbed,
+            outgoing,
+            layers: heating,
+            surface_shortwave,
+            surface_visible,
+            surface_down,
+            surface_up,
+            water,
+            co2_width,
+        } = self;
+        assert!(heating.len() == layers && water.len() == layers);
+        row.extend([*absorbed, *outgoing]);
+        row.extend(heating);
+        row.extend([
+            *surface_shortwave,
+            *surface_visible,
+            *surface_down,
+            *surface_up,
+        ]);
+        row.extend(water);
+        row.push(*co2_width);
+    }
+
+    /// The fluxes of a row written by [`push_restart_row`](Self::push_restart_row),
+    /// which has [`restart_width`](Self::restart_width) values.
+    pub(crate) fn from_restart_row(row: &[f64], layers: usize) -> Self {
+        let (head, rest) = row.split_at(2);
+        let (heating, rest) = rest.split_at(layers);
+        let (surface, rest) = rest.split_at(4);
+        let (water, rest) = rest.split_at(layers);
+        Self {
+            absorbed: head[0],
+            outgoing: head[1],
+            layers: heating.to_vec(),
+            surface_shortwave: surface[0],
+            surface_visible: surface[1],
+            surface_down: surface[2],
+            surface_up: surface[3],
+            water: water.to_vec(),
+            co2_width: rest[0],
+        }
+    }
 }
 
 /// Saturation vapour pressure (Pa): Magnus over water at or above 0 °C, over

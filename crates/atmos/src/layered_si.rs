@@ -78,13 +78,14 @@
 //! # Restarts
 //!
 //! [`LayeredSemiImplicit::save_restart`] saves what the stepper carries
-//! between steps, and [`LayeredSemiImplicit::load_restart`] loads it over a
-//! freshly built stepper's; with the same settings the run continues bit for
-//! bit.
+//! between steps, and its forcing's state after it
+//! ([`Forcing::save_restart`](crate::Forcing::save_restart)), and
+//! [`LayeredSemiImplicit::load_restart`] loads both over a freshly built
+//! stepper's; with the same settings the run continues bit for bit.
 
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
-use fms_restart::{Restart, RestartError};
+use fms_restart::{Restart, RestartError, count};
 use rayon::prelude::*;
 
 use crate::forcing::EnergyTerms;
@@ -429,7 +430,8 @@ impl<'a> LayeredSemiImplicit<'a> {
     /// under `dynamics.`: both leapfrog levels, the modal potentials (the
     /// solver's first guess, which the next step's bits depend on), the
     /// energy and water budgets, the solver totals and the step count, with
-    /// the σ interfaces to check against on loading.
+    /// the σ interfaces to check against on loading; then the forcing's own
+    /// state ([`Forcing::save_restart`](crate::Forcing::save_restart)).
     ///
     /// Settings are not saved: the time step, the reference state and the
     /// operators built from it, the filter and solver options all come from
@@ -469,6 +471,9 @@ impl<'a> LayeredSemiImplicit<'a> {
             SOLVER_STATS,
             &[s.solves as f64, s.iterations as f64, s.worst_residual],
         );
+        if let Some(forcing) = self.model.forcing() {
+            forcing.save_restart(&mut r);
+        }
         r
     }
 
@@ -477,11 +482,13 @@ impl<'a> LayeredSemiImplicit<'a> {
     /// stepper is unchanged.
     ///
     /// Refused if the file is from another mesh, other σ levels, or a moist
-    /// state into a dry stepper (or the reverse). The reference state stays
-    /// the one this stepper built from its own starting state, not the
-    /// file's, so the continuation is bit for bit only when this stepper was
-    /// built as the saved one was (same model, starting state, time step and
-    /// options); otherwise it is a warm start.
+    /// state into a dry stepper (or the reverse), or if the forcing refuses
+    /// its part ([`Forcing::load_restart`](crate::Forcing::load_restart)),
+    /// which it loads only once the stepper's part has been checked. The
+    /// reference state stays the one this stepper built from its own
+    /// starting state, not the file's, so the continuation is bit for bit
+    /// only when this stepper was built as the saved one was (same model,
+    /// starting state, time step and options); otherwise it is a warm start.
     pub fn load_restart(&mut self, from: &Restart) -> Result<(), RestartError> {
         let run = self.ops.mesh().fingerprint();
         if from.grid() != run {
@@ -535,10 +542,12 @@ impl<'a> LayeredSemiImplicit<'a> {
         let w = from.get(WATER_BUDGET, 5)?;
         let s = from.get(SOLVER_STATS, 3)?;
         let max_substeps = count(WATER_BUDGET, w[4])?;
-        let max_substeps = u32::try_from(max_substeps).map_err(|_| {
-            RestartError::Mismatch(format!("{WATER_BUDGET} has an impossible substep count"))
-        })?;
         let (solves, iterations) = (count(SOLVER_STATS, s[0])?, count(SOLVER_STATS, s[1])?);
+        // The forcing checks its own part and loads it, all or nothing; the
+        // copies below cannot fail.
+        if let Some(forcing) = self.model.forcing_mut() {
+            forcing.load_restart(from)?;
+        }
 
         for (level, saved) in [&mut self.current, &mut self.previous]
             .into_iter()
@@ -1024,18 +1033,6 @@ fn level_arrays_mut(s: &mut LayeredState) -> Vec<&mut [f64]> {
         arrays.extend(layers.iter_mut().map(Vec::as_mut_slice));
     }
     arrays
-}
-
-/// A counter stored as `f64`, which must be a whole number in range.
-fn count(name: &str, value: f64) -> Result<u64, RestartError> {
-    // 2⁶⁴ as f64: every whole number below it fits a u64.
-    if (0.0..18_446_744_073_709_551_616.0).contains(&value) && value.fract() == 0.0 {
-        Ok(value as u64)
-    } else {
-        Err(RestartError::Mismatch(format!(
-            "{name} holds {value}, not a count"
-        )))
-    }
 }
 
 /// `Σᵢ cᵢ xᵢ` per cell, left to right.

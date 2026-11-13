@@ -249,6 +249,75 @@ pub struct MoistTendency {
     pub relative_humidity: Vec<f64>,
 }
 
+impl MoistTendency {
+    /// Values in a restart row of a column with `layers` layers.
+    pub(crate) fn restart_width(layers: usize) -> usize {
+        7 + 5 * layers
+    }
+
+    /// Append the tendency to `row` as a restart row, in declaration order
+    /// with each per-layer field written in full.
+    ///
+    /// # Panics
+    /// If a per-layer field doesn't have `layers` values.
+    pub(crate) fn push_restart_row(&self, layers: usize, row: &mut Vec<f64>) {
+        let Self {
+            temperature,
+            humidity,
+            rain,
+            snow,
+            convective,
+            orographic,
+            convective_boundary,
+            condensed,
+            reevaporated,
+            clouds,
+            relative_humidity,
+        } = self;
+        for field in [
+            temperature,
+            humidity,
+            condensed,
+            reevaporated,
+            relative_humidity,
+        ] {
+            assert_eq!(field.len(), layers, "a moist tendency's layers");
+        }
+        row.extend(temperature);
+        row.extend(humidity);
+        row.extend([*rain, *snow, *convective, *orographic, *convective_boundary]);
+        row.extend(condensed);
+        row.extend(reevaporated);
+        row.extend(clouds);
+        row.extend(relative_humidity);
+    }
+
+    /// The tendency of a row written by
+    /// [`push_restart_row`](Self::push_restart_row), which has
+    /// [`restart_width`](Self::restart_width) values.
+    pub(crate) fn from_restart_row(row: &[f64], layers: usize) -> Self {
+        let (temperature, rest) = row.split_at(layers);
+        let (humidity, rest) = rest.split_at(layers);
+        let (scalars, rest) = rest.split_at(5);
+        let (condensed, rest) = rest.split_at(layers);
+        let (reevaporated, rest) = rest.split_at(layers);
+        let (clouds, relative_humidity) = rest.split_at(2);
+        Self {
+            temperature: temperature.to_vec(),
+            humidity: humidity.to_vec(),
+            rain: scalars[0],
+            snow: scalars[1],
+            convective: scalars[2],
+            orographic: scalars[3],
+            convective_boundary: scalars[4],
+            condensed: condensed.to_vec(),
+            reevaporated: reevaporated.to_vec(),
+            clouds: [clouds[0], clouds[1]],
+            relative_humidity: relative_humidity.to_vec(),
+        }
+    }
+}
+
 /// Geometry and constants the column physics needs.
 #[derive(Clone, Copy, Debug)]
 pub struct Setting<'p> {

@@ -19,6 +19,8 @@
 //! below that the two temperatures are one. Each layer is linear between
 //! its two boundary temperatures.
 
+use fms_restart::{Restart, RestartError};
+
 /// How sea ice forms, melts and looks; [`Default`] is the authors'.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IceParams {
@@ -209,6 +211,102 @@ impl SeaIce {
             bottom: vec![0.0; n],
             top: vec![0.0; n],
             limited: vec![0.0; n],
+        }
+    }
+
+    /// The restart arrays, in the order of [`state`](Self::state).
+    pub(crate) const RESTART: [&str; 9] = [
+        "ice.fraction",
+        "ice.thickness",
+        "ice.temperature",
+        "ice.interface",
+        "ice.snow",
+        "ice.fallen",
+        "ice.bottom",
+        "ice.top",
+        "ice.limited",
+    ];
+
+    /// Every field that changes as the ice runs, one value per cell, in the
+    /// order of [`RESTART`](Self::RESTART).
+    fn state(&self) -> [&Vec<f64>; 9] {
+        let Self {
+            // A setting.
+            params: _,
+            fraction,
+            thickness,
+            temperature,
+            interface,
+            snow,
+            fallen,
+            bottom,
+            top,
+            limited,
+        } = self;
+        [
+            fraction,
+            thickness,
+            temperature,
+            interface,
+            snow,
+            fallen,
+            bottom,
+            top,
+            limited,
+        ]
+    }
+
+    /// [`state`](Self::state), to change.
+    fn state_mut(&mut self) -> [&mut Vec<f64>; 9] {
+        let Self {
+            params: _,
+            fraction,
+            thickness,
+            temperature,
+            interface,
+            snow,
+            fallen,
+            bottom,
+            top,
+            limited,
+        } = self;
+        [
+            fraction,
+            thickness,
+            temperature,
+            interface,
+            snow,
+            fallen,
+            bottom,
+            top,
+            limited,
+        ]
+    }
+
+    /// Add the ice's state to a restart, under `ice.`.
+    pub(crate) fn save_restart(&self, out: &mut Restart) {
+        for (name, values) in Self::RESTART.into_iter().zip(self.state()) {
+            out.put(name, values);
+        }
+    }
+
+    /// The ice's arrays in `from`, checked, for [`load`](Self::load).
+    pub(crate) fn read_restart<'r>(
+        &self,
+        from: &'r Restart,
+    ) -> Result<[&'r [f64]; 9], RestartError> {
+        let n = self.fraction.len();
+        let mut saved = [&[][..]; 9];
+        for (slot, name) in saved.iter_mut().zip(Self::RESTART) {
+            *slot = from.get(name, n)?;
+        }
+        Ok(saved)
+    }
+
+    /// Copy in arrays checked by [`read_restart`](Self::read_restart).
+    pub(crate) fn load(&mut self, saved: [&[f64]; 9]) {
+        for (to, from) in self.state_mut().into_iter().zip(saved) {
+            to.copy_from_slice(from);
         }
     }
 

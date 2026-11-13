@@ -2,6 +2,8 @@
 //! outside the adiabatic dynamics. Held–Suarez ([`crate::held_suarez`]) is
 //! the first; radiation and surface fluxes replace it later.
 
+use fms_restart::{Restart, RestartError};
+
 use crate::layered::LayeredState;
 
 /// A source of tendencies for the winds, `Θ` and humidity.
@@ -31,6 +33,21 @@ pub trait Forcing: Send + Sync {
     /// Cell fields worth showing (surface temperature, outgoing longwave …).
     fn cell_fields(&self) -> Vec<CellField> {
         Vec::new()
+    }
+
+    /// Add the forcing's own state to a restart, under names of its own:
+    /// what it carries between steps and what its outputs
+    /// ([`budget`](Self::budget), [`cell_fields`](Self::cell_fields)) read,
+    /// never its settings. The stepper calls this after saving its own.
+    /// Default: nothing (no state).
+    fn save_restart(&self, _out: &mut Restart) {}
+
+    /// Load the state saved by [`save_restart`](Self::save_restart) over
+    /// this forcing's, which was built with the same settings. All or
+    /// nothing: on an error nothing has changed. Arrays it doesn't know are
+    /// ignored. Default: nothing.
+    fn load_restart(&mut self, _from: &Restart) -> Result<(), RestartError> {
+        Ok(())
     }
 }
 

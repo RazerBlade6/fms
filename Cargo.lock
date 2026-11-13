@@ -398,6 +398,7 @@ version = "0.1.0"
 dependencies = [
  "fms-grid",
  "fms-math",
+ "fms-restart",
  "glam",
  "rayon",
 ]

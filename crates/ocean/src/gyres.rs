@@ -91,6 +91,7 @@
 
 use fms_grid::zonal::east_north;
 use fms_grid::{EdgeId, Operators, VertexId};
+use fms_restart::{Restart, RestartError, count, flag};
 
 use crate::basins::Basins;
 
@@ -767,6 +768,93 @@ impl Gyres {
     pub fn stats(&self) -> &[Option<SolveStats>] {
         &self.stats
     }
+
+    /// Add the solver's state to a restart under `prefix`: `psi` (per
+    /// vertex) and `group_psi` (per coast group), the next solve's first
+    /// guess, and `stats`, one row per component of [`STATS_WIDTH`] values:
+    /// whether it has stats (0 or 1), then iterations, residual and whether
+    /// it converged (0 or 1), zeros without.
+    pub(crate) fn save_restart(&self, out: &mut Restart, prefix: &str) {
+        let Self {
+            // Settings, and what is built from them and the mesh.
+            params: _,
+            components: _,
+            systems: _,
+            group_vertices: _,
+            group_component: _,
+            ends: _,
+            stats,
+            psi,
+            group_psi,
+        } = self;
+        out.put(&format!("{prefix}psi"), psi);
+        out.put(&format!("{prefix}group_psi"), group_psi);
+        let mut rows = Vec::with_capacity(STATS_WIDTH * stats.len());
+        for s in stats {
+            rows.extend_from_slice(&match s {
+                Some(SolveStats {
+                    iterations,
+                    residual,
+                    converged,
+                }) => [
+                    1.0,
+                    *iterations as f64,
+                    *residual,
+                    f64::from(u8::from(*converged)),
+                ],
+                None => [0.0; STATS_WIDTH],
+            });
+        }
+        out.put(&format!("{prefix}stats"), &rows);
+    }
+
+    /// The solver's state in `from` under `prefix`, checked, for
+    /// [`load`](Self::load).
+    pub(crate) fn read_restart<'r>(
+        &self,
+        from: &'r Restart,
+        prefix: &str,
+    ) -> Result<SavedGyres<'r>, RestartError> {
+        let psi = from.get(&format!("{prefix}psi"), self.psi.len())?;
+        let group_psi = from.get(&format!("{prefix}group_psi"), self.group_psi.len())?;
+        let name = format!("{prefix}stats");
+        let stats = from
+            .get_rows(&name, self.stats.len(), STATS_WIDTH)?
+            .map(|row| {
+                Ok(if flag(&name, row[0])? {
+                    Some(SolveStats {
+                        iterations: count(&name, row[1])?,
+                        residual: row[2],
+                        converged: flag(&name, row[3])?,
+                    })
+                } else {
+                    None
+                })
+            })
+            .collect::<Result<_, RestartError>>()?;
+        Ok(SavedGyres {
+            psi,
+            group_psi,
+            stats,
+        })
+    }
+
+    /// Copy in a state checked by [`read_restart`](Self::read_restart).
+    pub(crate) fn load(&mut self, saved: SavedGyres) {
+        self.psi.copy_from_slice(saved.psi);
+        self.group_psi.copy_from_slice(saved.group_psi);
+        self.stats = saved.stats;
+    }
+}
+
+/// Values per component in a restart's gyre `stats`.
+pub(crate) const STATS_WIDTH: usize = 4;
+
+/// The solver's state read from a restart and checked.
+pub(crate) struct SavedGyres<'r> {
+    psi: &'r [f64],
+    group_psi: &'r [f64],
+    stats: Vec<Option<SolveStats>>,
 }
 
 #[cfg(test)]

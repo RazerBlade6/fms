@@ -482,6 +482,11 @@ impl<'a> LayeredModel<'a> {
         self.forcing.as_deref()
     }
 
+    /// The external forcing, if any, to change (for loading a restart).
+    pub(crate) fn forcing_mut(&mut self) -> Option<&mut (dyn Forcing + 'a)> {
+        self.forcing.as_deref_mut()
+    }
+
     /// Tell the forcing a step of `dt` seconds has completed with `state`
     /// ([`Forcing::advance`]). The steppers call this; call it yourself only
     /// when stepping by other means.

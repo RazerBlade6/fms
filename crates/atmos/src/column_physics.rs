@@ -68,12 +68,39 @@
 //! absorbed from the Sun minus what was emitted to space (friction's lost
 //! kinetic energy comes back as heat), and the atmosphere's water changes
 //! by evaporation minus precipitation.
+//!
+//! # Restarts
+//!
+//! [`ColumnPhysics`] saves its state ([`Forcing::save_restart`]) under
+//! `physics.`, and its ocean's under `ocean.` and `ice.`
+//! ([`Ocean::save_restart`]): everything that changes as it runs, and what
+//! its budget and cell fields report, never its settings or what is built
+//! from them. With `n` cells and `L` layers:
+//!
+//! - `physics.land_fraction` (`n`): checked on loading, not loaded;
+//! - `physics.clock` (6): model time (s), when the year ends (s), steps
+//!   since radiation and since the ocean's transport, years ended and jumps
+//!   done;
+//! - `physics.budget` (10): heat taken up by a prescribed surface, the last
+//!   dissipation rate and the dissipated energy, sunlight absorbed,
+//!   longwave emitted, water evaporated, precipitated, run off and
+//!   exchanged with the ocean, and the heat the jumps added;
+//! - `physics.{land_temperature,soil_temperature,soil_water,snow,cover_age}`
+//!   (`n` each);
+//! - one row per cell of the last radiation call, all-sky and clear-sky
+//!   (`physics.radiation`, `physics.clear`: `7 + 2L` each), its division
+//!   between the tiles (`physics.tile_radiation`: 6), the surface fluxes
+//!   (`physics.surface`: 37) and the moist physics (`physics.moist`:
+//!   `7 + 5L`), each record's fields in declaration order;
+//! - while a year is measured for an ocean jump,
+//!   `physics.year_start.{mixed,deep}` (`n` each), the ocean at its start.
 
 use fms_grid::Operators;
 use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use fms_grid::zonal::east_north;
 use fms_ocean::{IceForcing, JumpLayers, Ocean, OceanParams, OceanSnapshot};
 use fms_planet::Planet;
+use fms_restart::{Restart, RestartError, count};
 use glam::DVec3;
 use rayon::prelude::*;
 
@@ -579,6 +606,56 @@ struct TileFlux {
 }
 
 impl TileFlux {
+    /// Values in a restart row.
+    const RESTART_WIDTH: usize = 7;
+
+    /// Append the flux to `row`, in declaration order.
+    fn push_restart_row(&self, row: &mut Vec<f64>) {
+        let Self {
+            sensible,
+            evaporation,
+            drag,
+            wind,
+            stress,
+            stress_east,
+            stress_north,
+        } = *self;
+        row.extend([
+            sensible,
+            evaporation,
+            drag,
+            wind,
+            stress,
+            stress_east,
+            stress_north,
+        ]);
+    }
+
+    /// The flux of a row written by [`push_restart_row`](Self::push_restart_row).
+    fn from_restart_row(row: &[f64]) -> Self {
+        let &[
+            sensible,
+            evaporation,
+            drag,
+            wind,
+            stress,
+            stress_east,
+            stress_north,
+        ] = row
+        else {
+            panic!("a tile flux's restart row has {} values", row.len());
+        };
+        Self {
+            sensible,
+            evaporation,
+            drag,
+            wind,
+            stress,
+            stress_east,
+            stress_north,
+        }
+    }
+
     /// The mean of an ocean and a land tile, weighted by land `fraction`.
     fn blend(ocean: Self, land: Self, fraction: f64) -> Self {
         if fraction == 0.0 {
@@ -689,6 +766,31 @@ struct TiledSurface {
     albedo: [[f64; 2]; 3],
     /// Each tile's temperature (K).
     temperature: [f64; 3],
+}
+
+impl TileRadiation {
+    /// Values in a restart row.
+    const RESTART_WIDTH: usize = 6;
+
+    /// Append the radiation to `row`, in declaration order.
+    fn push_restart_row(&self, row: &mut Vec<f64>) {
+        let Self {
+            shortwave,
+            longwave_up,
+        } = self;
+        row.extend(shortwave);
+        row.extend(longwave_up);
+    }
+
+    /// The radiation of a row written by
+    /// [`push_restart_row`](Self::push_restart_row).
+    fn from_restart_row(row: &[f64]) -> Self {
+        let (shortwave, longwave_up) = row.split_at(3);
+        Self {
+            shortwave: shortwave.try_into().expect("three tiles"),
+            longwave_up: longwave_up.try_into().expect("three tiles"),
+        }
+    }
 }
 
 impl TiledSurface {
@@ -890,6 +992,102 @@ struct SurfaceFlux {
     /// Eastward and northward stress of the surface on the air (N m⁻²).
     stress_east: f64,
     stress_north: f64,
+}
+
+impl SurfaceFlux {
+    /// Values in a restart row.
+    const RESTART_WIDTH: usize = 3 * TileFlux::RESTART_WIDTH + 16;
+
+    /// Append the fluxes to `row`, in declaration order.
+    fn push_restart_row(&self, row: &mut Vec<f64>) {
+        let Self {
+            tiles,
+            skin,
+            ice_skin,
+            air,
+            sensible,
+            evaporation,
+            drag,
+            upslope,
+            entrainment,
+            cumulus,
+            entrainment_velocity,
+            convective_velocity,
+            wind,
+            stress,
+            export,
+            stress_east,
+            stress_north,
+        } = *self;
+        for tile in &tiles {
+            tile.push_restart_row(row);
+        }
+        row.extend([
+            skin,
+            ice_skin,
+            air,
+            sensible,
+            evaporation,
+            drag,
+            upslope,
+            entrainment,
+            cumulus,
+            entrainment_velocity,
+            convective_velocity,
+            wind,
+            stress,
+            export,
+            stress_east,
+            stress_north,
+        ]);
+    }
+
+    /// The fluxes of a row written by [`push_restart_row`](Self::push_restart_row).
+    fn from_restart_row(row: &[f64]) -> Self {
+        let (tiles, rest) = row.split_at(3 * TileFlux::RESTART_WIDTH);
+        let tiles = tiles.as_chunks::<{ TileFlux::RESTART_WIDTH }>().0;
+        let tiles = std::array::from_fn(|t| TileFlux::from_restart_row(&tiles[t]));
+        let &[
+            skin,
+            ice_skin,
+            air,
+            sensible,
+            evaporation,
+            drag,
+            upslope,
+            entrainment,
+            cumulus,
+            entrainment_velocity,
+            convective_velocity,
+            wind,
+            stress,
+            export,
+            stress_east,
+            stress_north,
+        ] = rest
+        else {
+            panic!("a surface flux's restart row has {} values", row.len());
+        };
+        Self {
+            tiles,
+            skin,
+            ice_skin,
+            air,
+            sensible,
+            evaporation,
+            drag,
+            upslope,
+            entrainment,
+            cumulus,
+            entrainment_velocity,
+            convective_velocity,
+            wind,
+            stress,
+            export,
+            stress_east,
+            stress_north,
+        }
+    }
 }
 
 /// The radiative–convective forcing of the layered model: radiation, moist
@@ -1840,6 +2038,212 @@ impl Forcing for ColumnPhysics<'_> {
         }
     }
 
+    fn save_restart(&self, out: &mut Restart) {
+        let Self {
+            // Settings, and what is built from them, the mesh, the planet,
+            // the land and the terrain.
+            params: _,
+            gas: _,
+            levels,
+            gravity: _,
+            ops: _,
+            planet: _,
+            relief: _,
+            relief_slope: _,
+            ice_sheet_age: _,
+            prescribed: _,
+            // Scratch: its Exner functions are refilled before every use.
+            heating: _,
+            // A setting, saved to check: state from other land doesn't fit.
+            land_fraction,
+            time,
+            since_radiation,
+            since_transport,
+            ocean,
+            next_year,
+            year_start,
+            years_ended,
+            jumps_done,
+            jumped,
+            land_temperature,
+            soil_temperature,
+            soil_water,
+            snow,
+            cover_age,
+            radiation,
+            clear,
+            tile_radiation,
+            surface,
+            moist,
+            uptake,
+            dissipation,
+            dissipated,
+            absorbed,
+            outgoing,
+            evaporated,
+            precipitated,
+            runoff,
+            ocean_exchange,
+        } = self;
+        let layers = levels.count();
+        out.put(LAND_FRACTION, land_fraction);
+        out.put(
+            CLOCK,
+            &[
+                *time,
+                *next_year,
+                f64::from(*since_radiation),
+                f64::from(*since_transport),
+                f64::from(*years_ended),
+                f64::from(*jumps_done),
+            ],
+        );
+        out.put(
+            BUDGET,
+            &[
+                *uptake,
+                *dissipation,
+                *dissipated,
+                *absorbed,
+                *outgoing,
+                *evaporated,
+                *precipitated,
+                *runoff,
+                *ocean_exchange,
+                *jumped,
+            ],
+        );
+        for (name, values) in LAND_STATE.into_iter().zip([
+            land_temperature,
+            soil_temperature,
+            soil_water,
+            snow,
+            cover_age,
+        ]) {
+            out.put(name, values);
+        }
+        let mut row = Vec::new();
+        let mut rows = |name: &str, write: &dyn Fn(&mut Vec<f64>)| {
+            row.clear();
+            write(&mut row);
+            out.put(name, &row);
+        };
+        for (name, fluxes) in [(RADIATION, radiation), (CLEAR, clear)] {
+            rows(name, &|row| {
+                fluxes.iter().for_each(|f| f.push_restart_row(layers, row));
+            });
+        }
+        rows(TILE_RADIATION, &|row| {
+            tile_radiation.iter().for_each(|t| t.push_restart_row(row));
+        });
+        rows(SURFACE, &|row| {
+            surface.iter().for_each(|s| s.push_restart_row(row));
+        });
+        rows(MOIST, &|row| {
+            moist.iter().for_each(|m| m.push_restart_row(layers, row));
+        });
+        if let Some(start) = year_start {
+            start.save_restart(out, YEAR_START);
+        }
+        ocean.save_restart(out);
+    }
+
+    fn load_restart(&mut self, from: &Restart) -> Result<(), RestartError> {
+        let n = self.land_fraction.len();
+        let layers = self.levels.count();
+        if !from.contains(LAND_FRACTION) {
+            return Err(RestartError::Mismatch(
+                "it has no column physics (radiation, moisture and a surface), which this run has"
+                    .into(),
+            ));
+        }
+        let same_land = from
+            .get(LAND_FRACTION, n)?
+            .iter()
+            .zip(&self.land_fraction)
+            .all(|(a, b)| a.to_bits() == b.to_bits());
+        if !same_land {
+            return Err(RestartError::Mismatch(
+                "its land and sea differ from this run's".into(),
+            ));
+        }
+
+        // Check everything, the ocean last, before changing anything.
+        let clock = from.get_array::<6>(CLOCK)?;
+        let since_radiation: u32 = count(CLOCK, clock[2])?;
+        let since_transport: u32 = count(CLOCK, clock[3])?;
+        let years_ended: u32 = count(CLOCK, clock[4])?;
+        let jumps_done: u32 = count(CLOCK, clock[5])?;
+        let budget = from.get_array::<10>(BUDGET)?;
+        let mut land = [&[][..]; 5];
+        for (to, name) in land.iter_mut().zip(LAND_STATE) {
+            *to = from.get(name, n)?;
+        }
+        let fluxes = |name| -> Result<Vec<Fluxes>, RestartError> {
+            Ok(from
+                .get_rows(name, n, Fluxes::restart_width(layers))?
+                .map(|row| Fluxes::from_restart_row(row, layers))
+                .collect())
+        };
+        let (radiation, clear) = (fluxes(RADIATION)?, fluxes(CLEAR)?);
+        let tile_radiation = from
+            .get_rows(TILE_RADIATION, n, TileRadiation::RESTART_WIDTH)?
+            .map(TileRadiation::from_restart_row)
+            .collect();
+        let surface = from
+            .get_rows(SURFACE, n, SurfaceFlux::RESTART_WIDTH)?
+            .map(SurfaceFlux::from_restart_row)
+            .collect();
+        let moist = from
+            .get_rows(MOIST, n, MoistTendency::restart_width(layers))?
+            .map(|row| MoistTendency::from_restart_row(row, layers))
+            .collect();
+        let year_start = if from.contains(&format!("{YEAR_START}mixed")) {
+            Some(OceanSnapshot::load_restart(from, YEAR_START, n)?)
+        } else {
+            None
+        };
+        // All or nothing itself.
+        self.ocean.load_restart(from)?;
+
+        [self.time, self.next_year] = [clock[0], clock[1]];
+        self.since_radiation = since_radiation;
+        self.since_transport = since_transport;
+        self.years_ended = years_ended;
+        self.jumps_done = jumps_done;
+        [
+            self.uptake,
+            self.dissipation,
+            self.dissipated,
+            self.absorbed,
+            self.outgoing,
+            self.evaporated,
+            self.precipitated,
+            self.runoff,
+            self.ocean_exchange,
+            self.jumped,
+        ] = budget;
+        for (to, from) in [
+            &mut self.land_temperature,
+            &mut self.soil_temperature,
+            &mut self.soil_water,
+            &mut self.snow,
+            &mut self.cover_age,
+        ]
+        .into_iter()
+        .zip(land)
+        {
+            to.copy_from_slice(from);
+        }
+        self.radiation = radiation;
+        self.clear = clear;
+        self.tile_radiation = tile_radiation;
+        self.surface = surface;
+        self.moist = moist;
+        self.year_start = year_start;
+        Ok(())
+    }
+
     fn budget(&self) -> Option<ForcingBudget> {
         let areas = &self.ops.geometry().cell_areas;
         let r2 = self.ops.radius() * self.ops.radius();
@@ -2371,6 +2775,24 @@ impl Forcing for ColumnPhysics<'_> {
         ]
     }
 }
+
+// Restart array names (see the module documentation).
+const LAND_FRACTION: &str = "physics.land_fraction";
+const CLOCK: &str = "physics.clock";
+const BUDGET: &str = "physics.budget";
+const LAND_STATE: [&str; 5] = [
+    "physics.land_temperature",
+    "physics.soil_temperature",
+    "physics.soil_water",
+    "physics.snow",
+    "physics.cover_age",
+];
+const RADIATION: &str = "physics.radiation";
+const CLEAR: &str = "physics.clear";
+const TILE_RADIATION: &str = "physics.tile_radiation";
+const SURFACE: &str = "physics.surface";
+const MOIST: &str = "physics.moist";
+const YEAR_START: &str = "physics.year_start.";
 
 /// A moist start for the 3-D model on `planet`: everywhere the single
 /// column's equilibrium (with `params`' CO₂) at rest, with its fixed-profile

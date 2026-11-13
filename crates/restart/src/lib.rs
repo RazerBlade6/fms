@@ -113,6 +113,31 @@ impl Restart {
         }
     }
 
+    /// The array called `name`, which must have `N` values, as an array: for
+    /// a short, fixed list of scalars.
+    pub fn get_array<const N: usize>(&self, name: &str) -> Result<[f64; N], RestartError> {
+        let values = self.get(name, N)?;
+        Ok(std::array::from_fn(|i| values[i]))
+    }
+
+    /// The array called `name` as `rows` rows of `width` values each, which
+    /// is how a list of fixed-width records is saved (row-major).
+    ///
+    /// # Panics
+    /// If `width` is 0 or `rows × width` overflows: programming errors.
+    pub fn get_rows(
+        &self,
+        name: &str,
+        rows: usize,
+        width: usize,
+    ) -> Result<std::slice::ChunksExact<'_, f64>, RestartError> {
+        assert!(width > 0, "a restart row needs a width");
+        let len = rows
+            .checked_mul(width)
+            .expect("restart rows overflow a length");
+        Ok(self.get(name, len)?.chunks_exact(width))
+    }
+
     /// The arrays' names, in insertion order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.arrays.iter().map(|(n, _)| n.as_str())
@@ -260,6 +285,32 @@ impl Restart {
     pub fn load(path: &Path) -> Result<Self, RestartError> {
         let mut r = io::BufReader::new(File::open(path)?);
         Self::read_from(&mut r)
+    }
+}
+
+/// A counter saved as `f64` (in the array `name`), which must be a whole
+/// number that fits `T`; otherwise [`RestartError::Mismatch`].
+pub fn count<T: TryFrom<u64>>(name: &str, value: f64) -> Result<T, RestartError> {
+    let not_a_count = || RestartError::Mismatch(format!("{name} holds {value}, not a count"));
+    // 2⁶⁴ as f64: every whole number below it fits a u64.
+    if (0.0..18_446_744_073_709_551_616.0).contains(&value) && value.fract() == 0.0 {
+        T::try_from(value as u64).map_err(|_| not_a_count())
+    } else {
+        Err(not_a_count())
+    }
+}
+
+/// A flag saved as `f64` (in the array `name`): 0 is false and 1 true;
+/// anything else is [`RestartError::Mismatch`].
+pub fn flag(name: &str, value: f64) -> Result<bool, RestartError> {
+    if value == 0.0 {
+        Ok(false)
+    } else if value == 1.0 {
+        Ok(true)
+    } else {
+        Err(RestartError::Mismatch(format!(
+            "{name} holds {value}, not a flag (0 or 1)"
+        )))
     }
 }
 
@@ -541,6 +592,70 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn fixed_arrays_and_rows_check_their_length() {
+        let r = sample();
+        let a: [f64; 4] = r.get_array("z.third").unwrap();
+        assert_eq!(a.map(f64::to_bits), bits(&r, "z.third", 4)[..]);
+        assert!(matches!(
+            r.get_array::<3>("z.third"),
+            Err(RestartError::WrongLength {
+                expected: 3,
+                found: 4,
+                ..
+            })
+        ));
+        assert!(matches!(
+            r.get_array::<1>("nope"),
+            Err(RestartError::Missing { .. })
+        ));
+        let rows: Vec<&[f64]> = r.get_rows("z.third", 2, 2).unwrap().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][0], f64::NEG_INFINITY);
+        assert_eq!(r.get_rows("a.second", 0, 7).unwrap().count(), 0);
+        assert!(matches!(
+            r.get_rows("z.third", 3, 2),
+            Err(RestartError::WrongLength {
+                expected: 6,
+                found: 4,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn counts_are_whole_numbers_in_range() {
+        assert_eq!(count::<u64>("c", 0.0).unwrap(), 0);
+        assert_eq!(count::<u32>("c", 4_294_967_295.0).unwrap(), u32::MAX);
+        assert_eq!(count::<usize>("c", 12.0).unwrap(), 12);
+        assert_eq!(count::<u64>("c", 9_007_199_254_740_992.0).unwrap(), 1 << 53);
+        for bad in [
+            -1.0,
+            0.5,
+            f64::NAN,
+            f64::INFINITY,
+            18_446_744_073_709_551_616.0,
+        ] {
+            let err = count::<u64>("c", bad).unwrap_err();
+            assert!(matches!(err, RestartError::Mismatch(_)), "{bad}: {err:?}");
+        }
+        let err = count::<u32>("x.counts", 4_294_967_296.0).unwrap_err();
+        assert!(err.to_string().contains("x.counts"), "{err}");
+        // Negative zero is zero.
+        assert_eq!(count::<u8>("c", -0.0).unwrap(), 0);
+        assert!(count::<u8>("c", 256.0).is_err());
+    }
+
+    #[test]
+    fn flags_are_zero_or_one() {
+        assert!(!flag("f", 0.0).unwrap());
+        assert!(!flag("f", -0.0).unwrap());
+        assert!(flag("f", 1.0).unwrap());
+        for bad in [2.0, 0.5, -1.0, f64::NAN] {
+            assert!(matches!(flag("f", bad), Err(RestartError::Mismatch(_))));
+        }
     }
 
     #[test]

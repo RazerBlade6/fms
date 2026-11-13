@@ -1,17 +1,24 @@
 //! Restarts of the semi-implicit stepper (M2.13.5): a run saved part way and
 //! resumed in a fresh stepper ends bit for bit where the straight run does,
-//! dry, under Held–Suarez forcing, moist, and across thread counts; and a
-//! file that doesn't fit is refused without touching the stepper.
+//! dry, under Held–Suarez forcing, moist, coupled to the column physics with
+//! its ocean, sea ice and land, and across thread counts; and a file that
+//! doesn't fit is refused without touching the stepper.
 
 use std::sync::OnceLock;
 
+use fms_atmos::column_physics::{
+    CLIMATE_LEVELS, OceanSpinUp, initial_state, initial_surface_temperature_by_latitude,
+};
 use fms_atmos::williamson::{Case, GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
-    LayeredSemiImplicitOptions, LayeredState, Levels, Restart, RestartError, ShearedFlow,
+    CellField, ColumnPhysics, ForcingBudget, Gas, HeldSuarez, HeldSuarezParams,
+    HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions,
+    LayeredState, Levels, OceanParams, PhysicsParams, Restart, RestartError, ShearedFlow,
 };
 use fms_grid::coords::to_lat_lon;
 use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
+use fms_planet::{Planet, PlanetParams};
+use glam::DVec3;
 
 const GAS: Gas = Gas::EARTH_AIR;
 const DAY: f64 = 86_400.0;
@@ -372,4 +379,486 @@ fn stepper_at_rest(
     }
     let dt = step_for(&model, MAX_WIND);
     stepper(model, state, dt)
+}
+
+// Coupled runs: the column physics, with its ocean, ice and land, at 642
+// cells on the climate's four layers.
+
+type Stepper = LayeredSemiImplicit<'static>;
+
+fn earth() -> &'static Planet {
+    static P: OnceLock<Planet> = OnceLock::new();
+    P.get_or_init(Planet::earth)
+}
+
+/// Earth with a 20-day year, the shortest a planet may have, so that a year
+/// ends within a short run.
+fn short_year() -> &'static Planet {
+    static P: OnceLock<Planet> = OnceLock::new();
+    P.get_or_init(|| {
+        Planet::new(PlanetParams {
+            year_days: 20.0,
+            ..PlanetParams::earth()
+        })
+        .0
+    })
+}
+
+/// No land.
+fn sea(_: DVec3) -> f64 {
+    0.0
+}
+
+/// A continent within 45° of the prime meridian, with partly land cells
+/// along its coasts (as in `climate.rs`).
+fn continent(p: DVec3) -> f64 {
+    let lon = fms_math::atan2(p.y, p.x).abs().to_degrees();
+    ((45.0 - lon) / 10.0 + 0.5).clamp(0.0, 1.0)
+}
+
+/// No terrain: a cell's sub-grid height spread and mean height (m).
+fn flat(_: DVec3) -> (f64, f64) {
+    (0.0, 0.0)
+}
+
+/// A north–south ridge along the prime meridian, inside the continent:
+/// its sub-grid spread and mean height (m).
+fn ridge(p: DVec3) -> (f64, f64) {
+    let lon = fms_math::atan2(p.y, p.x).to_degrees() / 8.0;
+    let shape = fms_math::exp(-0.5 * lon * lon);
+    (800.0 * shape, 2500.0 * shape)
+}
+
+/// How a coupled run is built: everything a restarted run is built from
+/// again.
+#[derive(Clone, Copy)]
+struct World {
+    planet: fn() -> &'static Planet,
+    params: PhysicsParams,
+    land: fn(DVec3) -> f64,
+    relief: fn(DVec3) -> (f64, f64),
+    /// The sea-level temperature of a start warmer at the equator than at
+    /// the poles (K); `None` for the single column's everywhere.
+    sea_level: Option<f64>,
+    /// Sea temperatures held fixed.
+    prescribed: bool,
+}
+
+impl World {
+    /// An aquaplanet over the default ocean, with currents and ice.
+    fn aquaplanet() -> Self {
+        Self {
+            planet: earth,
+            params: PhysicsParams::default(),
+            land: sea,
+            relief: flat,
+            sea_level: None,
+            prescribed: false,
+        }
+    }
+
+    fn build(&self) -> Stepper {
+        let (m, g) = coarse_mesh();
+        let planet = (self.planet)();
+        let centers = m.cell_centers();
+        let model = LayeredModel::new(
+            Operators::new(m, g, RADIUS),
+            GRAVITY,
+            GAS,
+            Levels::new(&CLIMATE_LEVELS),
+            m.vertices()
+                .iter()
+                .map(|p| 2.0 * planet.rotation_rate() * p.z)
+                .collect(),
+            centers
+                .iter()
+                .map(|&p| GRAVITY * (self.relief)(p).1)
+                .collect(),
+        );
+        let (state, ts) = initial_state(&model, planet, &self.params);
+        let dt = step_for(&model, 120.0);
+        let diffusion = HyperdiffusionOptions::strongest_for_step(model.operators(), 4, dt);
+        let surface = match self.sea_level {
+            Some(t) => initial_surface_temperature_by_latitude(&model, planet, &self.params, t),
+            None => vec![ts; m.n_cells()],
+        };
+        let physics = ColumnPhysics::with_land(
+            &model,
+            planet,
+            self.params.with_step(dt, planet.solar_day()),
+            0.0,
+            &state,
+            surface,
+            centers.iter().map(|&p| (self.land)(p)).collect(),
+        )
+        .with_relief(
+            centers.iter().map(|&p| (self.relief)(p).0).collect(),
+            &centers
+                .iter()
+                .map(|&p| (self.relief)(p).1)
+                .collect::<Vec<_>>(),
+        );
+        let physics = if self.prescribed {
+            physics.with_prescribed_surface()
+        } else {
+            physics
+        };
+        let model = model
+            .with_hyperdiffusion(diffusion)
+            .with_dissipative_heating()
+            .with_forcing(Box::new(physics));
+        stepper(model, state, dt)
+    }
+}
+
+/// The forcing's budget, as bits.
+fn budget_bits(si: &Stepper) -> [u64; 10] {
+    let ForcingBudget {
+        absorbed,
+        outgoing,
+        stored,
+        evaporated,
+        precipitated,
+        dissipated,
+        soil_water,
+        snow,
+        runoff,
+        ocean_exchange,
+    } = si.model().forcing().unwrap().budget().unwrap();
+    [
+        absorbed,
+        outgoing,
+        stored,
+        evaporated,
+        precipitated,
+        dissipated,
+        soil_water,
+        snow,
+        runoff,
+        ocean_exchange,
+    ]
+    .map(f64::to_bits)
+}
+
+fn fields(si: &Stepper) -> Vec<CellField> {
+    si.model().forcing().unwrap().cell_fields()
+}
+
+/// The forcing's outputs, its budget and every cell field, are the same
+/// bit for bit in both steppers.
+fn assert_same_outputs(a: &Stepper, b: &Stepper, when: &str) {
+    assert_eq!(budget_bits(a), budget_bits(b), "the budget differs {when}");
+    let (fa, fb) = (fields(a), fields(b));
+    assert_eq!(fa.len(), fb.len());
+    for (x, y) in fa.iter().zip(&fb) {
+        assert_eq!(x.name, y.name);
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert!(
+            bits(&x.values) == bits(&y.values),
+            "the cell field `{}` differs {when}",
+            x.name
+        );
+    }
+}
+
+/// What [`resume_coupled`] leaves.
+struct Coupled {
+    /// The file saved part way.
+    file: Restart,
+    /// The cell fields of the saved run when it was saved.
+    saved_fields: Vec<CellField>,
+    /// The straight run, at its end.
+    straight: Stepper,
+}
+
+/// Run `build`'s stepper straight to `steps`; and to `saved_at`, saved,
+/// through bytes, loaded into a fresh stepper and run on to `steps`. Right
+/// after loading, the fresh stepper saves the file again and reports what
+/// the saved one did; at the end it is the straight run bit for bit, its
+/// outputs included.
+fn resume_coupled(build: impl Fn() -> Stepper, saved_at: u64, steps: u64) -> Coupled {
+    let mut a = build();
+    run_to(&mut a, steps);
+    let mut b = build();
+    run_to(&mut b, saved_at);
+    let file = through_bytes(&b.save_restart());
+    let mut c = build();
+    c.load_restart(&file).expect("the restart loads");
+    assert_eq!(c.steps(), saved_at);
+    assert!(
+        c.save_restart().to_bytes() == file.to_bytes(),
+        "loaded and saved at once, the file changed"
+    );
+    assert_same_outputs(&b, &c, "right after loading");
+    let saved_fields = fields(&b);
+    drop(b);
+    run_to(&mut c, steps);
+    assert_identical(&a.save_restart(), &c.save_restart());
+    assert_same_outputs(&a, &c, "at the end");
+    Coupled {
+        file,
+        saved_fields,
+        straight: a,
+    }
+}
+
+/// The array `name` of `r`, whatever its length.
+fn array<'r>(r: &'r Restart, name: &str) -> &'r [f64] {
+    r.arrays()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("no array `{name}`"))
+        .1
+}
+
+/// `physics.clock`: time, end of year, steps since radiation and since the
+/// ocean's transport, years ended, jumps done.
+fn clock(r: &Restart) -> [f64; 6] {
+    r.get_array("physics.clock").unwrap()
+}
+
+fn field<'f>(fields: &'f [CellField], name: &str) -> &'f [f64] {
+    &fields.iter().find(|f| f.name == name).unwrap().values
+}
+
+#[test]
+fn an_aquaplanet_with_sea_ice_resumes_bit_for_bit() {
+    // Cold poles: ice from the start. Saved on a step that is neither a
+    // radiation step nor one of the ocean's transports.
+    let world = World {
+        sea_level: Some(280.0),
+        ..World::aquaplanet()
+    };
+    let run = resume_coupled(|| world.build(), 13, 30);
+    let [_, _, since_radiation, since_transport, ..] = clock(&run.file);
+    assert!(
+        since_radiation > 0.0 && since_transport > 0.0,
+        "saved between calls: {since_radiation} {since_transport}"
+    );
+    assert!(array(&run.file, "ocean.wind.samples")[0] > 0.0);
+    assert!(
+        array(&run.file, "ice.fraction").iter().any(|&f| f > 0.0),
+        "no sea ice at the save point"
+    );
+    assert!(
+        array(&run.file, "ocean.mass_flux.ekman")
+            .iter()
+            .any(|&f| f != 0.0),
+        "the currents never ran"
+    );
+    assert!(!run.file.contains("physics.year_start.mixed"));
+}
+
+#[test]
+fn a_world_with_land_resumes_bit_for_bit_across_a_jump() {
+    // A continent with a ridge under a 20-day year, its first two years
+    // ending in a jump: saved half way through the first, which is being
+    // measured for its jump, after the gyres have been solved, with snow on
+    // the cold land; the jump comes after the resume.
+    let world = World {
+        planet: short_year,
+        params: PhysicsParams {
+            spin_up: OceanSpinUp {
+                jumps: 2,
+                first_year: 1,
+                every: 1,
+                ..OceanSpinUp::default()
+            },
+            ..PhysicsParams::default()
+        },
+        land: continent,
+        relief: ridge,
+        sea_level: Some(282.0),
+        prescribed: false,
+    };
+    let per_day = (DAY / world.build().dt()).round() as u64;
+    let (saved_at, steps) = (10 * per_day + 1, 20 * per_day + 3);
+    let run = resume_coupled(|| world.build(), saved_at, steps);
+    let file = &run.file;
+    assert!(
+        file.contains("physics.year_start.mixed"),
+        "no year measured"
+    );
+    assert_eq!(clock(file)[5], 0.0, "jumped before the save");
+    assert_eq!(clock(&run.straight.save_restart())[5], 1.0, "no jump after");
+    let [_, solves] = file.get_array("ocean.gyres.clock").unwrap();
+    assert!(solves >= 1.0, "the gyres were never solved");
+    assert!(array(file, "ocean.gyres.psi").iter().any(|&p| p != 0.0));
+    let land = array(file, "physics.land_fraction");
+    let on_land = |name: &str| -> Vec<f64> {
+        array(file, name)
+            .iter()
+            .zip(land)
+            .filter(|(_, f)| **f > 0.0)
+            .map(|(x, _)| *x)
+            .collect()
+    };
+    assert!(on_land("physics.snow").iter().any(|&s| s > 0.0), "no snow");
+    let water = on_land("physics.soil_water");
+    let spread =
+        water.iter().fold(0.0f64, |m, &w| m.max(w)) - water.iter().fold(f64::MAX, |m, &w| m.min(w));
+    assert!(spread > 1.0, "the soil water never changed: {spread}");
+    assert!(
+        field(&run.saved_fields, "atm.orographic_precipitation")
+            .iter()
+            .any(|&r| r > 0.0),
+        "no rain from the hills"
+    );
+}
+
+#[test]
+fn a_coupled_run_saved_on_one_thread_resumes_on_four() {
+    // A continent with a ridge: the gyres are first solved after the resume.
+    let world = World {
+        land: continent,
+        relief: ridge,
+        ..World::aquaplanet()
+    };
+    let one = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let four = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    let (saved_at, steps) = (13, 30);
+    let mut a = world.build();
+    run_to(&mut a, steps);
+    let file = one.install(|| {
+        let mut b = world.build();
+        run_to(&mut b, saved_at);
+        through_bytes(&b.save_restart())
+    });
+    let c = four.install(|| {
+        let mut c = world.build();
+        c.load_restart(&file).unwrap();
+        run_to(&mut c, steps);
+        c
+    });
+    assert_identical(&a.save_restart(), &c.save_restart());
+    assert_same_outputs(&a, &c, "at the end");
+    let [_, solves] = file.get_array("ocean.gyres.clock").unwrap();
+    assert_eq!(solves, 0.0);
+    assert!(a.model().forcing().unwrap().cell_fields().len() > 10);
+    let [_, solves] = a.save_restart().get_array("ocean.gyres.clock").unwrap();
+    assert!(solves >= 1.0);
+}
+
+#[test]
+fn a_run_over_prescribed_sea_temperatures_resumes_bit_for_bit() {
+    let world = World {
+        prescribed: true,
+        ..World::aquaplanet()
+    };
+    let run = resume_coupled(|| world.build(), 13, 30);
+    assert!(array(&run.file, "physics.budget")[0] != 0.0, "no uptake");
+}
+
+/// Loading `from` into `si` fails and leaves it as it was, outputs
+/// included.
+fn refused_coupled(si: &mut Stepper, from: &Restart) -> RestartError {
+    let before = (si.save_restart().to_bytes(), budget_bits(si), fields(si));
+    let err = refused(si, from);
+    assert!(
+        (si.save_restart().to_bytes(), budget_bits(si), fields(si)) == before,
+        "a refused load changed the stepper ({err})"
+    );
+    err
+}
+
+#[test]
+fn coupled_restarts_that_do_not_fit_are_refused() {
+    let world = World::aquaplanet();
+    let good = {
+        let mut b = world.build();
+        run_to(&mut b, 3);
+        b.save_restart()
+    };
+    let mut si = world.build();
+    si.step();
+
+    // Other land.
+    let file = World {
+        land: continent,
+        ..world
+    }
+    .build()
+    .save_restart();
+    let err = refused_coupled(&mut si, &file);
+    assert!(
+        matches!(&err, RestartError::Mismatch(m) if m.contains("land")),
+        "{err}"
+    );
+    eprintln!("{err}");
+
+    // The dynamics alone.
+    let file = edited(&good, |name, v| {
+        name.starts_with("dynamics.").then(|| v.to_vec())
+    });
+    let err = refused_coupled(&mut si, &file);
+    assert!(matches!(err, RestartError::Mismatch(_)), "{err}");
+    eprintln!("{err}");
+
+    // Ice in the file and not in the run, and the reverse.
+    let no_ice = World {
+        params: PhysicsParams {
+            ocean: OceanParams {
+                ice: None,
+                ..OceanParams::default()
+            },
+            ..PhysicsParams::default()
+        },
+        ..world
+    };
+    let err = refused_coupled(&mut no_ice.build(), &good);
+    assert!(
+        matches!(&err, RestartError::Mismatch(m) if m.contains("sea ice")),
+        "{err}"
+    );
+    let err = refused_coupled(&mut si, &no_ice.build().save_restart());
+    assert!(
+        matches!(&err, RestartError::Mismatch(m) if m.contains("sea ice")),
+        "{err}"
+    );
+    eprintln!("{err}");
+
+    // An array of the physics, the ocean or the ice missing, or one value
+    // short. The ice's last array is the last checked: the dynamics and
+    // the physics are untouched when it fails.
+    for name in [
+        "physics.clock",
+        "physics.soil_water",
+        "physics.surface",
+        "physics.moist",
+        "ocean.mixed",
+        "ocean.mass_flux.gyre",
+        "ocean.gyres.stats",
+        "ice.thickness",
+        "ice.limited",
+    ] {
+        let file = edited(&good, |n, v| (n != name).then(|| v.to_vec()));
+        let err = refused_coupled(&mut si, &file);
+        assert!(
+            matches!(&err, RestartError::Missing { name: n } if n == name),
+            "{name}: {err}"
+        );
+        let file = edited(&good, |n, v| {
+            let mut v = v.to_vec();
+            if n == name {
+                v.pop();
+            }
+            Some(v)
+        });
+        let err = refused_coupled(&mut si, &file);
+        assert!(
+            matches!(&err, RestartError::WrongLength { name: n, .. } if n == name),
+            "{name}: {err}"
+        );
+    }
+
+    // And the good file loads, ignoring arrays it doesn't know.
+    let mut file = good.clone();
+    file.put("cli.something", &[1.0]);
+    si.load_restart(&file).unwrap();
+    assert!(si.save_restart().to_bytes() == good.to_bytes());
 }
