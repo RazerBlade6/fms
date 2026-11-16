@@ -69,6 +69,30 @@ These are currently only for the `fms-climate` module.
   Amer. Meteor. Soc._ 75, 1825–1830.
   [doi:10.1175/1520-0477(1994)075<1825:APFTIO>2.0.CO;2](<https://doi.org/10.1175/1520-0477(1994)075%3C1825:APFTIO%3E2.0.CO;2>)
   — the dry dynamical-core benchmark.
+- **Walker, C. C. & Schneider, T. (2006).** Eddy influences on Hadley
+  circulations: Simulations with an idealized GCM. _J. Atmos. Sci._ 63,
+  3333–3350.
+  [doi:10.1175/JAS3821.1](https://doi.org/10.1175/JAS3821.1)
+  (DOI from Crossref; the paper doesn't print it.) — Hadley-cell strength and
+  extent in a dry GCM across rotation rates, to compare the overturning
+  against (M2 step 14).
+- **Frierson, D. M. W., Lu, J. & Chen, G. (2007).** Width of the Hadley cell
+  in simple and comprehensive general circulation models. _Geophys. Res.
+  Lett._ 34, L18804.
+  [doi:10.1029/2007GL031115](https://doi.org/10.1029/2007GL031115)
+  — the Hadley-cell edge as the zero of the 500 hPa streamfunction (M2
+  step 14).
+- **Kaspi, Y. & Showman, A. P. (2015).** Atmospheric dynamics of terrestrial
+  exoplanets over a wide range of orbital and atmospheric parameters.
+  _Astrophys. J._ 804, 60.
+  [doi:10.1088/0004-637X/804/1/60](https://doi.org/10.1088/0004-637X/804/1/60)
+  — a moist aquaplanet's circulation across rotation rates, to compare the
+  slow and fast rotators against (M2 step 14).
+- **Chemke, R. & Kaspi, Y. (2015).** The latitudinal dependence of
+  atmospheric jet scales and macroturbulent energy cascades. _J. Atmos.
+  Sci._ 72, 3891–3907.
+  [doi:10.1175/JAS-D-15-0007.1](https://doi.org/10.1175/JAS-D-15-0007.1)
+  — the number and spacing of jets against rotation rate (M2 step 14).
 
 ## Radiation
 
@@ -115,7 +139,8 @@ These are currently only for the `fms-climate` module.
   Sci._ 64, 1959–1976.
   [doi:10.1175/JAS3935.1](https://doi.org/10.1175/JAS3935.1)
   — the simplified Betts–Miller scheme (deep and shallow, energy
-  conserving).
+  conserving); its slab-ocean aquaplanet's Hadley circulation, to compare
+  the aquaplanets against (M2 step 14).
 - **Molteni, F. (2003).** Atmospheric simulations using a GCM with simplified
   physical parametrizations. I: Model climatology and variability in
   multi-decadal experiments. _Clim. Dyn._ 20, 175–191.
