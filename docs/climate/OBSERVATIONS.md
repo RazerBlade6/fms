@@ -118,6 +118,17 @@ hasn't been checked for a need. Revisit with more levels.
 convective momentum transport. Doesn't visibly affect rain or temperature. Revisit if
 equatorial winds matter (M2.16).
 
+### O-50: Held–Suarez overturning depends on the layers
+*Watching; M2.14.* On 2,562 cells, days 200–500, streamfunction at σ 0.5 (10⁹ kg/s):
+- Two layers: Hadley cells 24, edges at 36°; Ferrel cells 27, as strong as the Hadley
+  cells; jets at 50°.
+- Four layers (σ 0.25/0.5/0.85): Hadley 51–58, edges at 23–24°; Ferrel 31; jets at
+  42–43°. The Hadley cell is shallow, peaking near 110 at σ 0.85 and reversing weakly
+  above σ 0.25.
+- No polar cell clears the 3% floor in either.
+- Not compared with a published Held–Suarez streamfunction yet. The Hadley-edge
+  assertions rest on the moist four-layer runs of M2.14.4–7.
+
 ## Radiation and energy
 
 ### O-19: Radiation is calibrated, not resolved

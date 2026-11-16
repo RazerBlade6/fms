@@ -272,6 +272,25 @@ the freezing point (271.35 K) at the base.
 - **Albedo** per band rises with thickness from the water's towards 0.57 visible
   and 0.31 near-infrared over a 0.3 m scale, blending to snow's 0.65 with cover.
 
+## Circulation diagnostics (`circulation`)
+
+- **Streamfunction**: the climatology samples the northward mass flux across
+  each latitude-band boundary per layer, in kg/s. The boundary is the edges
+  between cells whose centres lie either side; the flux is the model's own edge
+  mass flux (δσ × mean surface pressure × normal wind × edge length / g), so
+  the column total closes at the surface. Summed from the top down it is the
+  mass streamfunction at each layer interface; positive is northward aloft.
+  The surface row is the closure residual.
+- **Cells**: read at the interface nearest σ = 0.5. Each run of one sign is a
+  cell, with edges at the zero crossings (linear interpolation). Runs under 3%
+  of the largest value are dropped, and same-sign neighbours joined. A
+  hemisphere's Hadley cell is its strongest thermally direct cell; its
+  poleward edge is the Hadley-cell edge.
+- **Trades' edge**: moving poleward in the lowest layer's zonal-mean wind,
+  where the easterlies first turn westerly.
+- **Jets**: maxima of the zonal-mean westerlies at least 2 m/s and 15% of the
+  strongest westerly above their surroundings, refined by a parabola.
+
 ## Restart files (`fms-restart`)
 
 A restart holds state only, never settings. It is a header (magic `FMSRSTRT`,

@@ -239,8 +239,12 @@ leaves a small upward drift in the energy budget. Outputs in
 `output/held_suarez/`:
 - `zonal_mean.csv` and `zonal_mean.png`: time-mean zonal-mean eastward wind
   and temperature in each layer, and surface pressure, by latitude;
+- `overturning.csv` and `overturning.png`: time-mean northward mass flux
+  (kg/s, summed from the top down; positive is northward aloft) at each
+  interior layer interface, one row per latitude-band boundary;
 - `summary.txt`: the jets in each hemisphere, how far north and south
-  differ, and the energy budget after spin-up in W/m² (Newtonian heating,
+  differ, the overturning cells, Hadley-cell edge, where the trades end,
+  and the energy budget after spin-up in W/m² (Newtonian heating,
   friction, diffusion and the time-stepping residual);
 - `diagnostics.csv`, the GIF of surface pressure over the last days, and maps
   of the final state, as for `fms-climate baroclinic`, including the blow-up dump.
@@ -346,10 +350,15 @@ Outputs in `output/climate/`:
   of the atmosphere = atmosphere uptake, enthalpy and latent + slab uptake +
   kinetic energy removed by friction and diffusion + a time-stepping
   residual) and its water budget (change = evaporation − precipitation +
-  the time filter's trace + a round-off residual);
+  the time filter's trace + a round-off residual), and the circulation (the
+  overturning cells, Hadley-cell edge, trades' edge, jets, and the lowest
+  layer's equator-to-pole temperature contrast);
 - `zonal_mean.csv` and `zonal_mean.png`: winds, layer temperatures and
   every summarised physics field by latitude; the chart shows surface
   temperature, winds, net radiation, precipitation, evaporation and cloud;
+- `overturning.csv` and `overturning.png`: time-mean northward mass flux
+  (kg/s, summed from the top down; positive is northward aloft) at each
+  interior layer interface, one row per latitude-band boundary;
 - `ocean_heat_transport.csv` and `ocean_heat_transport.png`: northward ocean
   heat transport across each latitude by Ekman transport, eddies, gyres and diffusion,
   and their total (PW);

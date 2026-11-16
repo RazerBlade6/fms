@@ -903,7 +903,15 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             )
         })
         .transpose()?;
-    let zonal = crate::layered_run::upper_and_lower(si.model(), climate.means());
+    let overturning = climate.overturning();
+    let (upper, lower) = crate::layered_run::upper_lower(si.model());
+    let all_layers = climate.means();
+    let circulation = fms_atmos::Circulation::of(&all_layers, &overturning, upper, lower);
+    let contrast = fms_atmos::circulation::equator_pole_contrast(
+        &all_layers.latitude,
+        &all_layers.temperature[lower],
+    );
+    let zonal = crate::layered_run::upper_and_lower(si.model(), all_layers);
     let zonal_physics: Vec<Vec<f64>> = means.iter().map(|m| lat_bands.mean(geometry, m)).collect();
 
     // Annual-mean maps. The gyres' fields are drawn on the cells wet for the
@@ -1019,6 +1027,12 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     write_png(&path, args.image.width, height, &pixels, &chart::palette())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!("zonal-mean chart -> {}", path.display());
+    crate::circulation::write_overturning(
+        &overturning,
+        &out.dir,
+        args.image.width,
+        &format!("CLIMATE: FINAL-YEAR OVERTURNING, {nc} CELLS"),
+    )?;
 
     // Summary.
     let area: f64 = geometry.cell_areas.iter().sum();
@@ -1138,6 +1152,11 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             (w1 - w0) + soil + snow + runoff - ocean - filter - fixer,
         );
     }
+    summary.push_str(&crate::circulation::summary(
+        &circulation,
+        &overturning,
+        Some(contrast),
+    ));
     let _ = writeln!(
         summary,
         "Means of {samples} samples ({SAMPLES_PER_DAY} per day) over the final year."

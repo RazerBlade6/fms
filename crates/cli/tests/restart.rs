@@ -149,7 +149,7 @@ fn a_resumed_run_continues_exactly_and_others_start_warm() {
         "{stderr}"
     );
     assert_same(&straight_file, &resumed_file);
-    for name in ["annual_cells.csv", "zonal_mean.csv"] {
+    for name in ["annual_cells.csv", "zonal_mean.csv", "overturning.csv"] {
         assert_same(
             &straight.join("climate").join(name),
             &resumed.join("climate").join(name),

@@ -7,11 +7,14 @@
 //! ([`layered`], any number of σ layers: [`levels`]), stepped explicitly or
 //! semi-implicitly ([`layered_si`]), with scale-selective [`diffusion`],
 //! blow-up detection ([`safety`]) and external [`forcing`]: [`held_suarez`],
-//! or the radiation, moisture and surface of [`column_physics`].
+//! or the radiation, moisture and surface of [`column_physics`]. Runs are
+//! summarized by their zonal means ([`climatology`]) and the overturning
+//! and jets read from them ([`circulation`]).
 //!
 //! See `docs/climate/DESIGN.md` for the design.
 
 pub mod baroclinic;
+pub mod circulation;
 pub mod climatology;
 pub mod column_cases;
 pub mod column_physics;
@@ -33,6 +36,7 @@ pub mod transport;
 pub mod williamson;
 
 pub use baroclinic::ShearedFlow;
+pub use circulation::{Cell, Circulation, Jet, Overturning};
 pub use climatology::{ZonalClimatology, ZonalMeans};
 pub use column_physics::{
     ColumnPhysics, Equilibrium, MAX_RADIATION_INTERVAL, MIN_RADIATION_CALLS_PER_DAY,

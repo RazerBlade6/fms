@@ -11,9 +11,9 @@ use std::sync::OnceLock;
 
 use fms_atmos::williamson::{GRAVITY, OMEGA, RADIUS};
 use fms_atmos::{
-    EnergyBudget, Forcing, Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions,
+    Circulation, EnergyBudget, Forcing, Gas, HeldSuarez, HeldSuarezParams, HyperdiffusionOptions,
     LayeredDiagnostics, LayeredModel, LayeredSemiImplicit, LayeredSemiImplicitOptions, Levels,
-    ZonalClimatology, ZonalMeans,
+    Overturning, ZonalClimatology, ZonalMeans,
 };
 use fms_grid::{LloydOptions, MeshGeometry, Operators, SphereMesh};
 
@@ -126,6 +126,7 @@ fn the_forcing_vanishes_at_equilibrium_and_at_rest() {
 
 struct Climate {
     means: ZonalMeans,
+    overturning: Overturning,
     /// Diagnostics and budget at the end of spin-up and at the end.
     spun_up: (LayeredDiagnostics, EnergyBudget),
     end: (LayeredDiagnostics, EnergyBudget),
@@ -163,6 +164,7 @@ fn climate() -> &'static Climate {
         }
         Climate {
             means: zonal.means(),
+            overturning: zonal.overturning(),
             spun_up: spun_up.unwrap(),
             end: (si.model().diagnostics(si.state()), si.energy_budget()),
             peak_wind,
@@ -253,6 +255,90 @@ fn the_hemispheres_agree() {
     let (s, _) = max_in(m, &m.wind[0], false, (20.0, 70.0));
     let mirror_band = m.latitude.len() - 1 - s;
     assert!(n.abs_diff(mirror_band) <= 1, "jets at different latitudes");
+}
+
+#[test]
+fn hadley_and_ferrel_cells_overturn_the_troposphere() {
+    // The mean meridional circulation at σ 0.5: a thermally direct Hadley
+    // cell either side of the equator, an indirect, eddy-driven Ferrel cell
+    // poleward of each, and the trades ending near the Hadley cell's edge.
+    // Measured (10⁹ kg/s): Hadley −24.2 at 20° S to 35.5° S and +23.2 at
+    // 20° N to 36.3° N; Ferrel +23.6 at 50° S (35.5°–79.4° S) and −25.1 at
+    // 50° N (36.3°–74.1° N), as strong as the Hadley cells on two layers at
+    // k = 16; no polar cell above the 3% floor; trades end at 37.4° S and
+    // 38.1° N; mass residual 0.09.
+    let c = climate();
+    let o = &c.overturning;
+    let circ = Circulation::of(&c.means, o, 0, 1);
+    let bn = |kg: f64| kg / 1e9;
+    for cell in &circ.cells {
+        eprintln!(
+            "cell {:+.1}° to {:+.1}°: {:+.1} × 10⁹ kg/s at {:+.1}°",
+            cell.south,
+            cell.north,
+            bn(cell.strength),
+            cell.latitude
+        );
+    }
+    eprintln!(
+        "trades end at {:?} (south, north); residual {:.2} × 10⁹ kg/s",
+        circ.trades_edge,
+        bn(o.residual())
+    );
+    let band = 180.0 / BANDS as f64;
+    let mut edges = [0.0; 2];
+    for (h, north) in [true, false].into_iter().enumerate() {
+        let hadley = *circ.hadley(north).expect("a Hadley cell");
+        let edge = circ.hadley_edge(north).unwrap();
+        edges[h] = edge;
+        let strength = hadley.strength.abs();
+        assert!(
+            (12e9..50e9).contains(&strength),
+            "Hadley cell {} × 10⁹ kg/s",
+            bn(strength)
+        );
+        assert!((25.0..45.0).contains(&edge), "Hadley edge at {edge}°");
+        // The Ferrel cell: the opposite sign, sharing the Hadley cell's
+        // poleward edge, its extremum in midlatitudes.
+        let ferrel = circ
+            .cells
+            .iter()
+            .find(|f| {
+                f.strength.signum() == -hadley.strength.signum()
+                    && if north {
+                        f.south == hadley.north
+                    } else {
+                        f.north == hadley.south
+                    }
+            })
+            .expect("a Ferrel cell poleward of the Hadley cell");
+        assert!(
+            (40.0..65.0).contains(&ferrel.latitude.abs()),
+            "Ferrel cell at {}°",
+            ferrel.latitude
+        );
+        assert!(
+            ferrel.strength.abs() > 0.3 * strength,
+            "Ferrel cell only {} × 10⁹ kg/s",
+            bn(ferrel.strength)
+        );
+        // The trades end within a band and a half of the Hadley edge.
+        let trades = circ.trades_edge[usize::from(north)].expect("trades");
+        assert!(
+            (trades - edge).abs() < 1.5 * band,
+            "trades end at {trades}°, the Hadley cell at {edge}°"
+        );
+        // The time mean closes the column's mass to a small fraction.
+        assert!(
+            o.residual() < 0.03 * strength,
+            "residual {}",
+            bn(o.residual())
+        );
+    }
+    assert!(
+        (edges[0] - edges[1]).abs() <= 2.0 * band,
+        "Hadley edges {edges:?} disagree"
+    );
 }
 
 #[test]

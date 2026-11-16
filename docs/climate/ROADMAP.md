@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.14.1.**
+**Next: M2.14.2.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -94,7 +94,7 @@ a visual check.
 - [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
   with assertions on zonal-mean wind and temperature; grid-imprinting check in
   long-run Held–Suarez, with a fix if visible (O-1).
-  - [ ] 14.1. Circulation diagnostics: overturning streamfunction, Hadley-cell
+  - [x] 14.1. Circulation diagnostics: overturning streamfunction, Hadley-cell
     edge, jets and cell counts in the `held-suarez` and `climate` outputs
   - [ ] 14.2. Grid-imprinting check in a long Held–Suarez run (O-1)
   - [ ] 14.3. Imprinting fix, if 14.2 shows it

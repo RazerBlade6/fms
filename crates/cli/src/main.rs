@@ -22,6 +22,7 @@ mod arrows;
 mod baroclinic;
 mod basins;
 mod chart;
+mod circulation;
 mod climate;
 mod colormap;
 mod font;

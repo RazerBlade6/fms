@@ -6,11 +6,12 @@
 use std::fmt::Write as _;
 
 use clap::Args;
-use fms_atmos::{HeldSuarez, HeldSuarezParams, ZonalClimatology, ZonalMeans};
+use fms_atmos::{Circulation, HeldSuarez, HeldSuarezParams, ZonalClimatology, ZonalMeans};
 
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
-    DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, stepper,
+    DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, stepper, upper_and_lower,
+    upper_lower,
 };
 use crate::render::write_png;
 use crate::{ImageArgs, WorldArgs, build_world};
@@ -106,7 +107,11 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
             spun_up = Some((si.model().diagnostics(si.state()), si.energy_budget()));
         }
     })?;
-    let means = crate::layered_run::upper_and_lower(si.model(), climate.means());
+    let overturning = climate.overturning();
+    let (upper, lower) = upper_lower(si.model());
+    let all_layers = climate.means();
+    let circulation = Circulation::of(&all_layers, &overturning, upper, lower);
+    let means = upper_and_lower(si.model(), all_layers);
 
     // Profiles: CSV and chart.
     let mut csv = String::from(
@@ -165,10 +170,24 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     write_png(&path, width, height, &pixels, &chart::palette())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!("zonal-mean chart -> {}", path.display());
+    crate::circulation::write_overturning(
+        &overturning,
+        &out.dir,
+        width,
+        &format!(
+            "HELD-SUAREZ OVERTURNING, DAYS {:.0} TO {:.0}, {} CELLS",
+            args.spinup, args.days, n_cells
+        ),
+    )?;
 
     // Summary.
     let mut summary = format!("fms-climate held-suarez: {description}\n\n");
     summary.push_str(&jets(&means));
+    summary.push_str(&crate::circulation::summary(
+        &circulation,
+        &overturning,
+        None,
+    ));
     if let (Some((d0, b0)), Some(end)) = (spun_up, log.last()) {
         let seconds = (end.step - spinup) as f64 * si.dt();
         let ops = si.model().operators();
