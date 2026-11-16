@@ -10,7 +10,7 @@ shrinks to one line.
 ## Grid and numerics
 
 ### O-1: Operator errors peak at the 12 pentagons
-*Scheduled: M2.14.* TRiSK reconstruction, Perot, vorticity, divergence, Laplacian
+*Scheduled: M2.14.5.* TRiSK reconstruction, Perot, vorticity, divergence, Laplacian
 and kinetic energy converge in RMS, but their maxima (1–6%) stay fixed at or next
 to the pentagons, as in Peixoto 2016. Williamson 2 shows ±1.5 m dipoles on a 3 km
 depth after 5 days. The risk is grid imprinting in long runs. If visible:
@@ -28,7 +28,8 @@ Held–Suarez, pattern with the grid's symmetry that two halves of the run share
   Perot reconstruction of a purely zonal flow with the run's mean wind gives the same
   marks, so they come from the reconstruction, which also feeds the surface fluxes in
   `climate`.
-- Not measured in rain yet.
+- Too small to fix for the dry dynamics. Not measured in rain yet: M2.14.5 does it
+  on the no-tilt aquaplanet and decides on a fix.
 
 ### O-2: Cell sizes vary by up to 1.76×
 *Watching.* Largest over smallest is 1.46 at 20k cells and 1.76 at 1.6M, costing

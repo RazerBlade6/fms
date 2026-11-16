@@ -211,7 +211,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
 
     // Summary.
     let mut summary = format!("fms-climate held-suarez: {description}\n\n");
-    summary.push_str(&jets(&means));
+    summary.push_str(&symmetry(&means));
     summary.push_str(&crate::circulation::summary(
         &circulation,
         &overturning,
@@ -255,25 +255,10 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// The jets and their hemispheric agreement, as text.
-fn jets(m: &ZonalMeans) -> String {
+/// The tropical wind, the equator-to-pole contrast and how far north and
+/// south differ, as text.
+fn symmetry(m: &ZonalMeans) -> String {
     let mut out = String::new();
-    let peak = |v: &[f64], north: bool| {
-        (0..v.len())
-            .filter(|&i| (m.latitude[i] > 0.0) == north && m.latitude[i].abs() < 75.0)
-            .fold((0, f64::NEG_INFINITY), |a, i| {
-                if v[i] > a.1 { (i, v[i]) } else { a }
-            })
-    };
-    for (name, north) in [("North", true), ("South", false)] {
-        let (i, up) = peak(&m.wind[0], north);
-        let (j, low) = peak(&m.wind[1], north);
-        let _ = writeln!(
-            out,
-            "{name}: upper-layer jet {up:.1} m/s at {:.1}°; lower-layer westerlies {low:.1} m/s at {:.1}°",
-            m.latitude[i], m.latitude[j]
-        );
-    }
     let tropics: Vec<f64> = (0..m.latitude.len())
         .filter(|&i| m.latitude[i].abs() <= 30.0)
         .map(|i| m.wind[1][i])
