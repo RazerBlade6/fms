@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.14.**
+**Next: M2.14.1.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -94,6 +94,18 @@ a visual check.
 - [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
   with assertions on zonal-mean wind and temperature; grid-imprinting check in
   long-run Held–Suarez, with a fix if visible (O-1).
+  - [ ] 14.1. Circulation diagnostics: overturning streamfunction, Hadley-cell
+    edge, jets and cell counts in the `held-suarez` and `climate` outputs
+  - [ ] 14.2. Grid-imprinting check in a long Held–Suarez run (O-1)
+  - [ ] 14.3. Imprinting fix, if 14.2 shows it
+  - [ ] 14.4. Reference aquaplanet with Earth's tilt: trades, jets, Hadley
+    edge, equator-to-pole contrast, the rain belt's seasonal swing
+  - [ ] 14.5. No tilt: no seasons, mirrored hemispheres, rain belt on the
+    equator
+  - [ ] 14.6. Slow rotation: wider Hadley cell, jets further poleward, smaller
+    contrast
+  - [ ] 14.7. Fast rotation: narrower Hadley cell, more jets, larger contrast
+  - [ ] 14.8. Close-out
 - [ ] 15. **Performance pass**: target speed 2 (~340 steps/s) at the default
   resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,
   O-29).
