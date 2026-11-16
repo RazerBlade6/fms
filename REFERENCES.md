@@ -1,6 +1,7 @@
 # References
 
 Papers, books and datasets cited in the code and docs, with their uses attached.
+These are currently only for the `fms-climate` module.
 
 ## Grid and numerics
 

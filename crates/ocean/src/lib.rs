@@ -170,7 +170,7 @@ impl OceanParams {
     }
 
     /// A motionless slab of fresh water `depth` metres deep, with no deep
-    /// layer: the ocean before M2 step 11, kept for short spin-ups, tuning
+    /// layer: the ocean before M2.11, kept for short spin-ups, tuning
     /// runs and the tests pinned to it.
     pub fn slab(depth: f64) -> Self {
         Self {
