@@ -28,6 +28,12 @@ pub const SAMPLES_PER_DAY: u64 = 4;
 /// (`docs/climate/PLAN.md` §4.6): a short day keeps its day and night.
 pub const MIN_STEPS_PER_DAY: u64 = 24;
 
+/// Steps between diagnostics samples for `steps_per_day` steps a solar day:
+/// [`SAMPLES_PER_DAY`] samples a day, or as near as whole steps allow.
+pub fn sample_every(steps_per_day: u64) -> u64 {
+    (steps_per_day / SAMPLES_PER_DAY).max(1)
+}
+
 /// The most steps of `dt_max` seconds or less that divide a solar day of
 /// `day` seconds: at least [`MIN_STEPS_PER_DAY`]. Returns the steps per day.
 pub fn steps_per_day(day: f64, dt_max: f64) -> u64 {
@@ -326,7 +332,7 @@ pub fn integrate(
     let dt = si.dt();
     let day_seconds = world.planet.solar_day();
     let per_day = (day_seconds / dt).round() as u64;
-    let sample_every = (per_day / SAMPLES_PER_DAY).max(1);
+    let sample_every = sample_every(per_day);
     let key = fields.surface_pressure.key();
     let overlay = (!out.image.no_arrows).then_some(fields.wind_lower.key());
     let frame_count = plan.frames.max(2);

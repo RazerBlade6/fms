@@ -16,6 +16,20 @@ to the pentagons, as in Peixoto 2016. Williamson 2 shows ±1.5 m dipoles on a 3 
 depth after 5 days. The risk is grid imprinting in long runs. If visible:
 Heikes–Randall optimization or Peixoto's corrected weights.
 
+Held–Suarez, pattern with the grid's symmetry that two halves of the run share (M2.14.2):
+- 2,562 cells, four layers, 6,000 days: surface pressure 0.13 hPa (peaks 0.5; weather's
+  s.d. 4.1), lowest-layer temperature 0.07 K (peaks 0.24; s.d. 3.4). A wavenumber-2
+  pattern in mid-latitudes, not marks on the pentagons.
+- 2,562 cells, two layers, 6,000 days: temperature 0.03 K; surface pressure not above
+  the noise.
+- 10,242 cells, four layers, 4,000 days: nothing above the noise (about 0.1 hPa and
+  0.05 K).
+- Cell winds show ±0.2–0.4 m/s marks on the pentagons' neighbours at both resolutions.
+  Perot reconstruction of a purely zonal flow with the run's mean wind gives the same
+  marks, so they come from the reconstruction, which also feeds the surface fluxes in
+  `climate`.
+- Not measured in rain yet.
+
 ### O-2: Cell sizes vary by up to 1.76×
 *Watching.* Largest over smallest is 1.46 at 20k cells and 1.76 at 1.6M, costing
 ~17% of the maximum `dt`. Revisit if `dt` is the bottleneck: density-weighted Lloyd
@@ -126,8 +140,12 @@ equatorial winds matter (M2.16).
   42–43°. The Hadley cell is shallow, peaking near 110 at σ 0.85 and reversing weakly
   above σ 0.25.
 - No polar cell clears the 3% floor in either.
-- Not compared with a published Held–Suarez streamfunction yet. The Hadley-edge
-  assertions rest on the moist four-layer runs of M2.14.4–7.
+- Held & Suarez 1994 prints no streamfunction. Walker & Schneider 2006 (a dry model with
+  similar but not identical forcing, Fig. 3, Earth's rotation): Hadley about 60 and
+  Ferrel about 50 (10⁹ kg/s), Hadley cell to about 32°, strongest near σ 0.75.
+- Ours, four layers at 10,242 cells: Hadley 62–64 at σ 0.5, Ferrel 37–39, edge at 24°.
+  Two layers at 2,562 cells: Hadley 23, Ferrel 26–27, edge at 36°.
+- The Hadley-edge assertions rest on the moist four-layer runs of M2.14.4–7.
 
 ## Radiation and energy
 

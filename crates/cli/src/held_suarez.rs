@@ -1,17 +1,20 @@
 //! `fms-climate held-suarez`: the Held & Suarez (1994) dynamical-core benchmark on
 //! the two-layer model. Spins up from rest, then averages the zonal-mean
-//! climate; writes profiles, a summary, and the usual maps and GIF (of the
-//! last days) to `output/held_suarez/`.
+//! climate; writes profiles, the overturning, the grid-imprint check
+//! ([`crate::imprint`]), a summary, and the usual maps and GIF (of the last
+//! days) to `output/held_suarez/`.
 
 use std::fmt::Write as _;
 
 use clap::Args;
-use fms_atmos::{Circulation, HeldSuarez, HeldSuarezParams, ZonalClimatology, ZonalMeans};
+use fms_atmos::{
+    Circulation, GridImprint, HeldSuarez, HeldSuarezParams, ZonalClimatology, ZonalMeans,
+};
 
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
-    DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, stepper, upper_and_lower,
-    upper_lower,
+    DynamicsArgs, Fields, Output, Plan, build_model, describe, integrate, sample_every, stepper,
+    upper_and_lower, upper_lower,
 };
 use crate::render::write_png;
 use crate::{ImageArgs, WorldArgs, build_world};
@@ -33,6 +36,10 @@ pub struct HeldSuarezArgs {
     /// spacing).
     #[arg(long)]
     bands: Option<usize>,
+    /// Days per block for the grid-imprint check: the samples after spin-up
+    /// go to two halves in alternating blocks of this length.
+    #[arg(long, default_value_t = 50.0)]
+    imprint_block: f64,
     /// The GIF covers this many final days.
     #[arg(long, default_value_t = 30.0)]
     movie_days: f64,
@@ -52,6 +59,9 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     if !(0.0..args.days).contains(&args.spinup) {
         return Err("--spinup must be shorter than --days".into());
     }
+    if args.imprint_block <= 0.0 {
+        return Err("--imprint-block must be positive".into());
+    }
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let world = world;
@@ -70,6 +80,11 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
         .bands
         .unwrap_or_else(|| 2 * ((n_cells as f64 / 10.0).sqrt().round() as usize).max(8));
     let mut climate = ZonalClimatology::new(&model, bands);
+    // Blocks of whole samples, at the run's samples per day.
+    let samples_per_day = setup.steps_per_day as f64 / sample_every(setup.steps_per_day) as f64;
+    let block = ((args.imprint_block * samples_per_day).round() as u64).max(1);
+    let (upper, lower) = upper_lower(&model);
+    let mut imprint = GridImprint::new(&model, upper, lower, block, bands);
     let description = describe(
         &model,
         &state,
@@ -102,13 +117,13 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     let log = integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
         if si.steps() > spinup {
             climate.sample(si.model(), si.state());
+            imprint.sample(si.model(), si.state());
         }
         if spun_up.is_none() && si.steps() >= spinup {
             spun_up = Some((si.model().diagnostics(si.state()), si.energy_budget()));
         }
     })?;
     let overturning = climate.overturning();
-    let (upper, lower) = upper_lower(si.model());
     let all_layers = climate.means();
     let circulation = Circulation::of(&all_layers, &overturning, upper, lower);
     let means = upper_and_lower(si.model(), all_layers);
@@ -179,6 +194,20 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
             args.spinup, args.days, n_cells
         ),
     )?;
+    let imprint_results = if imprint.complete_blocks() >= 2 {
+        let results = imprint.results();
+        crate::imprint::write(
+            &imprint,
+            &results,
+            &world.climate,
+            &out.dir,
+            &args.image,
+            &format!("DAYS {:.0} TO {:.0}", args.spinup, args.days),
+        )?;
+        results
+    } else {
+        Vec::new()
+    };
 
     // Summary.
     let mut summary = format!("fms-climate held-suarez: {description}\n\n");
@@ -187,6 +216,11 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
         &circulation,
         &overturning,
         None,
+    ));
+    summary.push_str(&crate::imprint::summary(
+        &imprint,
+        &imprint_results,
+        args.imprint_block,
     ));
     if let (Some((d0, b0)), Some(end)) = (spun_up, log.last()) {
         let seconds = (end.step - spinup) as f64 * si.dt();

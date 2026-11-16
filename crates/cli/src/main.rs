@@ -27,6 +27,7 @@ mod climate;
 mod colormap;
 mod font;
 mod held_suarez;
+mod imprint;
 mod layered_run;
 mod ocean_transport;
 mod patterns;

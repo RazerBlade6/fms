@@ -223,6 +223,7 @@ with two layers the lower gets friction at 0.3/day and the upper none.
 | `--terrain-smoothing N` | 10 | Smoothing passes over the terrain the atmosphere sees; 0 for plain cell means (unstable on Earth, O-33) |
 | `--freeze-dry-humidity Q` | 0.003 | Specific humidity (kg/kg) below which low cloud thins; 0 for none |
 | `--bands N` | ~1 per grid spacing | Latitude bands for zonal means |
+| `--imprint-block D` | 50 | Days per block for the grid-imprint check |
 | `--movie-days D` | 30 | The GIF covers the last `D` days |
 | `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
 | `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
@@ -242,10 +243,20 @@ leaves a small upward drift in the energy budget. Outputs in
 - `overturning.csv` and `overturning.png`: time-mean northward mass flux
   (kg/s, summed from the top down; positive is northward aloft) at each
   interior layer interface, one row per latitude-band boundary;
+- `imprint.csv`: one row per field (`surface_pressure`, `temperature_lower`,
+  `east_wind_upper`, `north_wind_lower`), in the field's units (Pa, K, m/s). Columns:
+  `field`, `units`, `samples_a`, `samples_b`, `rms`, `zonal`, `noise`, `covariance`,
+  `persistent`, `correlation`, `locked`, `covariance_even_even`,
+  `covariance_even_odd`, `covariance_odd_even`, `covariance_odd_odd`, `transient`,
+  `pentagon`, `ring`, then `wave_1` to `wave_12`;
+- `imprint.<field>.png`: the time mean minus its local zonal mean, for each of
+  the four fields;
+- `imprint.<field>.locked.png`: the part of that with the grid's symmetry, same
+  colour range;
 - `summary.txt`: the jets in each hemisphere, how far north and south
   differ, the overturning cells, Hadley-cell edge, where the trades end,
   and the energy budget after spin-up in W/m² (Newtonian heating,
-  friction, diffusion and the time-stepping residual);
+  friction, diffusion and the time-stepping residual), and a grid-imprint block;
 - `diagnostics.csv`, the GIF of surface pressure over the last days, and maps
   of the final state, as for `fms-climate baroclinic`, including the blow-up dump.
 

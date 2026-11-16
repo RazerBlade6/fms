@@ -546,6 +546,54 @@ pub fn write_gyre_map(
     image: &ImageArgs,
     dir: &Path,
 ) -> Result<(), String> {
+    let map = DivergingMap {
+        name,
+        units,
+        note: ", land grey",
+        stamp,
+        quantile: GYRE_MAP_QUANTILE,
+        cap: None,
+    };
+    write_diverging_map(grid, values, &map, image, dir).map(|_| ())
+}
+
+/// What a diverging map shows and how its colours are scaled.
+pub struct DivergingMap<'a> {
+    /// The file is `<name>.png`; the title starts with the name.
+    pub name: &'a str,
+    /// Units, shown in the title.
+    pub units: &'a str,
+    /// Added to the title after the units (e.g. `", land grey"`).
+    pub note: &'a str,
+    /// The legend's subtitle.
+    pub stamp: &'a str,
+    /// The share of the finite cells whose |value| the colours span; the
+    /// rest saturate.
+    pub quantile: f64,
+    /// A fixed range `±cap` instead of the quantile (to match another map).
+    pub cap: Option<f64>,
+}
+
+/// A diverging map of a cell field, `<dir>/<map.name>.png`, NaN cells grey.
+/// Zero is white and the range symmetric: `image.range` if given, else
+/// `±map.cap` if given, else ± the `map.quantile` quantile of the finite
+/// cells' |value|. Returns the largest |value| the colours reach (the top
+/// of `image.range` if given).
+pub fn write_diverging_map(
+    grid: &fms_sim::Grid,
+    values: &[f64],
+    map: &DivergingMap,
+    image: &ImageArgs,
+    dir: &Path,
+) -> Result<f64, String> {
+    let DivergingMap {
+        name,
+        units,
+        note,
+        stamp,
+        quantile,
+        cap,
+    } = *map;
     let mut sizes: Vec<f64> = values
         .iter()
         .filter(|v| v.is_finite())
@@ -554,16 +602,26 @@ pub fn write_gyre_map(
     sizes.sort_by(f64::total_cmp);
     let largest = sizes.last().copied().unwrap_or(0.0);
     let (min, max, title) = match image.range {
-        Some((min, max)) => (min, max, format!("{name} ({units}), land grey")),
+        Some((min, max)) => (min, max, format!("{name} ({units}){note}")),
+        None if cap.is_some_and(|c| c > 0.0) => {
+            let cap = cap.unwrap_or(1.0);
+            let title = format!(
+                "{name} ({units}){note}, range {} to {} (largest {})",
+                format_value(-cap),
+                format_value(cap),
+                format_value(largest)
+            );
+            (-cap, cap, title)
+        }
         None => {
-            let k = ((GYRE_MAP_QUANTILE * sizes.len() as f64).ceil() as usize).max(1) - 1;
+            let k = ((quantile * sizes.len() as f64).ceil() as usize).max(1) - 1;
             let cap = [sizes.get(k).copied().unwrap_or(0.0), largest, 1.0]
                 .into_iter()
                 .find(|&c| c > 0.0)
                 .unwrap_or(1.0);
             let title = format!(
-                "{name} ({units}), land grey, range: {:.0}th percentile of magnitude (largest {})",
-                GYRE_MAP_QUANTILE * 100.0,
+                "{name} ({units}){note}, range: {:.0}th percentile of magnitude (largest {})",
+                quantile * 100.0,
                 format_value(largest)
             );
             (-cap, cap, title)
@@ -588,11 +646,11 @@ pub fn write_gyre_map(
     )
     .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!(
-        "{name} [{} .. {}], largest {}, land grey -> {}",
+        "{name} [{} .. {}], largest {}{note} -> {}",
         format_value(min),
         format_value(max),
         format_value(largest),
         path.display()
     );
-    Ok(())
+    Ok(max)
 }

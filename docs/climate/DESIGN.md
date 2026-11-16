@@ -291,6 +291,40 @@ the freezing point (271.35 K) at the base.
 - **Jets**: maxima of the zonal-mean westerlies at least 2 m/s and 15% of the
   strongest westerly above their surroundings, refined by a parabola.
 
+## Grid-imprint check (`imprint`)
+
+- **Purpose**: under zonally symmetric forcing with no terrain the time mean
+  should depend on latitude only. What is left is weather noise or a pattern
+  fixed to the grid.
+- **Fields**: surface pressure, lowest-layer temperature, upper-layer eastward
+  wind and lowest-layer northward wind. Winds are Perot reconstructions at cell
+  centres.
+- **Halves**: samples after spin-up go alternately, in blocks (default 50
+  days), to half A and half B.
+- **Residual**: each half's time mean minus its local zonal mean. That is the
+  constant term of an area-weighted least-squares quadratic in latitude over the
+  cells within w = 2.5 mean grid spacings (spacing = √(4π / cells)), with
+  weights Aⱼ(1 − |φⱼ − φᵢ|/w). If the fit is singular it falls back to a line,
+  then the mean.
+- **Grid symmetry**: the 12 pentagons sit at latitude 0° (longitudes ±58.28°,
+  ±121.72°), ±31.72° (longitudes 0°, 180°) and ±58.28° (longitudes ±90°). The
+  mesh maps onto itself under a half-turn about the axis and a mirror in the
+  equator (cell centres to 3e-8 rad). A pattern fixed to the grid is even under
+  both. The residual splits into four parts, even or odd under each (the
+  northward wind changes sign under the mirror).
+- **Measures**: `persistent` is the square root of the area-weighted mean of the
+  product of the halves' residuals. `noise` is the rms of half their difference.
+  The cross-half covariance of each symmetry part is kept; they sum to the
+  covariance. `locked` = √max(C₊₊ − (C₊₋ + C₋₊ + C₋₋)/3, 0): weather the halves
+  happen to share spreads over all four parts, a grid-fixed pattern sits in the
+  first. `transient` is the mean standard deviation in time. `pentagon` and
+  `ring` are the same shared amplitude over the 12 pentagons, and over them and
+  their neighbours. Signed cross power of zonal wavenumbers 1–12 is taken in 15°
+  belts.
+- **Caveats**: a strong shared pattern without the symmetry lowers `locked`.
+  The reconstruction's own error at the pentagons (O-1) shows in the wind fields
+  as marks on the pentagons' neighbours.
+
 ## Restart files (`fms-restart`)
 
 A restart holds state only, never settings. It is a header (magic `FMSRSTRT`,

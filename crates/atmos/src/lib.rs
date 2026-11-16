@@ -9,7 +9,8 @@
 //! blow-up detection ([`safety`]) and external [`forcing`]: [`held_suarez`],
 //! or the radiation, moisture and surface of [`column_physics`]. Runs are
 //! summarized by their zonal means ([`climatology`]) and the overturning
-//! and jets read from them ([`circulation`]).
+//! and jets read from them ([`circulation`]), and checked for patterns
+//! locked to the grid ([`imprint`]).
 //!
 //! See `docs/climate/DESIGN.md` for the design.
 
@@ -23,6 +24,7 @@ pub mod dissipation;
 pub mod forcing;
 pub mod held_suarez;
 pub mod helmholtz;
+pub mod imprint;
 pub mod layered;
 pub mod layered_si;
 pub mod levels;
@@ -48,6 +50,7 @@ pub use fms_restart::{Restart, RestartError};
 pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};
 pub use helmholtz::{Helmholtz, SolveReport};
+pub use imprint::{GridImprint, Imprint, ImprintAnalysis};
 pub use layered::{Gas, LayeredDiagnostics, LayeredModel, LayeredState, Linearization};
 pub use layered_si::{
     EnergyBudget, LayeredSemiImplicit, LayeredSemiImplicitOptions, REFERENCE_TEMPERATURE,
