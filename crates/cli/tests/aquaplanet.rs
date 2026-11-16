@@ -2,11 +2,14 @@
 //! ocean, with the coupled ocean), run as shipped as the real binary at 642
 //! cells for nine years, has an Earth-like general circulation and a rain
 //! belt that follows the sun. Without tilt, on a circular orbit, it has no
-//! seasons, mirrored hemispheres and its rain belt on the equator.
+//! seasons, mirrored hemispheres and its rain belt on the equator. With a
+//! day twice as long, its Hadley cells are wider and stronger, its jets
+//! further poleward and its equator-to-pole contrast smaller.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A fresh directory under the system's temporary one, removed when
@@ -106,11 +109,17 @@ fn within(name: &str, v: f64, lo: f64, hi: f64) {
     assert!((lo..=hi).contains(&v), "{name} {v} is outside {lo} to {hi}");
 }
 
+/// The reference aquaplanet's measures: one run, shared by the tests here.
+fn reference() -> &'static HashMap<String, Option<f64>> {
+    static REFERENCE: OnceLock<HashMap<String, Option<f64>>> = OnceLock::new();
+    REFERENCE.get_or_init(|| run_aquaplanet("reference", &[]).1)
+}
+
 #[test]
 #[ignore = "slow: nine model years at 642 cells (3–7 minutes); run with --ignored"]
 fn the_aquaplanet_has_an_earth_like_circulation_and_rain_belt() {
-    let (_dir, m) = run_aquaplanet("reference", &[]);
-    let get = |name: &str| get(&m, name);
+    let m = reference();
+    let get = |name: &str| get(m, name);
 
     // Thermally direct Hadley cells: measured +38.0e9 north, −40.6e9 south.
     let (north, south) = (
@@ -288,4 +297,48 @@ fn without_tilt_the_aquaplanet_has_no_seasons_and_mirrored_hemispheres() {
         within(&format!("{side}ern Hadley edge"), edge.abs(), 15.0, 32.0);
         assert!(get(&format!("jets_{side}")) >= 1.0, "no {side}ern jet");
     }
+}
+
+#[test]
+#[ignore = "slow: nine model years at 642 cells, and the reference run if no other test here has made it (3–14 minutes); run with --ignored"]
+fn a_longer_day_widens_the_hadley_cells_and_moves_the_jets_poleward() {
+    // A 48-hour day in a year of the same length in seconds.
+    let (_dir, slow) = run_aquaplanet("slow", &["--solar-day", "48", "--year-days", "182.6211"]);
+    let reference = reference();
+    for side in ["north", "south"] {
+        let both = |name: &str| {
+            let name = format!("{name}_{side}");
+            (get(&slow, &name).abs(), get(reference, &name).abs())
+        };
+
+        // Hadley edges: measured +35.7° and −35.8° against +22.6° and −24.1°.
+        let (edge, was) = both("hadley_edge_deg");
+        assert!(
+            edge >= was + 5.0,
+            "{side}ern Hadley edge {edge}° against {was}°"
+        );
+
+        // Hadley strengths: measured +83.8e9 and −112.3e9 kg/s
+        // against +38.0e9 and −40.6e9.
+        let (strength, was) = both("hadley_strength_kg_s");
+        assert!(
+            strength >= 1.5 * was,
+            "{side}ern Hadley cell {strength} against {was} kg/s"
+        );
+
+        // Upper-layer jets: measured +41.0° and −41.1° against +30.4° and −30.2°.
+        let (jet, was) = both("jet_latitude_deg");
+        assert!(jet >= was + 5.0, "{side}ern jet at {jet}° against {was}°");
+    }
+
+    // Equator-to-pole contrast: measured 15.8 K against 16.3 K
+    // (16.5 against 18.5 K at 2,562 cells).
+    let (contrast, was) = (
+        get(&slow, "equator_pole_contrast_k"),
+        get(reference, "equator_pole_contrast_k"),
+    );
+    assert!(
+        contrast < was,
+        "equator-pole contrast {contrast} K against {was} K"
+    );
 }

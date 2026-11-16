@@ -454,3 +454,20 @@ From M2.14.5 (no tilt, 2,562 cells):
 - At 642 cells the Hadley edges are 3.3° from mirroring (23.3° and −26.6°; the bands
   are 7.5° wide) and the cells' count differs (2 north, 4 south); temperature mirrors
   to 0.17 K within 60°.
+
+### O-53: The aquaplanet at other rotation rates
+*Recorded at M2.14.6.* The reference aquaplanet (O-51) with only the day's length
+changed and the year kept the same in seconds; 2,562 cells, year 9.
+
+A 48-hour day:
+- Hadley cells 79 and 84 (10⁹ kg/s) against 36–38, with edges at 33.9° and −34.3°
+  against 25–26°. The trades end at 29–30° against 26.5°.
+- Upper-layer jets 44–45 m/s at 39° against 31 m/s at 32–33°. The mid-latitude rain
+  peaks at 48° against 37–42°.
+- Equator to pole is 16.5 K in the lowest layer against 18.0–18.5 K, and 18.3 K at
+  the surface against 21 K. The ocean carries 1.6 PW against 0.8–0.9, since its eddy
+  scale doubles; the atmosphere's share of the change is not separated.
+- The rain belt swings 4.8° against 3.7°.
+- The edge moves 8° poleward, far less than the doubling of the axisymmetric scaling.
+- At 642 cells: edges at 35.7° and −35.8° against 22.6° and −24.1°, jets at 41° against 30°,
+  contrast 15.8 K against 16.3 K.
