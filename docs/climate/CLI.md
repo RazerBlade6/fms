@@ -325,12 +325,33 @@ first line of `summary.txt` records the schedule.
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion |
 | `--save-restart FILE` | none | Write the run's final state to FILE when it reaches its last step, before the maps and summary |
 | `--restart FILE` | none | Start from a state saved by `--save-restart`. `--years` counts from the restart and may be 1 |
+| `--fixed-sea-temperature` | off | Hold the sea temperatures at the Aqua-Planet Experiment's CONTROL profile (a function of latitude alone: 27 °C at the equator, 0 °C poleward of 60°) instead of running the ocean. See below |
+| `--imprint-block D` | off | Run the grid-imprint check of `fms-climate held-suarez` over this run, in blocks of `D` days |
+| `--imprint-spinup D` | 200 | Days after the run's start left out of the imprint check; ignored without `--imprint-block` |
 
 In the layered runs (`climate`, `held-suarez`, `baroclinic`) a day is the planet's
 solar day. The step divides it, with at least 24 steps a day, and radiation runs every
 whole number of steps within 3 h and an eighth of the day. Rates in mm/day are per
 86,400 s on every planet. The first line of the description printed at the start
 (and kept in `summary.txt`) gives the steps per solar day, the radiation interval and the ocean transport interval.
+
+**Prescribed sea.** `--fixed-sea-temperature` needs a world with no land (an error
+otherwise) and cannot be combined with `--restart` or `--save-restart`. There are no
+currents, sea ice or ocean jumps (the jump options are ignored, and `--years` may be
+any number above 1), and the orbit is unchanged. The planet is not in balance: the
+sea takes up whatever arrives, so the summary's energy line names "the prescribed
+sea's uptake" in place of "surface uptake". `ocean_heat_transport.csv` and
+`.png`, and the maps `ocean.deep_temperature`, `ocean.gyre_streamfunction` and
+`ocean.gyre_heating`, are not written.
+
+**Grid imprint.** `--imprint-block` runs the check described under
+Held–Suarez benchmark, from `--imprint-spinup` days after the run's
+start to its end, on the four dynamics fields and on `atm.precipitation` and
+`atm.evaporation` (mm/day) and `rad.surface_temperature` (K). The check is not saved
+in restart files, so after `--restart` it covers the new run only. With land the
+residuals hold the land's pattern as well as any of the grid's (the summary says so).
+With a prescribed sea, the surface temperature's `locked` value is only the zonal
+fit's residual of the prescribed profile.
 
 **Restarts.** `--save-restart` saves the state at the end of a run, so a spin-up
 can be run in legs or a changed setting tried from a spun-up climate.
@@ -368,7 +389,9 @@ Outputs in `output/climate/`:
   the time filter's trace + a round-off residual), and the circulation (the
   overturning cells, Hadley-cell edge, trades' edge, jets, the lowest
   layer's equator-to-pole temperature contrast, and the rain belt's annual
-  mean, furthest north and south with their months, and swing);
+  mean, furthest north and south with their months, and swing; and the largest
+  seasonal range of surface temperature within 60° of the equator, with its
+  latitude), and, with `--imprint-block`, a grid-imprint block;
 - `zonal_mean.csv` and `zonal_mean.png`: winds, layer temperatures and
   every summarised physics field by latitude; the chart shows surface
   temperature, winds, net radiation, precipitation, evaporation and cloud;
@@ -381,7 +404,12 @@ Outputs in `output/climate/`:
   `_south` and a `_north` row, then `equator_pole_contrast_k`, `rain_belt_mean_deg`,
   `rain_belt_north_deg`, `rain_belt_north_month`, `rain_belt_south_deg`,
   `rain_belt_south_month`, `rain_belt_swing_deg`, `tropical_rain_mm_day` and
-  `subtropical_rain_mm_day`;
+  `subtropical_rain_mm_day`, `seasonal_temperature_range_k` and
+  `seasonal_temperature_range_latitude_deg` (empty before 12 months have
+  completed);
+- `imprint.csv`, `imprint.<field>.png` and `imprint.<field>.locked.png` with
+  `--imprint-block`, in the formats of `fms-climate held-suarez`, for the seven fields
+  named under Grid imprint;
 - `rain_belt.csv` and `rain_belt.png`: one row per month of the run, with
   `year,month,centroid_latitude_deg,tropical_rain_mm_day,subtropical_rain_mm_day`:
   the rain belt's latitude (the centroid of rain within 20° of the equator) and the

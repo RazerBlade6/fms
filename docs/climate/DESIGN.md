@@ -185,6 +185,12 @@ cover, each with its own temperature, albedo, roughness and fluxes.
 
 ## Ocean (`fms-ocean`)
 
+`fms-climate climate --fixed-sea-temperature` does without it on an all-ocean world:
+`ColumnPhysics::with_prescribed_surface()` holds the sea temperatures at the
+Aqua-Planet Experiment's CONTROL profile (27 °C at the equator, 0 °C poleward of
+60°, a function of latitude alone), with no currents, sea ice or jumps. The sea is
+an infinite reservoir whose uptake the budget counts as stored heat.
+
 A 50 m mixed layer over a 150 m deep layer in each cell with ocean; it knows
 nothing about the atmosphere. Heat moves by:
 - Ekman transport: the wind stress on open
@@ -295,6 +301,10 @@ the freezing point (271.35 K) at the base.
   equator. It is computed for each month from that month's zonal-mean rain. The
   annual mean is the centroid of the mean of the final 12 months' profiles; the
   swing is the furthest-north monthly value minus the furthest-south.
+- **Seasonal range** (`climate` only): over the run's last 12 completed months, for
+  each latitude band whose centre is within 60° of the equator, the warmest month's
+  zonal-mean surface temperature minus the coldest's. The largest of these and its
+  latitude are reported; not measured if fewer than 12 months completed.
 - `circulation.csv` carries the same values as the summary.
 
 ## Grid-imprint check (`imprint`)
@@ -330,6 +340,11 @@ the freezing point (271.35 K) at the base.
 - **Caveats**: a strong shared pattern without the symmetry lowers `locked`.
   The reconstruction's own error at the pentagons (O-1) shows in the wind fields
   as marks on the pentagons' neighbours.
+- **In `climate`**: on request (`--imprint-block`) the same check runs over the
+  run, with precipitation, evaporation and surface temperature as extra fields.
+  With land the residuals hold the land's pattern as well as the grid's. With a
+  prescribed sea the surface temperature's `locked` value is only the zonal fit's
+  residual of the prescribed profile.
 
 ## Restart files (`fms-restart`)
 

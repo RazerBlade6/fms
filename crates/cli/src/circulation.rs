@@ -68,13 +68,13 @@ pub fn write_overturning(
 /// The summary's circulation block: per hemisphere, the Hadley cell, every
 /// cell, where the trades end, the upper-layer jets and the lowest layer's
 /// westerlies; the lowest layer's equator-to-pole temperature `contrast`
-/// (K) and the `rain` belt, if given; and the overturning's mass-closure
-/// residual.
+/// (K), and the rain belt and the seasonal range of surface temperature
+/// (`seasons`), if given; and the overturning's mass-closure residual.
 pub fn summary(
     circulation: &Circulation,
     overturning: &Overturning,
     contrast: Option<f64>,
-    rain: Option<&RainBelt>,
+    seasons: Option<(&RainBelt, &SeasonalRange)>,
 ) -> String {
     let mut out = String::new();
     let row = overturning.nearest_row(0.5);
@@ -138,8 +138,9 @@ pub fn summary(
             "Lowest-layer temperature equator − pole: {contrast:.1} K"
         );
     }
-    if let Some(rain) = rain {
+    if let Some((rain, range)) = seasons {
         out.push_str(&rain.summary());
+        out.push_str(&range.summary());
     }
     let _ = writeln!(
         out,
@@ -388,6 +389,83 @@ impl RainBelt {
     }
 }
 
+/// How far from the equator (degrees) the seasonal range of surface
+/// temperature is measured: band centres within it count.
+pub const SEASONAL_RANGE_LIMIT: f64 = 60.0;
+
+/// The largest seasonal range of surface temperature near the equator: over
+/// a run's last [`RAIN_BELT_MONTHS`] completed months (those the rain belt
+/// uses), for each latitude band whose centre is within
+/// [`SEASONAL_RANGE_LIMIT`] of the equator, the warmest month's zonal-mean
+/// surface temperature minus the coldest's; the largest of those, and where.
+/// Without seasons it is near zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SeasonalRange {
+    /// The months the run completed.
+    pub completed: u64,
+    /// The largest range (K) and its band's latitude (degrees); `None` if
+    /// the run completed fewer than 12 months.
+    pub largest: Option<(f64, f64)>,
+}
+
+impl SeasonalRange {
+    /// The range from `months`, the run's last completed months (up to 12;
+    /// the last 12 are used) as zonal-mean surface temperature (K) on band
+    /// centres at `latitude` (degrees), of `completed` in all. The first
+    /// band (from the south) wins a tie.
+    pub fn of(latitude: &[f64], months: &[Vec<f64>], completed: u64) -> Self {
+        if months.len() < RAIN_BELT_MONTHS {
+            return Self {
+                completed,
+                largest: None,
+            };
+        }
+        let months = &months[months.len() - RAIN_BELT_MONTHS..];
+        let mut largest: Option<(f64, f64)> = None;
+        for (b, &lat) in latitude.iter().enumerate() {
+            if lat.abs() > SEASONAL_RANGE_LIMIT {
+                continue;
+            }
+            let (lo, hi) = months
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), m| {
+                    (lo.min(m[b]), hi.max(m[b]))
+                });
+            let range = hi - lo;
+            if largest.is_none_or(|(r, _)| range > r) {
+                largest = Some((range, lat));
+            }
+        }
+        Self { completed, largest }
+    }
+
+    /// The summary's line.
+    pub fn summary(&self) -> String {
+        let head = format!(
+            "Largest seasonal range of surface temperature within {SEASONAL_RANGE_LIMIT}° of the equator"
+        );
+        match self.largest {
+            Some((range, lat)) => format!("{head}: {range:.1} K at {lat:.1}°\n"),
+            None => format!(
+                "{head}: not measured; the run completed {} month{}, and it needs {RAIN_BELT_MONTHS}\n",
+                self.completed,
+                if self.completed == 1 { "" } else { "s" }
+            ),
+        }
+    }
+
+    /// The rows of `circulation.csv`.
+    pub fn measures(&self) -> Vec<(&'static str, Option<f64>)> {
+        vec![
+            ("seasonal_temperature_range_k", self.largest.map(|l| l.0)),
+            (
+                "seasonal_temperature_range_latitude_deg",
+                self.largest.map(|l| l.1),
+            ),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +522,43 @@ mod tests {
             "Rain belt (centroid of rain within 20° of the equator): not measured; the run \
              completed 11 months, and it needs 12\n"
         );
+    }
+
+    #[test]
+    fn the_seasonal_range_is_the_largest_within_60_degrees() {
+        let lat = centres();
+        // Twelve months of a profile whose range grows away from the
+        // equator to 8 K at ±58.75°, and is larger still beyond 60°; the
+        // southern band comes first and wins the tie.
+        let months: Vec<Vec<f64>> = (0..13)
+            .map(|m| {
+                let phase = fms_math::sin(m as f64 / 12.0 * std::f64::consts::TAU);
+                lat.iter()
+                    .map(|&l| {
+                        280.0
+                            + 0.5
+                                * (8.0 * l.abs() / 58.75)
+                                * phase
+                                * if l.abs() > 60.0 { 3.0 } else { 1.0 }
+                    })
+                    .collect()
+            })
+            .collect();
+        let range = SeasonalRange::of(&lat, &months, 13);
+        let (r, at) = range.largest.unwrap();
+        assert_eq!(at, -58.75);
+        // The sine reaches ±1 at months 3 and 9 of the last twelve.
+        assert!((r - 8.0).abs() < 1e-9, "{r}");
+        assert_eq!(
+            range.summary(),
+            "Largest seasonal range of surface temperature within 60° of the equator: 8.0 K at -58.8°\n"
+        );
+        assert_eq!(
+            range.measures()[0],
+            ("seasonal_temperature_range_k", Some(r))
+        );
+        let short = SeasonalRange::of(&lat, &months[..11], 11);
+        assert!(short.measures().iter().all(|(_, v)| v.is_none()));
+        assert!(short.summary().contains("not measured"));
     }
 }

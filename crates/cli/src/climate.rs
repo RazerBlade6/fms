@@ -3,7 +3,9 @@
 //! ocean and land tiles and the world's terrain, on the world's planet
 //! (orbit, CO₂, surface pressure). Spins up, then averages the final year: zonal means, a global
 //! summary with the planet's energy and water budgets, and annual-mean maps,
-//! in `output/climate/`.
+//! in `output/climate/`. On request, the sea temperatures are prescribed
+//! (`--fixed-sea-temperature`) and the run is checked for a pattern locked
+//! to the grid (`--imprint-block`, [`crate::imprint`]).
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -11,11 +13,13 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use fms_atmos::column_physics::{
-    CLIMATE_LEVELS, LATENT_HEAT, LandParams, OceanSpinUp, initial_state,
+    ApeSst, CLIMATE_LEVELS, LATENT_HEAT, LandParams, OceanSpinUp, initial_state,
     initial_surface_temperature_by_latitude,
 };
 use fms_atmos::moisture::{CloudParams, MoistureParams};
-use fms_atmos::{ColumnPhysics, Forcing, LayeredSemiImplicit, PhysicsParams, ZonalClimatology};
+use fms_atmos::{
+    ColumnPhysics, Forcing, GridImprint, LayeredSemiImplicit, PhysicsParams, ZonalClimatology,
+};
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
 use fms_ocean::{
@@ -26,8 +30,8 @@ use glam::DVec3;
 use crate::basins::write_gyre_map;
 use crate::chart::{self, Series, TimeAxis};
 use crate::layered_run::{
-    DynamicsArgs, Fields, Output, Plan, SAMPLES_PER_DAY, build_model, describe, integrate, stepper,
-    write_map,
+    DynamicsArgs, Fields, Output, Plan, SAMPLES_PER_DAY, build_model, describe, integrate,
+    sample_every, stepper, write_map,
 };
 use crate::ocean_transport::{edge_latitudes, northward_transport};
 use crate::render::write_png;
@@ -165,6 +169,26 @@ pub struct ClimateArgs {
     /// the file's.
     #[arg(long, value_name = "FILE")]
     restart: Option<PathBuf>,
+    /// Hold the sea temperatures at the Aqua-Planet Experiment's CONTROL
+    /// profile, a function of latitude alone (27 °C at the equator, 0 °C
+    /// poleward of 60°), instead of running the ocean: no currents, sea ice
+    /// or ocean jumps (the jump options are ignored), and `--years` may be
+    /// any number above 1. The world must be all ocean.
+    #[arg(long, conflicts_with_all = ["restart", "save_restart"])]
+    fixed_sea_temperature: bool,
+    /// Check the run for a pattern locked to the grid, in blocks of DAYS:
+    /// from `--imprint-spinup` days into this run to its end, the samples
+    /// go to two halves in alternating blocks, and the time mean of the
+    /// dynamics' fields, precipitation, evaporation and surface temperature
+    /// is split into what the halves share and what they don't. Writes
+    /// `imprint.csv`, maps and a block of the summary. The check isn't
+    /// saved in restart files: after `--restart` it covers this run only.
+    #[arg(long, value_name = "DAYS")]
+    imprint_block: Option<f64>,
+    /// Days from the start of this run before the grid-imprint check
+    /// samples; ignored without `--imprint-block`.
+    #[arg(long, value_name = "DAYS", default_value_t = 200.0)]
+    imprint_spinup: f64,
     #[command(flatten)]
     dynamics: DynamicsArgs,
     #[command(flatten)]
@@ -339,9 +363,38 @@ fn write_annual_cells(
     std::fs::write(path, rows).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
+/// The extra fields of the grid-imprint check, as `(name, units, mirror)`:
+/// the physics' cell fields of those names.
+const IMPRINT_FIELDS: [(&str, &str, f64); 3] = [
+    ("atm.precipitation", "mm/day", 1.0),
+    ("atm.evaporation", "mm/day", 1.0),
+    ("rad.surface_temperature", "K", 1.0),
+];
+
+/// The maps of the ocean's state and currents, which a prescribed sea
+/// leaves at their starting values: not drawn.
+const OCEAN_MAPS: [&str; 3] = [
+    "ocean.deep_temperature",
+    "ocean.gyre_streamfunction",
+    "ocean.gyre_heating",
+];
+
 pub fn run(args: ClimateArgs) -> Result<(), String> {
     let ocean = args.ocean();
-    let (spin_up, years) = args.spin_up(ocean.has_currents());
+    let fixed = args.fixed_sea_temperature;
+    let (mut spin_up, years) = args.spin_up(ocean.has_currents());
+    if fixed {
+        // A prescribed sea doesn't jump.
+        spin_up.jumps = 0;
+    }
+    if let Some(block) = args.imprint_block
+        && (block.is_nan() || block <= 0.0)
+    {
+        return Err("--imprint-block must be positive".into());
+    }
+    if args.imprint_spinup.is_nan() || args.imprint_spinup < 0.0 {
+        return Err("--imprint-spinup must be 0 or more".into());
+    }
     let saving = args.save_restart.is_some();
     if args.restart.is_some() {
         // Checked against the spin-up once the restart says where it is.
@@ -594,6 +647,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let (mesh, geometry) = (&world.climate.mesh, &world.climate.geometry);
     let nc = mesh.n_cells();
     let land = world.fields.read(world.core.terrain.land_fraction).to_vec();
+    if fixed && land.iter().any(|f| *f > 0.0) {
+        return Err(
+            "--fixed-sea-temperature: only the ocean's temperature can be prescribed, and this \
+             world has land"
+                .into(),
+        );
+    }
     let relief = world
         .fields
         .read(world.core.terrain.surface_height_stddev)
@@ -618,23 +678,40 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     .fingerprint();
     let (state, surface_temperature) = initial_state(&model, &world.planet, &params);
     eprintln!("climate: single-column start at {surface_temperature:.1} K");
+    let start_surface = if fixed {
+        mesh.cell_centers()
+            .iter()
+            .map(|&p| ApeSst::Control.at(fms_grid::coords::to_lat_lon(p).0))
+            .collect()
+    } else {
+        initial_surface_temperature_by_latitude(&model, &world.planet, &params, surface_temperature)
+    };
     let physics = ColumnPhysics::with_land(
         &model,
         &world.planet,
         params,
         0.0,
         &state,
-        initial_surface_temperature_by_latitude(
-            &model,
-            &world.planet,
-            &params,
-            surface_temperature,
-        ),
+        start_surface,
         land.clone(),
     )
     .with_relief(relief, &surface_height);
+    let physics = if fixed {
+        physics.with_prescribed_surface()
+    } else {
+        physics
+    };
     // Where each wanted field sits in the physics' list.
     let fields_now = physics.cell_fields();
+    let imprint_index: Vec<usize> = IMPRINT_FIELDS
+        .iter()
+        .map(|(n, _, _)| {
+            fields_now
+                .iter()
+                .position(|f| f.name == *n)
+                .ok_or_else(|| format!("the physics has no field {n}"))
+        })
+        .collect::<Result<_, _>>()?;
     let index: Vec<usize> = names
         .iter()
         .map(|n| {
@@ -685,12 +762,26 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .unwrap_or_else(|| 2 * ((nc as f64 / 10.0).sqrt().round() as usize).max(8));
     let mut climate = ZonalClimatology::new(&model, bands);
     let lat_bands = LatitudeBands::new(mesh, geometry, bands);
-    let description = describe(
-        &model,
-        &state,
-        setup.dt,
-        (years * world.planet.year_seconds() / setup.day).round(),
-        &format!(
+    // The grid-imprint check, in blocks of whole samples.
+    let mut imprint = args.imprint_block.map(|days| {
+        let samples_per_day = setup.steps_per_day as f64 / sample_every(setup.steps_per_day) as f64;
+        let block = ((days * samples_per_day).round() as u64).max(1);
+        let (upper, lower) = crate::layered_run::upper_lower(&model);
+        GridImprint::with_fields(&model, upper, lower, block, bands, &IMPRINT_FIELDS)
+    });
+    let surface = if fixed {
+        format!(
+            "; {} steps to the {:.4} h solar day, radiation every {} ({:.2} h); radiation and moisture over sea \
+             temperatures prescribed as the Aqua-Planet Experiment's CONTROL profile (no ocean currents, sea ice or \
+             ocean spin-up), CO₂ {} ppm",
+            setup.steps_per_day,
+            setup.day / 3600.0,
+            fms_atmos::radiation_steps(setup.dt, setup.day),
+            params.radiation_interval / 3600.0,
+            params.co2,
+        )
+    } else {
+        format!(
             "; {} steps to the {:.4} h solar day, radiation every {} ({:.2} h), ocean transport every {} ({:.2} h); radiation and moisture over a {} m mixed layer on a {} m deep ocean {}, and a {} m soil store, CO₂ {} ppm; {}",
             setup.steps_per_day,
             setup.day / 3600.0,
@@ -704,7 +795,14 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             params.land.soil_depth,
             params.co2,
             describe_spin_up(&params.spin_up)
-        ),
+        )
+    };
+    let description = describe(
+        &model,
+        &state,
+        setup.dt,
+        (years * world.planet.year_seconds() / setup.day).round(),
+        &surface,
     );
     eprintln!("climate: {description}");
 
@@ -728,6 +826,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     };
     let total = start_step + (years * per_year as f64).round() as u64;
     let stats_from = total - per_year;
+    let imprint_from =
+        start_step + (args.imprint_spinup * setup.steps_per_day as f64).round() as u64;
     let movie_from = total
         .saturating_sub((args.movie_days * setup.steps_per_day as f64).round() as u64)
         .max(start_step);
@@ -796,10 +896,16 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .iter()
         .position(|n| *n == "atm.precipitation")
         .expect("precipitation is a monthly field");
+    let temperature_index = 2 + monthly
+        .iter()
+        .position(|n| *n == "rad.surface_temperature")
+        .expect("surface temperature is a monthly field");
     let band_latitudes = lat_bands.latitudes();
     let band_degrees: Vec<f64> = band_latitudes.iter().map(|l| l.to_degrees()).collect();
     // The last 12 completed months' zonal-mean precipitation, by month number.
     let mut last_months: Vec<(u64, Vec<f64>)> = Vec::new();
+    // And their zonal-mean surface temperature.
+    let mut last_temperature: Vec<Vec<f64>> = Vec::new();
     let band_shares: Vec<f64> = {
         let total: f64 = lat_bands.areas().iter().sum();
         lat_bands.areas().iter().map(|a| a / total).collect()
@@ -834,6 +940,15 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                 }
             }
             month_samples += 1.0;
+            if let Some(imprint) = &mut imprint
+                && si.steps() > imprint_from
+            {
+                let extra: Vec<&[f64]> = imprint_index
+                    .iter()
+                    .map(|&f| fields[f].values.as_slice())
+                    .collect();
+                imprint.sample_with(si.model(), si.state(), &extra);
+            }
         }
         if si.steps() >= steps_in_month(month_done + 1) {
             let zonal: Vec<Vec<f64>> = month_sums
@@ -876,8 +991,10 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             }
             if last_months.len() == crate::circulation::RAIN_BELT_MONTHS {
                 last_months.remove(0);
+                last_temperature.remove(0);
             }
             last_months.push((month, rain.clone()));
+            last_temperature.push(zonal[temperature_index].clone());
             for m in &mut month_sums {
                 m.fill(0.0);
             }
@@ -905,6 +1022,11 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     rain_result.map_err(|e| format!("cannot write the monthly rain belt: {e}"))?;
     let rain_belt =
         crate::circulation::RainBelt::of(&band_degrees, &last_months, month_done - first_month);
+    let seasonal_range = crate::circulation::SeasonalRange::of(
+        &band_degrees,
+        &last_temperature,
+        month_done - first_month,
+    );
     let means: Vec<Vec<f64>> = sums
         .iter()
         .map(|s| s.iter().map(|v| v / samples).collect())
@@ -917,7 +1039,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &names,
         &means,
     )?;
+    // A prescribed sea has no transport.
     let transport = gained_start
+        .filter(|_| !fixed)
         .map(|(from, gained)| {
             let fields = si.model().forcing().expect("forcing").cell_fields();
             let seconds = (si.steps() - from) as f64 * dt;
@@ -954,6 +1078,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     // gyres alone, centred on zero.
     let gyre_maps = ["ocean.gyre_streamfunction", "ocean.gyre_heating"];
     for ((id, mean), name) in ids.iter().zip(&means).zip(&names) {
+        if fixed && OCEAN_MAPS.contains(name) {
+            continue;
+        }
         if gyre_maps.contains(name) {
             let wet_only: Vec<f64> = mean
                 .iter()
@@ -1072,6 +1199,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let measures: Vec<(&str, Option<f64>)> = [("equator_pole_contrast_k", Some(contrast))]
         .into_iter()
         .chain(rain_belt.measures())
+        .chain(seasonal_range.measures())
         .collect();
     crate::circulation::write_measures(&circulation, &measures, &out.dir)?;
     rain_belt.write_chart(
@@ -1161,10 +1289,17 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         let _ = writeln!(
             summary,
             "Final-year energy budget (W/m²): net in at the top of the atmosphere {:+.3} = atmosphere uptake {:+.3} \
-             (enthalpy and latent) + surface uptake {:+.3} + residual {:+.4}; friction dissipated {:.3} \
+             (enthalpy and latent) + {} {:+.3} + residual {:+.4}; friction dissipated {:.3} \
              (returned as heat, net {:+.1e}), diffusion's net {:+.1e}",
             wm2(toa),
             wm2(atmosphere),
+            // A prescribed sea is a reservoir that takes up whatever the
+            // surface's fluxes bring it.
+            if fixed {
+                "the prescribed sea's uptake (its temperature held, so any amount)"
+            } else {
+                "surface uptake"
+            },
             wm2(slab),
             wm2(toa - atmosphere - slab + friction + returned + diffusion),
             -wm2(friction),
@@ -1202,12 +1337,43 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &circulation,
         &overturning,
         Some(contrast),
-        Some(&rain_belt),
+        Some((&rain_belt, &seasonal_range)),
     ));
     let _ = writeln!(
         summary,
         "Means of {samples} samples ({SAMPLES_PER_DAY} per day) over the final year."
     );
+    if let Some(imprint) = &imprint {
+        let block_days = args.imprint_block.expect("an imprint check has blocks");
+        let results = if imprint.complete_blocks() >= 2 {
+            let days = |step: u64| step as f64 * dt / setup.day;
+            let results = imprint.results();
+            crate::imprint::write(
+                imprint,
+                &results,
+                &world.climate,
+                &out.dir,
+                &args.image,
+                &format!("DAYS {:.0} TO {:.0}", days(imprint_from), days(si.steps())),
+            )?;
+            results
+        } else {
+            Vec::new()
+        };
+        summary.push_str(&crate::imprint::summary(imprint, &results, block_days));
+        if !results.is_empty() && land.iter().any(|f| *f > 0.0) {
+            summary.push_str(
+                "  With land, the time mean is not expected to be zonally symmetric: the residuals \
+                 hold the land's pattern as well as any of the grid's.\n",
+            );
+        }
+        if !results.is_empty() && args.restart.is_some() {
+            summary.push_str(
+                "  The check isn't saved in restart files: it covers this run only, from its \
+                 spin-up on.\n",
+            );
+        }
+    }
     let path = out.dir.join("summary.txt");
     std::fs::write(&path, &summary).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     print!("{summary}");
@@ -1438,6 +1604,24 @@ mod tests {
 
     fn parse(options: &[&str]) -> ClimateArgs {
         try_parse(options).unwrap()
+    }
+
+    #[test]
+    fn a_prescribed_sea_runs_without_restarts() {
+        assert!(parse(&["--fixed-sea-temperature"]).fixed_sea_temperature);
+        assert!(!parse(&[]).fixed_sea_temperature);
+        for other in ["--restart", "--save-restart"] {
+            let error = try_parse(&["--fixed-sea-temperature", other, "x.fmsrst"])
+                .err()
+                .expect("conflicts");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        let check = parse(&["--imprint-block", "50"]);
+        assert_eq!(
+            (check.imprint_block, check.imprint_spinup),
+            (Some(50.0), 200.0)
+        );
+        assert_eq!(parse(&[]).imprint_block, None);
     }
 
     #[test]

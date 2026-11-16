@@ -10,7 +10,7 @@ shrinks to one line.
 ## Grid and numerics
 
 ### O-1: Operator errors peak at the 12 pentagons
-*Scheduled: M2.14.5.* TRiSK reconstruction, Perot, vorticity, divergence, Laplacian
+*Accepted.* TRiSK reconstruction, Perot, vorticity, divergence, Laplacian
 and kinetic energy converge in RMS, but their maxima (1–6%) stay fixed at or next
 to the pentagons, as in Peixoto 2016. Williamson 2 shows ±1.5 m dipoles on a 3 km
 depth after 5 days. The risk is grid imprinting in long runs. If visible:
@@ -28,8 +28,23 @@ Held–Suarez, pattern with the grid's symmetry that two halves of the run share
   Perot reconstruction of a purely zonal flow with the run's mean wind gives the same
   marks, so they come from the reconstruction, which also feeds the surface fluxes in
   `climate`.
-- Too small to fix for the dry dynamics. Not measured in rain yet: M2.14.5 does it
-  on the no-tilt aquaplanet and decides on a fix.
+
+No-tilt aquaplanet, same measure (M2.14.5):
+- 2,562 cells, coupled ocean, 9 years: rain 0.08 mm/day (worst cells 0.6, where the
+  rain is 4–5; weather's s.d. 9.6). A wavenumber-2 row of dry and wet spots along the
+  equator, the dry ones at or just west of the four equatorial pentagons. Evaporation
+  not above the noise. Surface temperature 0.17 K, up to 1.1 K at the sea-ice edge
+  (±70°), which follows the rows of cells.
+- 2,562 cells, sea temperatures prescribed, 12 years: rain 0.09 mm/day (worst cells
+  0.5, where the rain is 5.7), the same pattern; evaporation 0.04 mm/day.
+- 10,242 cells, sea temperatures prescribed, 6 years: rain and evaporation not above
+  the noise (below about 0.05 mm/day).
+- Surface pressure (0.12–0.19 hPa) and lowest-layer temperature (0.03–0.09 K) are as
+  in Held–Suarez.
+
+At 2,562 cells the rain's pattern is about 2% of tropical rain overall and 10% at the
+worst cells, far below what land does; no fix. Revisit if a default grid coarser than
+2,562 cells or aquaplanet rain maps come to matter.
 
 ### O-2: Cell sizes vary by up to 1.76×
 *Watching.* Largest over smallest is 1.46 at 20k cells and 1.76 at 1.6M, costing
@@ -414,3 +429,28 @@ winds (O-43) at M2.16.
   Hadley cells 36–38 (10⁹ kg/s) with edges at 25–26°.
 - At 642 cells the measures are close (edges 23–24°, contrast 16 K, swing 3.7°), but
   the belt flips between about 1.4°S and 2°N instead of swinging smoothly.
+
+From M2.14.5 (no tilt, 2,562 cells):
+- With sea temperatures prescribed (APE CONTROL) the same atmosphere gives 5.7 mm/day
+  within 10° of the equator and 2.7 at 20°–30°, Hadley cells of 92–103 (10⁹ kg/s) with
+  edges at 24–25°, and jets of 62–65 m/s at 30–31°. So the flat tropics come from the
+  coupled sea temperatures, not the atmosphere.
+- Coupled, no tilt: the sea is 301.3 K at 3° and 299.7 K at 14° (the prescribed
+  profile drops 3.3 K over the same span); rain peaks at ±8° (5.0 mm/day) with a 17%
+  dip on the equator; 4.6 mm/day within 10° against 3.1 at 20°–30°.
+- With sea temperatures prescribed at 10,242 cells the rain also has twin peaks, at
+  ±4–7°, with an 11% dip on the equator.
+
+### O-52: The no-tilt aquaplanet
+*Recorded at M2.14.5.* Coupled ocean, no tilt, circular orbit, 2,562 cells, year 9:
+- No seasons: the largest seasonal range of surface temperature within 60° is 0.5 K;
+  the rain belt stays within 0.2°N to 0.5°S (annual mean 0.07°S). With sea
+  temperatures prescribed it still moves 0.7–1.0° month to month, which is weather.
+- Mirrored: Hadley cells 46 and 47 (10⁹ kg/s) with edges at 25.6° and −26.7°, trades
+  ending at 26.9° and −27.5°, jets 39.5 and 38.5 m/s at 32.4° and −32.9°.
+- The poles get no sunlight and freeze: sea ice poleward of about 72°, poles at
+  247–249 K, global surface temperature 290.8 K. Equator to pole is 41.5 K in the
+  lowest layer, against 18.5 K with Earth's tilt (O-51).
+- At 642 cells the Hadley edges are 3.3° from mirroring (23.3° and −26.6°; the bands
+  are 7.5° wide) and the cells' count differs (2 north, 4 south); temperature mirrors
+  to 0.17 K within 60°.

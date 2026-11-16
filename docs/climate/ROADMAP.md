@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.14.5.**
+**Next: M2.14.6.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -100,8 +100,8 @@ a visual check.
   - [x] 14.3. Imprinting fix: not needed for the dry dynamics (O-1)
   - [x] 14.4. Reference aquaplanet with Earth's tilt: trades, jets, Hadley
     edge, equator-to-pole contrast, the rain belt's seasonal swing
-  - [ ] 14.5. No tilt: no seasons, mirrored hemispheres, rain belt on the
-    equator, grid imprint in the rain (O-1)
+  - [x] 14.5. No tilt: no seasons, mirrored hemispheres, rain belt on the
+    equator; grid imprint in the rain too small to fix (O-1, O-52)
   - [ ] 14.6. Slow rotation: wider Hadley cell, jets further poleward, smaller
     contrast
   - [ ] 14.7. Fast rotation: narrower Hadley cell, more jets, larger contrast

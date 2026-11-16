@@ -18,6 +18,10 @@
 //! under both. The analysis also reports the zonal wavenumbers and the 12
 //! pentagons.
 //!
+//! Besides its four dynamics fields ([`FIELDS`]), the sampler takes any
+//! other cell fields the caller supplies with each sample, such as the rain
+//! of a run with physics.
+//!
 //! The analysis is a pure function of the mesh and the halves' means, so it
 //! works on synthetic fields as well as on a run.
 
@@ -431,10 +435,10 @@ struct Sums {
     squares: Vec<f64>,
 }
 
-/// Samples a run for [`ImprintAnalysis`]: the [`FIELDS`] per cell, summed
-/// separately over half A (even blocks of samples) and half B (odd blocks),
-/// with the sum of squares over all samples for the transient standard
-/// deviation.
+/// Samples a run for [`ImprintAnalysis`]: the [`FIELDS`] per cell, and any
+/// extra cell fields the caller supplies with each sample, summed separately
+/// over half A (even blocks of samples) and half B (odd blocks), with the
+/// sum of squares over all samples for the transient standard deviation.
 #[derive(Clone, Debug)]
 pub struct GridImprint {
     analysis: ImprintAnalysis,
@@ -443,6 +447,9 @@ pub struct GridImprint {
     block: u64,
     samples: u64,
     counts: [u64; 2],
+    /// The extra fields, as `(name, units, mirror)`.
+    extra: Vec<(String, String, f64)>,
+    /// Per field: the [`FIELDS`], then the extra ones.
     sums: Vec<Sums>,
 }
 
@@ -454,6 +461,23 @@ impl GridImprint {
     /// # Panics
     /// If `block` is zero or a layer index is out of range.
     pub fn new(model: &LayeredModel, upper: usize, lower: usize, block: u64, bands: usize) -> Self {
+        Self::with_fields(model, upper, lower, block, bands, &[])
+    }
+
+    /// As [`new`](Self::new), also sampling the cell fields `extra`, given
+    /// as `(name, units, mirror)` (as in [`FIELDS`]; `mirror` is +1 for a
+    /// scalar), whose values come with each sample ([`sample_with`](Self::sample_with)).
+    ///
+    /// # Panics
+    /// If `block` is zero or a layer index is out of range.
+    pub fn with_fields(
+        model: &LayeredModel,
+        upper: usize,
+        lower: usize,
+        block: u64,
+        bands: usize,
+        extra: &[(&str, &str, f64)],
+    ) -> Self {
         assert!(block > 0, "a block holds at least one sample");
         assert!(
             upper < model.layers() && lower < model.layers(),
@@ -472,12 +496,31 @@ impl GridImprint {
             block,
             samples: 0,
             counts: [0, 0],
-            sums: vec![sums; FIELDS.len()],
+            extra: extra
+                .iter()
+                .map(|&(name, units, mirror)| (name.into(), units.into(), mirror))
+                .collect(),
+            sums: vec![sums; FIELDS.len() + extra.len()],
         }
     }
 
-    /// Add one sample.
+    /// Add one sample of the [`FIELDS`]; for a sampler with extra fields,
+    /// use [`sample_with`](Self::sample_with).
+    ///
+    /// # Panics
+    /// If the sampler has extra fields.
     pub fn sample(&mut self, model: &LayeredModel, state: &LayeredState) {
+        self.sample_with(model, state, &[]);
+    }
+
+    /// Add one sample: the [`FIELDS`] from `state`, and the extra fields'
+    /// values `extra`, one per cell each, in the order they were given.
+    ///
+    /// # Panics
+    /// If `extra` doesn't hold one field per extra field, each with one
+    /// value per cell.
+    pub fn sample_with(&mut self, model: &LayeredModel, state: &LayeredState, extra: &[&[f64]]) {
+        assert_eq!(extra.len(), self.extra.len(), "one slice per extra field");
         let ops = model.operators();
         let (mesh, geometry) = (ops.mesh(), ops.geometry());
         let centers = mesh.cell_centers();
@@ -504,8 +547,17 @@ impl GridImprint {
             component(self.upper, false),
             component(self.lower, true),
         ];
+        let n = state.ps.len();
+        assert!(
+            extra.iter().all(|values| values.len() == n),
+            "one value per cell"
+        );
+        let all = fields
+            .iter()
+            .map(Vec::as_slice)
+            .chain(extra.iter().copied());
         let half = ((self.samples / self.block) % 2) as usize;
-        for (sums, values) in self.sums.iter_mut().zip(&fields) {
+        for (sums, values) in self.sums.iter_mut().zip(all) {
             for ((s, q), &v) in sums.halves[half]
                 .iter_mut()
                 .zip(&mut sums.squares)
@@ -544,8 +596,23 @@ impl GridImprint {
         &self.analysis
     }
 
-    /// The time means of field `field` (an index into [`FIELDS`]) over half
-    /// A and half B (zero for an empty half).
+    /// Every field sampled, as `(name, units, mirror)`: the [`FIELDS`], then
+    /// the extra ones.
+    pub fn fields(&self) -> Vec<(&str, &str, f64)> {
+        FIELDS
+            .iter()
+            .copied()
+            .chain(
+                self.extra
+                    .iter()
+                    .map(|(name, units, mirror)| (name.as_str(), units.as_str(), *mirror)),
+            )
+            .collect()
+    }
+
+    /// The time means of field `field` (an index into
+    /// [`fields`](Self::fields)) over half A and half B (zero for an empty
+    /// half).
     pub fn means(&self, field: usize) -> [Vec<f64>; 2] {
         let sums = &self.sums[field];
         [0, 1].map(|h| {
@@ -554,8 +621,8 @@ impl GridImprint {
         })
     }
 
-    /// The standard deviation in time of field `field` over all samples, per
-    /// cell.
+    /// The standard deviation in time of field `field` (an index into
+    /// [`fields`](Self::fields)) over all samples, per cell.
     pub fn transient(&self, field: usize) -> Vec<f64> {
         let sums = &self.sums[field];
         let n = self.samples.max(1) as f64;
@@ -570,12 +637,13 @@ impl GridImprint {
             .collect()
     }
 
-    /// The imprint measures of every field, in the order of [`FIELDS`].
+    /// The imprint measures of every field, in the order of
+    /// [`fields`](Self::fields): the [`FIELDS`], then the extra ones.
     pub fn results(&self) -> Vec<Imprint> {
-        FIELDS
-            .iter()
+        self.fields()
+            .into_iter()
             .enumerate()
-            .map(|(f, &field)| {
+            .map(|(f, field)| {
                 let [a, b] = self.means(f);
                 self.analysis
                     .analyze(field, [&a, &b], self.counts, &self.transient(f))

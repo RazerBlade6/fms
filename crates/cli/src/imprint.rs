@@ -1,4 +1,5 @@
-//! The grid-imprint outputs of `fms-climate held-suarez`: `imprint.csv`, a
+//! The grid-imprint outputs of `fms-climate held-suarez` and of
+//! `fms-climate climate --imprint-block`: `imprint.csv`, a
 //! map of each field's time mean minus its zonal mean (`imprint.<field>.png`)
 //! and of the part of it with the grid's symmetry
 //! (`imprint.<field>.locked.png`), and the summary's lines on what the two
@@ -24,6 +25,9 @@ fn shown(field: &str) -> (&'static str, f64, &'static str) {
         "temperature_lower" => ("lowest-layer temperature", 1.0, "K"),
         "east_wind_upper" => ("upper-layer eastward wind", 1.0, "m/s"),
         "north_wind_lower" => ("lowest-layer northward wind", 1.0, "m/s"),
+        "atm.precipitation" => ("precipitation", 1.0, "mm/day"),
+        "atm.evaporation" => ("evaporation", 1.0, "mm/day"),
+        "rad.surface_temperature" => ("surface temperature", 1.0, "K"),
         _ => ("field", 1.0, ""),
     }
 }
@@ -97,7 +101,8 @@ pub fn write(
         let map = DivergingMap {
             name: &name,
             units,
-            note: ", its part with the symmetry of the grid",
+            // Short, so the title clears the stamp at the default width.
+            note: ", grid-symmetric part",
             stamp,
             quantile: MAP_QUANTILE,
             cap: Some(cap),

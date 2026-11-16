@@ -3,7 +3,8 @@
 //! the equator; removing the zonal mean leaves almost nothing of a function
 //! of latitude; a shared pattern with the grid's symmetry is "locked" while
 //! one without it, or independent noise, is not; bumps at the pentagons
-//! show there; and the sampler splits a run into alternating blocks.
+//! show there; and the sampler splits a run into alternating blocks, and
+//! takes extra fields without changing its own.
 
 use std::sync::OnceLock;
 
@@ -337,4 +338,63 @@ fn the_sampler_alternates_blocks_and_keeps_means_and_spread() {
     assert_eq!(results[0].name, "surface_pressure");
     // Uniform fields leave no residual.
     assert!(results[0].rms < 1e-6 && results[1].rms < 1e-9);
+}
+
+#[test]
+fn the_sampler_takes_extra_fields_and_keeps_its_own() {
+    let (mesh, geometry) = mesh();
+    let model = LayeredModel::new(
+        Operators::new(mesh, geometry, RADIUS),
+        GRAVITY,
+        Gas::EARTH_AIR,
+        Levels::two(0.5),
+        mesh.vertices().iter().map(|p| 2.0 * OMEGA * p.z).collect(),
+        vec![0.0; mesh.n_cells()],
+    );
+    let (upper, lower, block) = (0, 1, 2);
+    let n = mesh.n_cells();
+    let (a, sd) = (2.0, 0.4);
+    // cos 2λ repeats under the half-turn, cos²φ under the mirror.
+    let clean = field(mesh, |lat, lon| {
+        zonal(lat) + a * fms_math::cos(lat).powi(2) * fms_math::cos(2.0 * lon)
+    });
+    let mut plain = GridImprint::new(&model, upper, lower, block, BANDS);
+    let mut none = GridImprint::with_fields(&model, upper, lower, block, BANDS, &[]);
+    let mut extra = GridImprint::with_fields(&model, upper, lower, block, BANDS, &[T]);
+    let mut rng = Rng(11);
+    // Twelve samples in blocks of two: six per half, each with its own
+    // weather in every field.
+    for _ in 0..12 {
+        let ps: Vec<f64> = (0..n).map(|_| 1.0e5 + rng.noise(200.0)).collect();
+        let theta_ps: Vec<Vec<f64>> = (0..2)
+            .map(|_| ps.iter().map(|p| p * (300.0 + rng.noise(2.0))).collect())
+            .collect();
+        let u: Vec<Vec<f64>> = (0..2)
+            .map(|_| (0..mesh.n_edges()).map(|_| rng.noise(5.0)).collect())
+            .collect();
+        let state = LayeredState::new(ps, u, theta_ps);
+        let pattern = with_noise(&clean, &mut rng, sd);
+        plain.sample(&model, &state);
+        none.sample_with(&model, &state, &[]);
+        extra.sample_with(&model, &state, &[&pattern]);
+    }
+    let (plain, none, extra) = (plain.results(), none.results(), extra.results());
+    // The four dynamics fields come out the same, bit for bit, whatever
+    // else is sampled.
+    assert_eq!(plain.len(), FIELDS.len());
+    assert_eq!(none, plain);
+    assert_eq!(extra.len(), FIELDS.len() + 1);
+    assert_eq!(extra[..FIELDS.len()], plain[..]);
+    // The extra field's shared symmetric pattern is locked.
+    let r = &extra[FIELDS.len()];
+    assert_eq!((r.name.as_str(), r.units.as_str()), ("t", "K"));
+    let analytic = cos2_rms(a);
+    eprintln!(
+        "extra field: locked {:.4} vs analytic {analytic:.4}, parts {:?}, noise {:.4}",
+        r.locked, r.symmetric, r.noise
+    );
+    // Measured: locked 1.030 vs 1.033; covariance 1.061 K² in the
+    // symmetric part against −4e-4 to +5e-4 K² in the others; noise 0.115
+    // (0.4 / √12).
+    assert!((r.locked / analytic - 1.0).abs() < 0.1, "{}", r.locked);
 }

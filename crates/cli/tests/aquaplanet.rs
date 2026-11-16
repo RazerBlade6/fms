@@ -1,7 +1,8 @@
 //! The reference aquaplanet: `fms-climate climate` on a blank world (all
 //! ocean, with the coupled ocean), run as shipped as the real binary at 642
 //! cells for nine years, has an Earth-like general circulation and a rain
-//! belt that follows the sun.
+//! belt that follows the sun. Without tilt, on a circular orbit, it has no
+//! seasons, mirrored hemispheres and its rain belt on the equator.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -45,10 +46,12 @@ fn measures(csv: &str) -> HashMap<String, Option<f64>> {
         .collect()
 }
 
-#[test]
-#[ignore = "slow: nine model years at 642 cells (3–7 minutes); run with --ignored"]
-fn the_aquaplanet_has_an_earth_like_circulation_and_rain_belt() {
-    let dir = TempDir::new("reference");
+/// Runs `fms-climate climate` as shipped at 642 cells, with 24 latitude
+/// bands and small images, and `extra` options, into a fresh directory
+/// named after `name`; prints every measure of `circulation.csv` and
+/// returns the directory and the measures.
+fn run_aquaplanet(name: &str, extra: &[&str]) -> (TempDir, HashMap<String, Option<f64>>) {
+    let dir = TempDir::new(name);
     let output = Command::new(env!("CARGO_BIN_EXE_fms-climate"))
         .args([
             "climate",
@@ -58,6 +61,9 @@ fn the_aquaplanet_has_an_earth_like_circulation_and_rain_belt() {
             "8",
             "--bands",
             "24",
+        ])
+        .args(extra)
+        .args([
             "--width",
             "256",
             "--frames",
@@ -82,15 +88,29 @@ fn the_aquaplanet_has_an_earth_like_circulation_and_rain_belt() {
     for name in names {
         eprintln!("{name} = {:?}", m[name]);
     }
-    let get = |name: &str| -> f64 {
-        m.get(name)
-            .copied()
-            .flatten()
-            .unwrap_or_else(|| panic!("no {name}"))
-    };
-    let within = |name: &str, v: f64, lo: f64, hi: f64| {
-        assert!((lo..=hi).contains(&v), "{name} {v} is outside {lo} to {hi}");
-    };
+    (dir, m)
+}
+
+/// The value of measure `name`, which must be there.
+#[track_caller]
+fn get(m: &HashMap<String, Option<f64>>, name: &str) -> f64 {
+    m.get(name)
+        .copied()
+        .flatten()
+        .unwrap_or_else(|| panic!("no {name}"))
+}
+
+/// Asserts that measure `name`'s value `v` is within `lo..=hi`.
+#[track_caller]
+fn within(name: &str, v: f64, lo: f64, hi: f64) {
+    assert!((lo..=hi).contains(&v), "{name} {v} is outside {lo} to {hi}");
+}
+
+#[test]
+#[ignore = "slow: nine model years at 642 cells (3–7 minutes); run with --ignored"]
+fn the_aquaplanet_has_an_earth_like_circulation_and_rain_belt() {
+    let (_dir, m) = run_aquaplanet("reference", &[]);
+    let get = |name: &str| get(&m, name);
 
     // Thermally direct Hadley cells: measured +38.0e9 north, −40.6e9 south.
     let (north, south) = (
@@ -168,4 +188,104 @@ fn the_aquaplanet_has_an_earth_like_circulation_and_rain_belt() {
         tropical > 1.05 * subtropical,
         "tropical rain {tropical} against subtropical {subtropical}"
     );
+}
+
+#[test]
+#[ignore = "slow: nine model years at 642 cells (3–7 minutes); run with --ignored"]
+fn without_tilt_the_aquaplanet_has_no_seasons_and_mirrored_hemispheres() {
+    let (dir, m) = run_aquaplanet("no-tilt", &["--obliquity", "0", "--eccentricity", "0"]);
+    let get = |name: &str| get(&m, name);
+
+    // The final year's zonal-mean surface temperature against its mirror
+    // image, printed before any check fails.
+    let path = dir.0.join("climate/zonal_mean.csv");
+    let csv = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut lines = csv.lines();
+    let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+    let column = |name: &str| {
+        header
+            .iter()
+            .position(|h| *h == name)
+            .unwrap_or_else(|| panic!("no column {name}"))
+    };
+    let (lat, ts) = (column("latitude_deg"), column("rad.surface_temperature"));
+    let rows: Vec<(f64, f64)> = lines
+        .map(|line| {
+            let cells: Vec<f64> = line.split(',').map(|c| c.parse().unwrap()).collect();
+            (cells[lat], cells[ts])
+        })
+        .collect();
+    let mut largest = 0.0f64;
+    for (i, &(latitude, t)) in rows.iter().enumerate() {
+        let (mirror, t_mirror) = rows[rows.len() - 1 - i];
+        assert!(
+            (latitude + mirror).abs() < 1e-6,
+            "bands {latitude} and {mirror}"
+        );
+        if latitude.abs() <= 60.0 {
+            eprintln!("surface temperature at {latitude:+.2}°: {t:.3} K, mirrored {t_mirror:.3} K");
+            largest = largest.max((t - t_mirror).abs());
+        }
+    }
+    eprintln!("surface temperature's largest north-south difference within 60°: {largest:.3} K");
+
+    // No seasons: measured a largest range of 0.37 K (at −3.75°) and a
+    // swing of 1.06° (+0.29° in month 4 to −0.78° in month 6).
+    within(
+        "seasonal range of surface temperature",
+        get("seasonal_temperature_range_k"),
+        0.0,
+        1.0,
+    );
+    within("rain belt's swing", get("rain_belt_swing_deg"), 0.0, 1.5);
+
+    // Mirrored Hadley cells: measured edges +23.3° and −26.6°, 3.25° from
+    // mirroring (the bands are 7.5° wide; at 2,562 cells it is 1.1°);
+    // strengths +52.8e9 and −49.6e9 kg/s, 6.1% apart.
+    let (north, south) = (get("hadley_edge_deg_north"), get("hadley_edge_deg_south"));
+    within("Hadley edges' asymmetry", (north + south).abs(), 0.0, 5.0);
+    let (north, south) = (
+        get("hadley_strength_kg_s_north").abs(),
+        get("hadley_strength_kg_s_south").abs(),
+    );
+    within(
+        "Hadley strengths' difference, of the stronger",
+        (north - south).abs() / north.max(south),
+        0.0,
+        0.25,
+    );
+
+    // Mirrored jets: measured 30.7 m/s at +31.6° and 30.0 m/s at −32.0°,
+    // 0.41° from mirroring and 0.68 m/s apart.
+    let (north, south) = (get("jet_latitude_deg_north"), get("jet_latitude_deg_south"));
+    within("jets' asymmetry", (north + south).abs(), 0.0, 4.0);
+    let (north, south) = (get("jet_speed_m_s_north"), get("jet_speed_m_s_south"));
+    within("jets' speed difference", (north - south).abs(), 0.0, 4.0);
+
+    // Mirrored surface temperature within 60° of the equator, from
+    // `zonal_mean.csv`'s `rad.surface_temperature` (the final year's zonal
+    // mean): measured at most 0.17 K apart (at ±41.25°).
+    within("surface temperature's asymmetry", largest, 0.0, 1.0);
+
+    // The rain belt on the equator: measured an annual mean of −0.20°, and
+    // 4.38 against 3.70 mm/day (1.18 times).
+    within(
+        "annual-mean rain belt",
+        get("rain_belt_mean_deg").abs(),
+        0.0,
+        1.0,
+    );
+    let (tropical, subtropical) = (get("tropical_rain_mm_day"), get("subtropical_rain_mm_day"));
+    assert!(
+        tropical > 1.05 * subtropical,
+        "tropical rain {tropical} against subtropical {subtropical}"
+    );
+
+    // The circulation is still there: measured Hadley edges +23.3° and
+    // −26.6°, one jet each side.
+    for side in ["north", "south"] {
+        let edge = get(&format!("hadley_edge_deg_{side}"));
+        within(&format!("{side}ern Hadley edge"), edge.abs(), 15.0, 32.0);
+        assert!(get(&format!("jets_{side}")) >= 1.0, "no {side}ern jet");
+    }
 }
