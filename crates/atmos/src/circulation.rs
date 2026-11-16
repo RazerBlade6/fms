@@ -1,7 +1,7 @@
 //! Circulation diagnostics: the meridional overturning and the measures of
 //! the general circulation read from it and from the zonal winds — the
 //! overturning cells (Hadley, Ferrel, polar) and their edges, where the trade
-//! winds end, and the jets.
+//! winds end, and the jets — and where the tropical rain belt is.
 //!
 //! The analysis functions are pure functions of latitude profiles, so they
 //! work on any run's time means (or on analytic profiles in tests).
@@ -331,6 +331,46 @@ pub fn equator_pole_contrast(latitude: &[f64], values: &[f64]) -> f64 {
     mean(tropics) - mean(poles)
 }
 
+/// How far from the equator rain counts towards the rain belt (degrees).
+pub const RAIN_BELT_LIMIT: f64 = 20.0;
+
+/// The rain belt's latitude (degrees): the centroid Σ φ P cos φ / Σ P cos φ
+/// of `precipitation` over the bands whose centre `latitude` (degrees) is
+/// within [`RAIN_BELT_LIMIT`] of the equator. `None` if no band is, or if
+/// they hold no rain.
+pub fn rain_belt(latitude: &[f64], precipitation: &[f64]) -> Option<f64> {
+    assert_eq!(
+        latitude.len(),
+        precipitation.len(),
+        "one value per latitude"
+    );
+    let (mut moment, mut total) = (0.0, 0.0);
+    for (&phi, &p) in latitude.iter().zip(precipitation) {
+        if phi.abs() <= RAIN_BELT_LIMIT {
+            let weight = p * fms_math::cos(phi.to_radians());
+            moment += phi * weight;
+            total += weight;
+        }
+    }
+    (total > 0.0).then(|| moment / total)
+}
+
+/// The cos φ-weighted mean of `values` over the bands whose centre
+/// `latitude` (degrees) satisfies `from ≤ |φ| ≤ to`, in both hemispheres.
+/// `None` if no band does.
+pub fn belt_mean(latitude: &[f64], values: &[f64], from: f64, to: f64) -> Option<f64> {
+    assert_eq!(latitude.len(), values.len(), "one value per latitude");
+    let (mut sum, mut weights) = (0.0, 0.0);
+    for (&phi, &v) in latitude.iter().zip(values) {
+        if (from..=to).contains(&phi.abs()) {
+            let weight = fms_math::cos(phi.to_radians());
+            sum += v * weight;
+            weights += weight;
+        }
+    }
+    (weights > 0.0).then(|| sum / weights)
+}
+
 /// The general circulation of a run's time means, read from its overturning
 /// and zonal winds.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -568,6 +608,45 @@ mod tests {
         let lat = centres(4);
         let t = [1.0, 5.0, 7.0, 3.0];
         assert_eq!(equator_pole_contrast(&lat, &t), 6.0 - 2.0);
+    }
+
+    #[test]
+    fn the_rain_belt_is_the_centroid_of_tropical_rain() {
+        // 2.5° bands: 16 of them within 20° of the equator.
+        let lat = centres(72);
+        let width = 2.5;
+        // Symmetric about the equator: the centroid is the equator.
+        let symmetric = profile(&lat, |p| 2.0 + fms_math::cos(4.0 * p));
+        assert!(rain_belt(&lat, &symmetric).unwrap().abs() < 1e-12);
+        // A Gaussian 3° wide at +8°, sampled every 2.5°: sampling a curve
+        // wider than a band barely moves its centroid, and the cos φ
+        // weighting moves it about 0.01° equatorward, so a twentieth of a
+        // band is ample.
+        let gauss = |l: f64| fms_math::exp(-((l - 8.0) / 3.0).powi(2));
+        let rain: Vec<f64> = lat.iter().map(|&l| gauss(l)).collect();
+        let belt = rain_belt(&lat, &rain).unwrap();
+        assert!((belt - 8.0).abs() < 0.05 * width, "{belt}");
+        // Mirrored (each band takes the rain at minus its latitude): the
+        // sign flips exactly.
+        let mirrored: Vec<f64> = lat.iter().map(|l| -l).collect();
+        assert_eq!(rain_belt(&mirrored, &rain), Some(-belt));
+        // No rain, or no tropical band: no belt.
+        assert_eq!(rain_belt(&lat, &[0.0; 72]), None);
+        assert_eq!(rain_belt(&[-45.0, 45.0], &[1.0, 1.0]), None);
+    }
+
+    #[test]
+    fn belt_means_are_cos_weighted_over_both_hemispheres() {
+        let lat = centres(36);
+        let constant = belt_mean(&lat, &[3.7; 36], 20.0, 30.0).unwrap();
+        assert!((constant - 3.7).abs() < 1e-14, "{constant}");
+        // The bands at ±22.5° and ±27.5°, weighted by cos φ.
+        let v: Vec<f64> = lat.iter().map(|l| l.abs()).collect();
+        let w = |d: f64| fms_math::cos(d.to_radians());
+        let expected = (22.5 * w(22.5) + 27.5 * w(27.5)) / (w(22.5) + w(27.5));
+        let mean = belt_mean(&lat, &v, 20.0, 30.0).unwrap();
+        assert!((mean - expected).abs() < 1e-12, "{mean} vs {expected}");
+        assert_eq!(belt_mean(&lat, &v, 1.0, 2.0), None);
     }
 
     #[test]

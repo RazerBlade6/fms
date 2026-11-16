@@ -290,6 +290,12 @@ the freezing point (271.35 K) at the base.
   where the easterlies first turn westerly.
 - **Jets**: maxima of the zonal-mean westerlies at least 2 m/s and 15% of the
   strongest westerly above their surroundings, refined by a parabola.
+- **Rain belt** (`climate` only): the centroid Σ φ P cos φ / Σ P cos φ of
+  zonal-mean rain over the latitude bands whose centre is within 20° of the
+  equator. It is computed for each month from that month's zonal-mean rain. The
+  annual mean is the centroid of the mean of the final 12 months' profiles; the
+  swing is the furthest-north monthly value minus the furthest-south.
+- `circulation.csv` carries the same values as the summary.
 
 ## Grid-imprint check (`imprint`)
 

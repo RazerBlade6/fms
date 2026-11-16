@@ -194,6 +194,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
             args.spinup, args.days, n_cells
         ),
     )?;
+    crate::circulation::write_measures(&circulation, &[], &out.dir)?;
     let imprint_results = if imprint.complete_blocks() >= 2 {
         let results = imprint.results();
         crate::imprint::write(
@@ -215,6 +216,7 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
     summary.push_str(&crate::circulation::summary(
         &circulation,
         &overturning,
+        None,
         None,
     ));
     summary.push_str(&crate::imprint::summary(

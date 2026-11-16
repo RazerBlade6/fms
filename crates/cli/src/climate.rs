@@ -783,7 +783,23 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         "year,month,latitude_deg,area_share,ice_cover,ice_volume_m,{}",
         monthly.join(",")
     );
+    // Each month's rain belt, from the same zonal means.
+    let path = out.dir.join("rain_belt.csv");
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    let mut rain_file = std::io::BufWriter::new(file);
+    let mut rain_result = writeln!(
+        rain_file,
+        "year,month,centroid_latitude_deg,tropical_rain_mm_day,subtropical_rain_mm_day"
+    );
+    let rain_index = 2 + monthly
+        .iter()
+        .position(|n| *n == "atm.precipitation")
+        .expect("precipitation is a monthly field");
     let band_latitudes = lat_bands.latitudes();
+    let band_degrees: Vec<f64> = band_latitudes.iter().map(|l| l.to_degrees()).collect();
+    // The last 12 completed months' zonal-mean precipitation, by month number.
+    let mut last_months: Vec<(u64, Vec<f64>)> = Vec::new();
     let band_shares: Vec<f64> = {
         let total: f64 = lat_bands.areas().iter().sum();
         lat_bands.areas().iter().map(|a| a / total).collect()
@@ -796,6 +812,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     while steps_in_month(month_done + 1) <= start_step {
         month_done += 1;
     }
+    let first_month = month_done;
     integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
         if si.steps() == total
             && let Some(path) = &args.save_restart
@@ -845,6 +862,22 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
                     .write_all(rows.as_bytes())
                     .and_then(|()| monthly_file.flush());
             }
+            let rain = &zonal[rain_index];
+            let value = |v: Option<f64>| v.map_or(String::new(), |v| format!("{v:.6}"));
+            if rain_result.is_ok() {
+                rain_result = writeln!(
+                    rain_file,
+                    "{year},{month},{},{},{}",
+                    value(fms_atmos::rain_belt(&band_degrees, rain)),
+                    value(fms_atmos::belt_mean(&band_degrees, rain, 0.0, 10.0)),
+                    value(fms_atmos::belt_mean(&band_degrees, rain, 20.0, 30.0)),
+                )
+                .and_then(|()| rain_file.flush());
+            }
+            if last_months.len() == crate::circulation::RAIN_BELT_MONTHS {
+                last_months.remove(0);
+            }
+            last_months.push((month, rain.clone()));
             for m in &mut month_sums {
                 m.fill(0.0);
             }
@@ -869,6 +902,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     })?;
     saved?;
     monthly_result.map_err(|e| format!("cannot write the monthly means: {e}"))?;
+    rain_result.map_err(|e| format!("cannot write the monthly rain belt: {e}"))?;
+    let rain_belt =
+        crate::circulation::RainBelt::of(&band_degrees, &last_months, month_done - first_month);
     let means: Vec<Vec<f64>> = sums
         .iter()
         .map(|s| s.iter().map(|v| v / samples).collect())
@@ -1033,6 +1069,16 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         args.image.width,
         &format!("CLIMATE: FINAL-YEAR OVERTURNING, {nc} CELLS"),
     )?;
+    let measures: Vec<(&str, Option<f64>)> = [("equator_pole_contrast_k", Some(contrast))]
+        .into_iter()
+        .chain(rain_belt.measures())
+        .collect();
+    crate::circulation::write_measures(&circulation, &measures, &out.dir)?;
+    rain_belt.write_chart(
+        &out.dir,
+        args.image.width,
+        &format!("CLIMATE: RAIN BELT, FINAL 12 MONTHS, {nc} CELLS"),
+    )?;
 
     // Summary.
     let area: f64 = geometry.cell_areas.iter().sum();
@@ -1156,6 +1202,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         &circulation,
         &overturning,
         Some(contrast),
+        Some(&rain_belt),
     ));
     let _ = writeln!(
         summary,

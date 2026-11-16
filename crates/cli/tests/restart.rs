@@ -149,7 +149,12 @@ fn a_resumed_run_continues_exactly_and_others_start_warm() {
         "{stderr}"
     );
     assert_same(&straight_file, &resumed_file);
-    for name in ["annual_cells.csv", "zonal_mean.csv", "overturning.csv"] {
+    for name in [
+        "annual_cells.csv",
+        "zonal_mean.csv",
+        "overturning.csv",
+        "circulation.csv",
+    ] {
         assert_same(
             &straight.join("climate").join(name),
             &resumed.join("climate").join(name),
@@ -161,17 +166,22 @@ fn a_resumed_run_continues_exactly_and_others_start_warm() {
         "{summary}"
     );
 
-    // The monthly means go on from the third year's first month: the
-    // straight run's last year, row for row.
-    let monthly = |out: &Path| text(&out.join("climate/monthly_zonal.csv"));
-    let (all, last_year) = (monthly(&straight), monthly(&resumed));
-    let header = all.lines().next().unwrap();
-    let year_3: Vec<&str> = all.lines().filter(|l| l.starts_with("3,")).collect();
-    let resumed_rows: Vec<&str> = last_year.lines().collect();
-    assert_eq!(resumed_rows[0], header);
-    assert!(resumed_rows[1].starts_with("3,1,"), "{}", resumed_rows[1]);
-    assert!(resumed_rows.last().unwrap().starts_with("3,12,"));
-    assert!(resumed_rows[1..] == year_3[..], "the resumed months differ");
+    // The monthly means and rain belt go on from the third year's first
+    // month: the straight run's last year, row for row.
+    for name in ["monthly_zonal.csv", "rain_belt.csv"] {
+        let monthly = |out: &Path| text(&out.join("climate").join(name));
+        let (all, last_year) = (monthly(&straight), monthly(&resumed));
+        let header = all.lines().next().unwrap();
+        let year_3: Vec<&str> = all.lines().filter(|l| l.starts_with("3,")).collect();
+        let resumed_rows: Vec<&str> = last_year.lines().collect();
+        assert_eq!(resumed_rows[0], header, "{name}");
+        assert!(resumed_rows[1].starts_with("3,1,"), "{}", resumed_rows[1]);
+        assert!(resumed_rows.last().unwrap().starts_with("3,12,"), "{name}");
+        assert!(
+            resumed_rows[1..] == year_3[..],
+            "the resumed months differ: {name}"
+        );
+    }
 
     // Warm starts from the same file: another CO₂, no gyres, another step.
     std::thread::scope(|s| {

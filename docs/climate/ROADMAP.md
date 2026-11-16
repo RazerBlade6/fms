@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.14.4.**
+**Next: M2.14.5.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -98,7 +98,7 @@ a visual check.
     edge, jets and cell counts in the `held-suarez` and `climate` outputs
   - [x] 14.2. Grid-imprinting check in a long Held–Suarez run (O-1)
   - [x] 14.3. Imprinting fix: not needed for the dry dynamics (O-1)
-  - [ ] 14.4. Reference aquaplanet with Earth's tilt: trades, jets, Hadley
+  - [x] 14.4. Reference aquaplanet with Earth's tilt: trades, jets, Hadley
     edge, equator-to-pole contrast, the rain belt's seasonal swing
   - [ ] 14.5. No tilt: no seasons, mirrored hemispheres, rain belt on the
     equator, grid imprint in the rain (O-1)

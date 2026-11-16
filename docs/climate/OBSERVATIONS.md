@@ -397,3 +397,20 @@ PW north and 0.09 south. Untested suspects: the eddy diffusivity (2000 m²/s, th
 paper's aquaplanet value), the missing barrier of the circumpolar current to eddy
 mixing, the deep-layer jump, and cloud brightness over the Southern Ocean. Tune with the
 winds (O-43) at M2.16.
+
+### O-51: The coupled aquaplanet's tropics are flat
+*Scheduled: M2.16.* The tilted aquaplanet with the coupled ocean, 2,562 cells, year 10
+(M2.14.4):
+- Rain is 4.3 mm/day within 10° of the equator, 3.3 at 20°–30° and 4.3 again near
+  40°, with twin peaks at ±8°. At fixed APE sea temperatures it is about 6 at 5° and
+  2.7 at 25°.
+- The sea is 299.6 K at the equator and 298.9 K at 14°. The ocean's heat transport is
+  the likely cause; not tested.
+- The rain belt swings 3.7° over the year, from 1.8°S in month 2 to 1.9°N in month 8
+  (months from the northern spring equinox), about four months behind the sun.
+- Equator to pole is 21 K at the surface and 18.5 K in the lowest layer, with no sea
+  ice and poles at 278.5 K.
+- Lowest-layer westerlies reach 3–3.5 m/s. Upper jets are 31 m/s at 32°, and the
+  Hadley cells 36–38 (10⁹ kg/s) with edges at 25–26°.
+- At 642 cells the measures are close (edges 23–24°, contrast 16 K, swing 3.7°), but
+  the belt flips between about 1.4°S and 2°N instead of swinging smoothly.

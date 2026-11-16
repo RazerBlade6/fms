@@ -243,6 +243,10 @@ leaves a small upward drift in the energy budget. Outputs in
 - `overturning.csv` and `overturning.png`: time-mean northward mass flux
   (kg/s, summed from the top down; positive is northward aloft) at each
   interior layer interface, one row per latitude-band boundary;
+- `circulation.csv`: the summary's circulation measures as `measure,value` rows:
+  `hadley_strength_kg_s`, `hadley_latitude_deg`, `hadley_edge_deg`, `cells`, `trades_edge_deg`, `jets`,
+  `jet_speed_m_s`, `jet_latitude_deg`, `westerlies_speed_m_s`, `westerlies_latitude_deg`, each with a
+  `_south` and a `_north` row;
 - `imprint.csv`: one row per field (`surface_pressure`, `temperature_lower`,
   `east_wind_upper`, `north_wind_lower`), in the field's units (Pa, K, m/s). Columns:
   `field`, `units`, `samples_a`, `samples_b`, `rms`, `zonal`, `noise`, `covariance`,
@@ -346,8 +350,8 @@ follow the last ocean jump is a warning, not an error, so a spin-up can be run
 in legs; it applies to the end year, the years already run plus `--years`.
 
 - The outputs cover only the new run, and replace those of an earlier run
-  written to the same `--out-dir`. `monthly_zonal.csv` holds only the new months,
-  with their absolute year and month numbers.
+  written to the same `--out-dir`. `monthly_zonal.csv` and `rain_belt.csv` hold
+  only the new months, with their absolute year and month numbers.
 - A run that blows up saves nothing.
 - An exact continuation (bit for bit, on any thread count) needs the same
   settings and the same build. The settings note says that something differs,
@@ -362,14 +366,28 @@ Outputs in `output/climate/`:
   kinetic energy removed by friction and diffusion + a time-stepping
   residual) and its water budget (change = evaporation − precipitation +
   the time filter's trace + a round-off residual), and the circulation (the
-  overturning cells, Hadley-cell edge, trades' edge, jets, and the lowest
-  layer's equator-to-pole temperature contrast);
+  overturning cells, Hadley-cell edge, trades' edge, jets, the lowest
+  layer's equator-to-pole temperature contrast, and the rain belt's annual
+  mean, furthest north and south with their months, and swing);
 - `zonal_mean.csv` and `zonal_mean.png`: winds, layer temperatures and
   every summarised physics field by latitude; the chart shows surface
   temperature, winds, net radiation, precipitation, evaporation and cloud;
 - `overturning.csv` and `overturning.png`: time-mean northward mass flux
   (kg/s, summed from the top down; positive is northward aloft) at each
   interior layer interface, one row per latitude-band boundary;
+- `circulation.csv`: the summary's circulation measures as `measure,value` rows:
+  `hadley_strength_kg_s`, `hadley_latitude_deg`, `hadley_edge_deg`, `cells`, `trades_edge_deg`, `jets`,
+  `jet_speed_m_s`, `jet_latitude_deg`, `westerlies_speed_m_s`, `westerlies_latitude_deg`, each with a
+  `_south` and a `_north` row, then `equator_pole_contrast_k`, `rain_belt_mean_deg`,
+  `rain_belt_north_deg`, `rain_belt_north_month`, `rain_belt_south_deg`,
+  `rain_belt_south_month`, `rain_belt_swing_deg`, `tropical_rain_mm_day` and
+  `subtropical_rain_mm_day`;
+- `rain_belt.csv` and `rain_belt.png`: one row per month of the run, with
+  `year,month,centroid_latitude_deg,tropical_rain_mm_day,subtropical_rain_mm_day`:
+  the rain belt's latitude (the centroid of rain within 20° of the equator) and the
+  mean rain within 10° of the equator and at 20°–30°; the chart shows the
+  belt's latitude over the final 12 months (months count from the northern
+  spring equinox);
 - `ocean_heat_transport.csv` and `ocean_heat_transport.png`: northward ocean
   heat transport across each latitude by Ekman transport, eddies, gyres and diffusion,
   and their total (PW);

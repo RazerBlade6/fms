@@ -38,7 +38,7 @@ pub mod transport;
 pub mod williamson;
 
 pub use baroclinic::ShearedFlow;
-pub use circulation::{Cell, Circulation, Jet, Overturning};
+pub use circulation::{Cell, Circulation, Jet, Overturning, RAIN_BELT_LIMIT, belt_mean, rain_belt};
 pub use climatology::{ZonalClimatology, ZonalMeans};
 pub use column_physics::{
     ColumnPhysics, Equilibrium, MAX_RADIATION_INTERVAL, MIN_RADIATION_CALLS_PER_DAY,
