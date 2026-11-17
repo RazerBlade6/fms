@@ -3,10 +3,12 @@
 //! across the band boundaries.
 
 use fms_grid::LatitudeBands;
+use fms_grid::mesh::CellId;
 use fms_grid::zonal::east_north;
 
 use crate::circulation::Overturning;
 use crate::layered::{LayeredModel, LayeredState};
+use crate::levels::MAX_LAYERS;
 
 /// Time-mean zonal means, per latitude band (south to north).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -66,6 +68,9 @@ pub struct ZonalClimatology {
     /// Summed northward mass flux (kg s⁻¹) per layer, top first, and band
     /// boundary, south pole to north pole.
     flux: Vec<Vec<f64>>,
+    /// Scratch: a sample's eastward wind and temperature per cell, per layer.
+    east: Vec<Vec<f64>>,
+    temperature: Vec<Vec<f64>>,
 }
 
 impl ZonalClimatology {
@@ -117,6 +122,8 @@ impl ZonalClimatology {
             dsigma: levels.dsigma().to_vec(),
             sigma: levels.interfaces()[1..].to_vec(),
             flux: vec![vec![0.0; n + 1]; model.layers()],
+            east: vec![vec![0.0; ops.mesh().n_cells()]; model.layers()],
+            temperature: vec![vec![0.0; ops.mesh().n_cells()]; model.layers()],
         }
     }
 
@@ -130,21 +137,19 @@ impl ZonalClimatology {
                 *s += m;
             }
         };
-        for k in 0..model.layers() {
-            let vectors = geometry.reconstruct_vectors(mesh, &state.u[k]);
-            let east: Vec<f64> = centers
-                .iter()
-                .zip(&vectors)
-                .map(|(&p, &v)| east_north(p, v).0)
-                .collect();
-            add(&mut self.sums.wind[k], &east);
-            let temperature: Vec<f64> = state
-                .ps
-                .iter()
-                .zip(&state.theta_ps[k])
-                .map(|(&ps, &t)| t / ps * model.layer_exner(ps)[k])
-                .collect();
-            add(&mut self.sums.temperature[k], &temperature);
+        let (levels, gas, layers) = (model.levels(), model.gas(), model.layers());
+        for (i, (&p, &ps)) in centers.iter().zip(&state.ps).enumerate() {
+            let mut exner = [0.0; MAX_LAYERS];
+            levels.layer_exner_into(gas, ps, &mut exner[..layers]);
+            for (k, &exner) in exner[..layers].iter().enumerate() {
+                let v = geometry.reconstruct_vector(mesh, i as CellId, |e| state.u[k][e as usize]);
+                self.east[k][i] = east_north(p, v).0;
+                self.temperature[k][i] = state.theta_ps[k][i] / ps * exner;
+            }
+        }
+        for k in 0..layers {
+            add(&mut self.sums.wind[k], &self.east[k]);
+            add(&mut self.sums.temperature[k], &self.temperature[k]);
         }
         add(&mut self.sums.surface_pressure, &state.ps);
         // The model's own layer mass flux, δσₖ p̄ₛ uₑ (Pa m s⁻¹), times

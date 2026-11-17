@@ -928,8 +928,9 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             saved = restart::save(path, si, settings);
         }
         let forcing = si.model().forcing().expect("climate has forcing");
+        // Every field this sample reads, built once.
+        let fields = forcing.cell_fields();
         {
-            let fields = forcing.cell_fields();
             let (cover, thickness) = (&fields[ice_index[0]].values, &fields[ice_index[1]].values);
             for (i, land) in land.iter().enumerate() {
                 let c = cover[i] * (1.0 - land);
@@ -1010,7 +1011,6 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         }
         if si.steps() > stats_from {
             climate.sample(si.model(), si.state());
-            let fields = forcing.cell_fields();
             for (sum, &i) in sums.iter_mut().zip(&index) {
                 for (s, v) in sum.iter_mut().zip(&fields[i].values) {
                     *s += v;
