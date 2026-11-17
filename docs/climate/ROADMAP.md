@@ -108,9 +108,9 @@ a visual check.
     larger contrast (O-53)
   - [x] 14.8. Close-out
 - [ ] 15. **Performance pass**: speed 2 (one model week a second) for the full
-  `climate` run at 2,562 cells, about 295 steps/s. Kernel time, scheduler
-  overhead, solver, operator fusion, physics and ocean (O-8, O-12, O-13, O-29,
-  O-54).
+  `climate` run at the default resolution (20,252 cells), from a fresh
+  baseline there. Kernel time, scheduler overhead, solver, operator fusion,
+  physics and ocean (O-8, O-12, O-13, O-29, O-54).
 - [ ] 16. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
   winds and temperatures aloft, with a tuning pass: cloud brightness and
   albedo (O-42), trade winds and jets, the tropical rain belt and its
