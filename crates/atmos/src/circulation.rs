@@ -16,6 +16,9 @@ pub const JET_PROMINENCE: f64 = 2.0;
 /// The smallest prominence of a jet as a fraction of the profile's strongest
 /// westerly.
 pub const JET_FRACTION: f64 = 0.15;
+/// The smallest topographic prominence of a belt of lowest-layer westerlies
+/// (m s⁻¹). These winds are a few m s⁻¹, so the bar is lower than a jet's.
+pub const WESTERLIES_PROMINENCE: f64 = 1.0;
 
 /// Time-mean meridional overturning: the mass streamfunction on band boundaries.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -214,13 +217,27 @@ pub fn trades_edge(latitude: &[f64], wind: &[f64], north: bool) -> Option<f64> {
 /// [`JET_FRACTION`] of the strongest westerly. Latitude and speed are refined
 /// by a parabola through the maximum and its neighbours.
 pub fn jets(latitude: &[f64], wind: &[f64]) -> Vec<Jet> {
+    maxima(latitude, wind, JET_PROMINENCE)
+}
+
+/// The belts of westerlies of a lowest-layer eastward-wind profile, south to
+/// north: as [`jets`], with [`WESTERLIES_PROMINENCE`] in place of
+/// [`JET_PROMINENCE`]. Each belt lies under an eddy-driven jet, so two in a
+/// hemisphere mark two such jets.
+pub fn westerlies(latitude: &[f64], wind: &[f64]) -> Vec<Jet> {
+    maxima(latitude, wind, WESTERLIES_PROMINENCE)
+}
+
+/// The maxima of westerly wind with a topographic prominence of at least
+/// `prominence` and [`JET_FRACTION`] of the strongest westerly.
+fn maxima(latitude: &[f64], wind: &[f64], prominence: f64) -> Vec<Jet> {
     assert_eq!(latitude.len(), wind.len(), "one wind per latitude");
     let n = wind.len();
     let strongest = wind.iter().fold(0.0f64, |m, &v| m.max(v));
     if strongest <= 0.0 {
         return Vec::new();
     }
-    let floor = JET_PROMINENCE.max(JET_FRACTION * strongest);
+    let floor = prominence.max(JET_FRACTION * strongest);
     let lowest = wind.iter().fold(f64::INFINITY, |m, &v| m.min(v));
     let mut out = Vec::new();
     let mut i = 0;
@@ -379,7 +396,7 @@ pub struct Circulation {
     pub cells: Vec<Cell>,
     /// Jets of the upper layer, south to north.
     pub jets: Vec<Jet>,
-    /// Maxima of the lowest layer's westerlies, south to north.
+    /// Belts of the lowest layer's westerlies ([`westerlies`]), south to north.
     pub westerlies: Vec<Jet>,
     /// Where the lowest layer's trades end, [south, north], as positive latitudes.
     pub trades_edge: [Option<f64>; 2],
@@ -394,7 +411,7 @@ impl Circulation {
         Self {
             cells: cells(&overturning.latitude, overturning.at(0.5)),
             jets: jets(lat, &means.wind[upper]),
-            westerlies: jets(lat, &means.wind[lower]),
+            westerlies: westerlies(lat, &means.wind[lower]),
             trades_edge: [false, true].map(|north| trades_edge(lat, &means.wind[lower], north)),
         }
     }
@@ -594,6 +611,30 @@ mod tests {
                 speed: 10.0
             }]
         );
+    }
+
+    #[test]
+    fn a_second_belt_of_weak_westerlies_counts_where_a_jet_would_not() {
+        let lat = centres(64);
+        // Northern westerlies of 3.2 m/s at 32° and 4.4 m/s at 60°, each 12°
+        // wide, on easterlies of 1 m/s: the dip between them is 1.8 m/s
+        // below the weaker belt.
+        let gauss = |l: f64, c: f64, s: f64| s * fms_math::exp(-((l - c) / 12.0).powi(2));
+        let u: Vec<f64> = lat
+            .iter()
+            .map(|&l| gauss(l, 32.0, 4.2) + gauss(l, 60.0, 5.4) - 1.0)
+            .collect();
+        let belts = westerlies(&lat, &u);
+        assert_eq!(belts.len(), 2, "{belts:?}");
+        assert!((belts[0].latitude - 32.0).abs() < 1.5, "{belts:?}");
+        assert!((belts[1].latitude - 60.0).abs() < 1.5, "{belts:?}");
+        assert_eq!(jets(&lat, &u).len(), 1);
+        // A 0.5 m/s ripple is not a belt.
+        let u: Vec<f64> = lat
+            .iter()
+            .map(|&l| gauss(l, 45.0, 4.0) + 0.25 * fms_math::sin(l.to_radians() * 30.0))
+            .collect();
+        assert_eq!(westerlies(&lat, &u).len(), 1);
     }
 
     #[test]

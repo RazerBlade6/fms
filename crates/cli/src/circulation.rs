@@ -204,7 +204,7 @@ pub fn write_measures(
     let hadley = |north| circulation.hadley(north);
     let jet = |north| strongest(&circulation.jets, north);
     let westerlies = |north| strongest(&circulation.westerlies, north);
-    let measures: [Measure; 10] = [
+    let measures: [Measure; 11] = [
         ("hadley_strength_kg_s", &|n| hadley(n).map(|c| c.strength)),
         ("hadley_latitude_deg", &|n| hadley(n).map(|c| c.latitude)),
         ("hadley_edge_deg", &|n| {
@@ -221,6 +221,9 @@ pub fn write_measures(
         }),
         ("jet_speed_m_s", &|n| jet(n).map(|j| j.speed)),
         ("jet_latitude_deg", &|n| jet(n).map(|j| j.latitude)),
+        ("westerly_belts", &|n| {
+            Some(hemisphere_jets(&circulation.westerlies, n).len() as f64)
+        }),
         ("westerlies_speed_m_s", &|n| westerlies(n).map(|j| j.speed)),
         ("westerlies_latitude_deg", &|n| {
             westerlies(n).map(|j| j.latitude)

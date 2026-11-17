@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.14.7.**
+**Next: M2.14.8.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -104,7 +104,8 @@ a visual check.
     equator; grid imprint in the rain too small to fix (O-1, O-52)
   - [x] 14.6. Slow rotation: wider Hadley cell, jets further poleward, smaller
     contrast (O-53)
-  - [ ] 14.7. Fast rotation: narrower Hadley cell, more jets, larger contrast
+  - [x] 14.7. Fast rotation: narrower Hadley cell, a second belt of westerlies,
+    larger contrast (O-53)
   - [ ] 14.8. Close-out
 - [ ] 15. **Performance pass**: target speed 2 (~340 steps/s) at the default
   resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,

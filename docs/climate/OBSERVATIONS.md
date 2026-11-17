@@ -456,8 +456,8 @@ From M2.14.5 (no tilt, 2,562 cells):
   to 0.17 K within 60°.
 
 ### O-53: The aquaplanet at other rotation rates
-*Recorded at M2.14.6.* The reference aquaplanet (O-51) with only the day's length
-changed and the year kept the same in seconds; 2,562 cells, year 9.
+*Recorded at M2.14.6 and M2.14.7.* The reference aquaplanet (O-51) with only the
+day's length changed and the year kept the same in seconds; 2,562 cells, year 9.
 
 A 48-hour day:
 - Hadley cells 79 and 84 (10⁹ kg/s) against 36–38, with edges at 33.9° and −34.3°
@@ -469,5 +469,27 @@ A 48-hour day:
   scale doubles; the atmosphere's share of the change is not separated.
 - The rain belt swings 4.8° against 3.7°.
 - The edge moves 8° poleward, far less than the doubling of the axisymmetric scaling.
-- At 642 cells: edges at 35.7° and −35.8° against 22.6° and −24.1°, jets at 41° against 30°,
-  contrast 15.8 K against 16.3 K.
+- At 642 cells: edges at 35.7° and −35.8° against 22.6° and −24.1°, jets at 41°
+  against 30°, contrast 15.8 K against 16.3 K.
+
+A 12-hour day:
+- Hadley cells 17 (10⁹ kg/s) against 36–38, with edges at 21.2° and −20.7° against
+  25–26°. The trades end at 23° against 26.5°.
+- Upper-layer jets 22 m/s at 25.5° against 31 m/s at 32–33°.
+- Two belts of lowest-layer westerlies each side against one: 3 m/s at 31–37° and
+  4.8 m/s at 68–71°, with 1.2–1.4 m/s between.
+- Equator to pole is 24.1 K in the lowest layer against 18.0–18.5 K, and 27–30 K at
+  the surface against 21 K. The ocean carries 0.5 PW against 0.8–0.9, since its eddy
+  scale halves; the atmosphere's share of the change is not separated.
+- The rain belt swings 2.1° against 3.7°. The planet is 2.5 K warmer (295.1 K), with
+  an albedo of 0.294 against 0.311.
+- The edge moves 5° equatorward, far less than the halving of the axisymmetric
+  scaling.
+- At 10,242 cells, against the reference there (Hadley cells 35–37 with edges at 27.4°
+  and −26.0°, jets 29–32 m/s at 32°, contrast 19.0 K, one belt each side): Hadley
+  cells 19–22 with edges at ±20.0°, jets 25 m/s at 23°, contrast 22.4 K, belts of 3.0–3.2
+  m/s at 32° and 3.3–4.4 m/s at 60° with easterlies poleward of 71°. The northern upper
+  layer has a second jet (15 m/s at 58°); the southern one's rise of 2 m/s is under
+  the jet threshold.
+- 642 cells do not resolve it: the overturning breaks into 4–9 weak cells each side
+  and the contrast is 61 K.

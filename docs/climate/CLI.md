@@ -245,7 +245,8 @@ leaves a small upward drift in the energy budget. Outputs in
   interior layer interface, one row per latitude-band boundary;
 - `circulation.csv`: the summary's circulation measures as `measure,value` rows:
   `hadley_strength_kg_s`, `hadley_latitude_deg`, `hadley_edge_deg`, `cells`, `trades_edge_deg`, `jets`,
-  `jet_speed_m_s`, `jet_latitude_deg`, `westerlies_speed_m_s`, `westerlies_latitude_deg`, each with a
+  `jet_speed_m_s`, `jet_latitude_deg`, `westerly_belts`, `westerlies_speed_m_s`,
+  `westerlies_latitude_deg`, each with a
   `_south` and a `_north` row;
 - `imprint.csv`: one row per field (`surface_pressure`, `temperature_lower`,
   `east_wind_upper`, `north_wind_lower`), in the field's units (Pa, K, m/s). Columns:
@@ -400,7 +401,8 @@ Outputs in `output/climate/`:
   interior layer interface, one row per latitude-band boundary;
 - `circulation.csv`: the summary's circulation measures as `measure,value` rows:
   `hadley_strength_kg_s`, `hadley_latitude_deg`, `hadley_edge_deg`, `cells`, `trades_edge_deg`, `jets`,
-  `jet_speed_m_s`, `jet_latitude_deg`, `westerlies_speed_m_s`, `westerlies_latitude_deg`, each with a
+  `jet_speed_m_s`, `jet_latitude_deg`, `westerly_belts`, `westerlies_speed_m_s`,
+  `westerlies_latitude_deg`, each with a
   `_south` and a `_north` row, then `equator_pole_contrast_k`, `rain_belt_mean_deg`,
   `rain_belt_north_deg`, `rain_belt_north_month`, `rain_belt_south_deg`,
   `rain_belt_south_month`, `rain_belt_swing_deg`, `tropical_rain_mm_day` and

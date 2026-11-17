@@ -296,6 +296,8 @@ the freezing point (271.35 K) at the base.
   where the easterlies first turn westerly.
 - **Jets**: maxima of the zonal-mean westerlies at least 2 m/s and 15% of the
   strongest westerly above their surroundings, refined by a parabola.
+- **Belts of westerlies**: the same in the lowest layer, with 1 m/s in place of
+  2 m/s. Each belt lies under an eddy-driven jet.
 - **Rain belt** (`climate` only): the centroid Σ φ P cos φ / Σ P cos φ of
   zonal-mean rain over the latitude bands whose centre is within 20° of the
   equator. It is computed for each month from that month's zonal-mean rain. The

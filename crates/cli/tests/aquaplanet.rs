@@ -4,7 +4,10 @@
 //! belt that follows the sun. Without tilt, on a circular orbit, it has no
 //! seasons, mirrored hemispheres and its rain belt on the equator. With a
 //! day twice as long, its Hadley cells are wider and stronger, its jets
-//! further poleward and its equator-to-pole contrast smaller.
+//! further poleward and its equator-to-pole contrast smaller. With a day half
+//! as long (at 2,562 cells, which its smaller storms need), its Hadley cells
+//! are narrower and weaker, its contrast larger, and each hemisphere has a
+//! second belt of westerlies.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -49,22 +52,39 @@ fn measures(csv: &str) -> HashMap<String, Option<f64>> {
         .collect()
 }
 
+/// The grid of a run: 642 cells with 24 latitude bands, or 2,562 cells with
+/// the default 32.
+#[derive(Clone, Copy)]
+enum Grid {
+    Cells642,
+    Cells2562,
+}
+
 /// Runs `fms-climate climate` as shipped at 642 cells, with 24 latitude
 /// bands and small images, and `extra` options, into a fresh directory
 /// named after `name`; prints every measure of `circulation.csv` and
 /// returns the directory and the measures.
 fn run_aquaplanet(name: &str, extra: &[&str]) -> (TempDir, HashMap<String, Option<f64>>) {
+    run_on(Grid::Cells642, name, extra)
+}
+
+/// As [`run_aquaplanet`], on `grid`.
+fn run_on(grid: Grid, name: &str, extra: &[&str]) -> (TempDir, HashMap<String, Option<f64>>) {
     let dir = TempDir::new(name);
-    let output = Command::new(env!("CARGO_BIN_EXE_fms-climate"))
-        .args([
-            "climate",
+    let grid: &[&str] = match grid {
+        Grid::Cells642 => &[
             "--terrain-frequency",
             "16",
             "--climate-frequency",
             "8",
             "--bands",
             "24",
-        ])
+        ],
+        Grid::Cells2562 => &["--terrain-frequency", "32", "--climate-frequency", "16"],
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_fms-climate"))
+        .arg("climate")
+        .args(grid)
         .args(extra)
         .args([
             "--width",
@@ -339,6 +359,69 @@ fn a_longer_day_widens_the_hadley_cells_and_moves_the_jets_poleward() {
     );
     assert!(
         contrast < was,
+        "equator-pole contrast {contrast} K against {was} K"
+    );
+}
+
+#[test]
+#[ignore = "slow: two runs of nine model years at 2,562 cells, together (20–60 minutes); run with --ignored"]
+fn a_shorter_day_narrows_the_hadley_cells_and_adds_a_belt_of_westerlies() {
+    // A 12-hour day in a year of the same length in seconds, and the
+    // reference on the same grid. 642 cells don't resolve the storms of the
+    // shorter day, which are half the size.
+    let (fast, reference) = std::thread::scope(|scope| {
+        let fast = scope.spawn(|| {
+            run_on(
+                Grid::Cells2562,
+                "fast",
+                &["--solar-day", "12", "--year-days", "730.4844"],
+            )
+            .1
+        });
+        let reference = run_on(Grid::Cells2562, "reference-2562", &[]).1;
+        (fast.join().expect("the fast run"), reference)
+    });
+    for side in ["north", "south"] {
+        let both = |name: &str| {
+            let name = format!("{name}_{side}");
+            (get(&fast, &name).abs(), get(&reference, &name).abs())
+        };
+
+        // Hadley edges: measured +21.2° and −20.7° against +26.2° and −25.7°.
+        let (edge, was) = both("hadley_edge_deg");
+        assert!(
+            edge <= was - 3.0,
+            "{side}ern Hadley edge {edge}° against {was}°"
+        );
+
+        // Hadley strengths: measured +17.3e9 and −16.9e9 kg/s against
+        // +35.1e9 and −40.1e9.
+        let (strength, was) = both("hadley_strength_kg_s");
+        assert!(
+            strength <= 0.7 * was,
+            "{side}ern Hadley cell {strength} against {was} kg/s"
+        );
+
+        // Upper-layer jets: measured ±25.5° against +32.3° and −32.1°.
+        let (jet, was) = both("jet_latitude_deg");
+        assert!(jet <= was - 3.0, "{side}ern jet at {jet}° against {was}°");
+
+        // Belts of lowest-layer westerlies: measured two each side against
+        // one.
+        let (belts, was) = both("westerly_belts");
+        assert!(
+            belts > was,
+            "{belts} {side}ern belts of westerlies against {was}"
+        );
+    }
+
+    // Equator-to-pole contrast: measured 24.1 K against 18.0 K.
+    let (contrast, was) = (
+        get(&fast, "equator_pole_contrast_k"),
+        get(&reference, "equator_pole_contrast_k"),
+    );
+    assert!(
+        contrast >= was + 3.0,
         "equator-pole contrast {contrast} K against {was} K"
     );
 }
