@@ -129,7 +129,7 @@ step from a design maximum wind: flows accelerate, and Williamson 5 blew up othe
 time and removing it was worth 1 to 2%.
 
 ### O-49: Ocean transport is about 5% of a step
-*Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing.
+*Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing. At 20,252 cells after M2.15 it is 9% of a step (1.07 ms): the gyres' solve is 94% of it, half of that the ILU preconditioner on one thread. A parallel preconditioner would change the iteration counts.
 
 ### O-54: `fms-climate run` spends 40–45% of its CPU time in the kernel
 *Resolved at M2.15* ([BENCHMARKS.md](BENCHMARKS.md)). The kernel time was the thread

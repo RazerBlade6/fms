@@ -93,9 +93,9 @@ violation or out-of-bounds pressure or θ, and writes a diagnostic dump.
 **Threads.** Each phase of a step is one parallel region whose tasks are the layers
 (or the vertical modes), each running its whole chain of operators; the column
 physics is one region per call over small groups of columns. A loop over one layer
-goes to the pool only from 8,192 elements, and below that runs where it is. Sums add
-in a fixed order (chunks of 4,096, then the chunks in order), so results are
-identical to the last bit on any number of threads. A step allocates nothing.
+goes to the pool only from 8,192 elements (in pieces of 1,024), and below that runs
+where it is. Sums add in a fixed order, whatever computed their terms, so results
+are identical to the last bit on any number of threads. A step allocates nothing.
 
 ## Column physics (`column_physics`)
 

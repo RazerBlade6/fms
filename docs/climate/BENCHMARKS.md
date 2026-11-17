@@ -315,6 +315,56 @@ times faster asleep and 5.4 spinning: tendencies 7 times, surface fluxes and
 radiation 10 times, the implicit right-hand side, the solves, the
 back-substitution and the transport 3 to 5 times.
 
+### Single-threaded loops at large grids (15.8, `e64d918` to `788b5c3`)
+
+After the threads spun, a fifth of a step at 20,252 cells was loops over the
+cells or edges still on one thread. They now use the pool from 8,192
+elements and are plain loops below. Results are identical: at 10,242 cells
+against a run from before (on 15 threads spinning and on 4 sleeping) and at
+2,562 cells against `auto-2562-1`, where the speed is unchanged (346 and 347
+steps a second).
+
+20,252 cells, the first 3,000 steps from rest, 15 threads with 14 spinning
+(runs `lg-before` and `lg-final`, taken an hour apart on a warm machine;
+radiation, which wasn't touched, differs by 2% between them):
+
+| Phase (ms a step) | Before | After |
+| --- | --- | --- |
+| Physics tendency | 4.16 | 3.43 |
+| of which column tendencies | 0.94 | 0.52 |
+| Dynamics tendency, beside it | 4.16 | 4.00 |
+| Hyperdiffusion, beside it | 3.78 | 3.36 |
+| Budgets and lagged tendencies | 0.14 | 0.07 |
+| Implicit right-hand side | 0.83 | 0.58 |
+| Helmholtz solves | 1.61 | 1.66 |
+| Back-substitution, mass fluxes | 0.63 | 0.42 |
+| Flux-corrected transport | 1.56 | 1.25 |
+| Negative-humidity fill | 0.24 | 0.08 |
+| Ocean transport | 1.35 | 1.07 |
+| Land and budgets | 0.27 | 0.08 |
+| Health check | 0.45 | 0.08 |
+| Diagnostics | 0.10 | 0.02 |
+| **A step** | **13.92** | **11.61** |
+| **Steps a second** | **71.8** | **86.1** |
+
+These first 3,000 steps run faster than a year's average: the code of the
+"before" column made 65.3 steps a second over the 1.1-year run above. The
+year's figure for the "after" column is the close-out's.
+
+- The health check summarizes the fields side by side and scans in order
+  only a state with a problem, so the error it reports is the same.
+- Sums whose order matters (the land and water budgets, the humidity fill's
+  totals) have their terms computed side by side into a kept buffer and are
+  added in the old order.
+- The implicit right-hand side, the back-substitution's θ and the interface
+  mass fluxes do all layers in one region instead of a region per layer.
+- A loop that is split (8,192 elements or more) is handed out in pieces of
+  1,024 instead of 4,096: 5% of a step, measured; 512 gained nothing more.
+- Ocean transport: the gyre solver keeps its vectors and does its matrix
+  products and updates on the pool; advection and diffusion gather per cell
+  in the links' order. The solve is still 94% of the transport, half of that
+  its ILU preconditioner on one thread (O-49).
+
 ### Drift on the day
 
 From the afternoon of 2026-11-17, after about three hours of all-core load,
@@ -339,13 +389,14 @@ COLD=1 YEARS=1.1 IDLE=sleep scripts/perf.sh bench 20252 final-20252-sleep
 STEPS=3000 COLD=1 YEARS=1.1 THREADS=1 scripts/perf.sh bench 20252 final-20252-t1
 scripts/perf.sh profile 2562 final-profile-2562 && scripts/perf.sh top final-profile-2562
 scripts/perf.sh same final-2562-1 auto-2562-1     # identical results to today's
+scripts/perf.sh same final-20252 spin-20252-cold  # and at the default grid
 ```
 
 Then: the final table here (2,562 and 20,252 cells against the baseline), the
 target at 20,252 cells decided, the roadmap's 15.9 ticked. The runs of
 2026-11-17 kept in `output/m2.15/` for comparison: `base-2562-1` (baseline
 results), `auto-2562-1` (results after 15.6), `base-20252-cold`,
-`final-20252-cold` and `spin-20252-cold`.
+`final-20252-cold` and `spin-20252-cold`, and `lg-ref` (10,242 cells).
 
 ### Measured and not adopted
 
@@ -359,6 +410,12 @@ results), `auto-2562-1` (results after 15.6), `base-20252-cold`,
 - Computing the next step's dynamics tendencies beside the physics' advance:
   the advance is shorter than those tendencies on four steps in five, so
   nothing is saved.
+- Left for a decision, each changing results at rounding level or more, with
+  estimated gains at 20,252 cells (of 11.6 ms a step): the solvers' dot
+  products in pieces of 1,024 instead of 4,096 (0.2 to 0.5 ms in the
+  Helmholtz solves, 0.1 ms in the gyres'); the gyre preconditioner
+  multiplying by a stored reciprocal (0.05 to 0.1 ms) or made parallel (up
+  to 0.4 ms, with other iteration counts).
 
 ## Earlier benchmarks
 
