@@ -25,6 +25,22 @@ pub use orbit::{Orbit, OrbitState, eccentric_anomaly, eccentric_from_true, true_
 pub use params::{Adjustment, PlanetParams, SOLAR_CONSTANT_1AU};
 pub use seasons::{Hemisphere, Season};
 
+/// The sunlight at one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sunlight {
+    /// Unit vector towards the Sun, in planet-fixed coordinates.
+    pub direction: DVec3,
+    /// Stellar flux at the planet's distance (W m⁻²).
+    pub flux: f64,
+}
+
+impl Sunlight {
+    /// Top-of-atmosphere flux at the unit vector `p` (W m⁻²).
+    pub fn at(&self, p: DVec3) -> f64 {
+        self.flux * p.dot(self.direction).max(0.0)
+    }
+}
+
 /// A validated planet with derived quantities.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Planet {
@@ -133,12 +149,20 @@ impl Planet {
     /// Top-of-atmosphere flux at many points at time `t`, in parallel.
     pub fn insolation_into(&self, points: &[DVec3], t: f64, out: &mut [f64]) {
         assert_eq!(points.len(), out.len());
-        let state = self.orbit.state(t);
-        let sun = self.sun_direction(t);
-        let flux = self.mean_flux / state.distance_ratio.powi(2);
+        let sunlight = self.sunlight(t);
         out.par_iter_mut()
             .zip(points)
-            .for_each(|(o, p)| *o = flux * p.dot(sun).max(0.0));
+            .for_each(|(o, &p)| *o = sunlight.at(p));
+    }
+
+    /// The sunlight at time `t`, for the flux at any point
+    /// ([`Sunlight::at`]; the values of [`insolation_into`](Self::insolation_into)).
+    pub fn sunlight(&self, t: f64) -> Sunlight {
+        let state = self.orbit.state(t);
+        Sunlight {
+            direction: self.sun_direction(t),
+            flux: self.mean_flux / state.distance_ratio.powi(2),
+        }
     }
 
     /// Top-of-atmosphere flux averaged over one day at latitude `lat` (radians),

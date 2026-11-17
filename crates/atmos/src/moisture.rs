@@ -77,8 +77,8 @@
 use crate::layered::Gas;
 use crate::levels::{Levels, MAX_LAYERS};
 use crate::radiation::{
-    LayerSaturation, RadiationParams, layer_saturation, saturation_humidity, saturation_pressure,
-    specific_humidity,
+    LayerSaturation, RadiationParams, layer_saturation, layer_saturation_into, saturation_humidity,
+    saturation_pressure, specific_humidity,
 };
 
 /// Latent heat of vaporization (J kg⁻¹).
@@ -220,6 +220,44 @@ pub struct MoistColumn {
     pub orographic_ascent: f64,
 }
 
+impl MoistColumn {
+    fn view(&self) -> ColumnView<'_> {
+        ColumnView {
+            ps: self.ps,
+            temperature: &self.temperature,
+            humidity: &self.humidity,
+            surface_air: self.surface_air,
+            surface_humidity: self.surface_humidity,
+            surface_saturation: saturation_humidity(self.surface_air, self.ps),
+            stratosphere: self.stratosphere,
+            orographic_ascent: self.orographic_ascent,
+        }
+    }
+}
+
+/// A [`MoistColumn`] borrowed, with the surface air's saturation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ColumnView<'a> {
+    pub ps: f64,
+    pub temperature: &'a [f64],
+    pub humidity: &'a [f64],
+    pub surface_air: f64,
+    pub surface_humidity: f64,
+    /// Saturation specific humidity of the surface air (kg kg⁻¹),
+    /// `saturation_humidity(surface_air, ps)`.
+    pub surface_saturation: f64,
+    pub stratosphere: f64,
+    pub orographic_ascent: f64,
+}
+
+impl ColumnView<'_> {
+    /// The convective parcel's humidity: the surface air's, at most
+    /// saturated.
+    pub(crate) fn parcel_humidity(&self) -> f64 {
+        self.surface_humidity.clamp(0.0, self.surface_saturation)
+    }
+}
+
 /// The moist physics' tendencies and diagnostics for one column.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MoistTendency {
@@ -338,6 +376,19 @@ impl Setting<'_> {
         layer_saturation(self.radiation, self.gas, self.levels, ps, self.gravity, t)
     }
 
+    fn saturation_into(&self, ps: f64, t: &[f64], out: &mut [LayerSaturation]) {
+        layer_saturation_into(
+            self.radiation,
+            self.gas,
+            self.levels,
+            ps,
+            self.gravity,
+            t,
+            out,
+        );
+    }
+
+    #[cfg(test)]
     fn masses(&self, ps: f64) -> Vec<f64> {
         self.levels
             .dsigma()
@@ -368,6 +419,10 @@ const TABLE_STEP: f64 = 0.125;
 /// Intervals below 0 °C.
 const TABLE_ICE: usize = 1000;
 const TABLE_START: f64 = 273.15 - TABLE_ICE as f64 * TABLE_STEP;
+/// `1 / TABLE_STEP`; the step is a power of two, so multiplying by this is
+/// dividing by the step, exactly.
+const TABLE_SCALE: f64 = 1.0 / TABLE_STEP;
+const _: () = assert!(TABLE_STEP * TABLE_SCALE == 1.0 && TABLE_STEP == 0.125);
 
 /// [`saturation_pressure`] tabulated for [`lift`], which spends most of its
 /// time there: per interval, the values and (scaled) slopes at its ends, for
@@ -406,7 +461,7 @@ impl SaturationTable {
     /// Saturation vapour pressure (Pa) at `t` (K); the formula itself
     /// outside the table.
     fn pressure(&self, t: f64) -> f64 {
-        let x = (t - TABLE_START) / TABLE_STEP;
+        let x = (t - TABLE_START) * TABLE_SCALE;
         if !(x >= 0.0 && x < TABLE_INTERVALS as f64) {
             return saturation_pressure(t);
         }
@@ -441,87 +496,210 @@ fn lift_from(
     p_to: f64,
     known: Option<f64>,
 ) -> (f64, f64, Option<f64>) {
-    let (r, cp) = (gas.gas_constant, gas.heat_capacity);
-    let span = fms_math::ln(p / p_to);
-    if span <= 0.0 {
-        return (t, q, known);
-    }
-    let steps = (span / 0.05).ceil().max(1.0);
-    let h = span / steps;
-    // Pressure falls by this factor every half step.
-    let half = fms_math::exp(-0.5 * h);
-    let steps = steps as u64;
+    let mut parcel = Lift::new(t, q, p, p_to, known);
     let table = SaturationTable::get();
-    let saturation_humidity = |t: f64, p: f64| specific_humidity(table.pressure(t), p);
-    let (mut t, mut q, mut p, mut known) = (t, q, p, known);
-    let slope = |t: f64, qs: f64, q: f64| -> (f64, bool) {
-        if q < qs {
-            // Dry: θ conserved, dT/d ln p = κ T.
-            (r * t / cp, false)
-        } else {
-            (
-                (r * t + LATENT_HEAT * qs)
-                    / (cp + LATENT_HEAT * LATENT_HEAT * qs / (VAPOUR_GAS_CONSTANT * t * t)),
-                true,
-            )
-        }
+    while parcel.running() {
+        parcel.step(gas, table);
+    }
+    parcel.end()
+}
+
+/// A parcel part way through [`lift_from`]: its state and its steps.
+#[derive(Clone, Copy, Debug)]
+struct Lift {
+    t: f64,
+    q: f64,
+    p: f64,
+    p_to: f64,
+    known: Option<f64>,
+    /// Step in `ln p`, and the factor pressure falls by every half step.
+    h: f64,
+    half: f64,
+    steps: u64,
+    done: u64,
+}
+
+impl Lift {
+    /// Nothing to lift.
+    const IDLE: Self = Self {
+        t: 0.0,
+        q: 0.0,
+        p: 0.0,
+        p_to: 0.0,
+        known: None,
+        h: 0.0,
+        half: 0.0,
+        steps: 0,
+        done: 0,
     };
-    for i in 0..steps {
-        let qs = known.take().unwrap_or_else(|| saturation_humidity(t, p));
-        let (s1, _) = slope(t, qs, q);
-        let (t_mid, p_mid) = (t - 0.5 * h * s1, p * half);
-        let (s2, saturated) = slope(t_mid, saturation_humidity(t_mid, p_mid), q);
-        t -= h * s2;
-        // The last step ends exactly at `p_to`.
-        p = if i + 1 == steps { p_to } else { p_mid * half };
-        if saturated {
-            let qs = saturation_humidity(t, p);
-            q = q.min(qs);
-            known = Some(qs);
+
+    /// A parcel at `(t, q)` and pressure `p` to lift to `p_to`, with the
+    /// saturation humidity at the start if it is `known`.
+    fn new(t: f64, q: f64, p: f64, p_to: f64, known: Option<f64>) -> Self {
+        let span = fms_math::ln(p / p_to);
+        if span <= 0.0 {
+            return Self {
+                t,
+                q,
+                known,
+                ..Self::IDLE
+            };
+        }
+        let steps = (span / 0.05).ceil().max(1.0);
+        let h = span / steps;
+        // Pressure falls by this factor every half step.
+        let half = fms_math::exp(-0.5 * h);
+        Self {
+            t,
+            q,
+            p,
+            p_to,
+            known,
+            h,
+            half,
+            steps: steps as u64,
+            done: 0,
         }
     }
-    (t, q, known)
+
+    fn running(&self) -> bool {
+        self.done < self.steps
+    }
+
+    /// One midpoint step.
+    fn step(&mut self, gas: Gas, table: &SaturationTable) {
+        let (r, cp) = (gas.gas_constant, gas.heat_capacity);
+        let saturation_humidity = |t: f64, p: f64| specific_humidity(table.pressure(t), p);
+        let slope = |t: f64, qs: f64, q: f64| -> (f64, bool) {
+            if q < qs {
+                // Dry: θ conserved, dT/d ln p = κ T.
+                (r * t / cp, false)
+            } else {
+                (
+                    (r * t + LATENT_HEAT * qs)
+                        / (cp + LATENT_HEAT * LATENT_HEAT * qs / (VAPOUR_GAS_CONSTANT * t * t)),
+                    true,
+                )
+            }
+        };
+        let (h, half) = (self.h, self.half);
+        let qs = self
+            .known
+            .take()
+            .unwrap_or_else(|| saturation_humidity(self.t, self.p));
+        let (s1, _) = slope(self.t, qs, self.q);
+        let (t_mid, p_mid) = (self.t - 0.5 * h * s1, self.p * half);
+        let (s2, saturated) = slope(t_mid, saturation_humidity(t_mid, p_mid), self.q);
+        self.t -= h * s2;
+        // The last step ends exactly at `p_to`.
+        self.p = if self.done + 1 == self.steps {
+            self.p_to
+        } else {
+            p_mid * half
+        };
+        if saturated {
+            let qs = saturation_humidity(self.t, self.p);
+            self.q = self.q.min(qs);
+            self.known = Some(qs);
+        }
+        self.done += 1;
+    }
+
+    /// Temperature, humidity and the known saturation humidity at the end.
+    fn end(self) -> (f64, f64, Option<f64>) {
+        (self.t, self.q, self.known)
+    }
 }
+
+/// Columns whose convective parcels [`convective_references`] lifts side
+/// by side (each still exactly as alone: interleaving their steps only
+/// overlaps their latencies).
+pub(crate) const LANES: usize = 4;
 
 /// The convective reference: layer-mean temperatures of a surface-air
 /// parcel lifted through the column (the top layer's bounded below by
 /// `column.stratosphere`).
 pub fn convective_reference(setting: &Setting, column: &MoistColumn, surface_q: f64) -> Vec<f64> {
-    let ps = column.ps;
+    let mut reference = [[0.0; MAX_LAYERS]; 1];
+    convective_references(setting, &[column.view()], &[surface_q], &mut reference);
+    reference[0][..setting.levels.count()].to_vec()
+}
+
+/// [`convective_reference`] of up to [`LANES`] columns, with surface parcel
+/// humidities `surface_q`, into `reference` (one per column).
+pub(crate) fn convective_references(
+    setting: &Setting,
+    columns: &[ColumnView],
+    surface_q: &[f64],
+    reference: &mut [[f64; MAX_LAYERS]],
+) {
+    let lanes = columns.len();
+    assert!(lanes <= LANES && surface_q.len() == lanes && reference.len() == lanes);
     let n = setting.levels.count();
-    // Every layer's nodes, lifted through bottom up.
-    let mut nodes = [(0usize, 0.0f64, 0.0f64); 4 * MAX_LAYERS];
-    let nodes = &mut nodes[..4 * n];
-    for k in 0..n {
-        let (a, b) = setting.levels.bounds(k);
-        for (i, (x, w)) in GAUSS.into_iter().enumerate() {
-            nodes[4 * k + i] = (k, 0.5 * (a + b) + 0.5 * (b - a) * x, 0.5 * w);
+    // Every layer's nodes, lifted through bottom up: the same for every
+    // column.
+    let nodes = setting.levels.quadrature_nodes(|| {
+        let mut nodes = Vec::with_capacity(4 * n);
+        for k in 0..n {
+            let (a, b) = setting.levels.bounds(k);
+            for (x, w) in GAUSS {
+                nodes.push((k, 0.5 * (a + b) + 0.5 * (b - a) * x, 0.5 * w));
+            }
+        }
+        nodes.sort_by(|a, b| b.1.total_cmp(&a.1));
+        nodes
+    });
+    let table = SaturationTable::get();
+    // Each parcel: temperature, humidity, pressure, the saturation humidity
+    // if known, and whether it is at the stratosphere's floor. The parcel
+    // only cools as it rises: once it is colder than the stratosphere, the
+    // rest of the top layer is at the floor.
+    let mut parcels = [(0.0, 0.0, 0.0, None, false); LANES];
+    for (lane, column) in columns.iter().enumerate() {
+        parcels[lane] = (column.surface_air, surface_q[lane], column.ps, None, false);
+        reference[lane][..n].fill(0.0);
+    }
+    let mut lifts = [Lift::IDLE; LANES];
+    for &(k, s, w) in nodes {
+        for (lift, (column, &(t, q, p, known, floored))) in
+            lifts.iter_mut().zip(columns.iter().zip(&parcels))
+        {
+            *lift = if floored {
+                Lift::IDLE
+            } else {
+                Lift::new(t, q, p, s * column.ps, known)
+            };
+        }
+        // Side by side, each parcel's steps in its own order.
+        loop {
+            let mut running = false;
+            for lift in &mut lifts[..lanes] {
+                if lift.running() {
+                    lift.step(setting.gas, table);
+                    running = true;
+                }
+            }
+            if !running {
+                break;
+            }
+        }
+        for (lane, column) in columns.iter().enumerate() {
+            let parcel = &mut parcels[lane];
+            if parcel.4 {
+                reference[lane][k] += w * column.stratosphere;
+                continue;
+            }
+            let (t, q, known) = lifts[lane].end();
+            let floored = k == 0 && t <= column.stratosphere;
+            *parcel = (t, q, s * column.ps, known, floored);
+            let value = if k == 0 {
+                t.max(column.stratosphere)
+            } else {
+                t
+            };
+            reference[lane][k] += w * value;
         }
     }
-    nodes.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let (mut t, mut q, mut p) = (column.surface_air, surface_q, ps);
-    let mut reference = vec![0.0; n];
-    // The parcel only cools as it rises: once it is colder than the
-    // stratosphere, the rest of the top layer is at the floor.
-    let mut floored = false;
-    let mut known = None;
-    for &(k, s, w) in nodes.iter() {
-        if floored {
-            reference[k] += w * column.stratosphere;
-            continue;
-        }
-        let p_to = s * ps;
-        (t, q, known) = lift_from(setting.gas, t, q, p, p_to, known);
-        p = p_to;
-        let value = if k == 0 {
-            floored = t <= column.stratosphere;
-            t.max(column.stratosphere)
-        } else {
-            t
-        };
-        reference[k] += w * value;
-    }
-    reference
 }
 
 /// Stratiform cloud cover for layer relative humidity `rh`, from none at
@@ -541,50 +719,89 @@ fn freeze_dry_share(q: f64, freeze_dry_humidity: f64) -> f64 {
 
 /// The moist physics of one column.
 pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
+    let mut out = MoistTendency::default();
+    moist_physics_into(setting, &column.view(), &mut out);
+    out
+}
+
+/// Clear `v` and fill it with `n` zeros (keeping its storage).
+fn zeroed(v: &mut Vec<f64>, n: usize) {
+    v.clear();
+    v.resize(n, 0.0);
+}
+
+/// [`moist_physics`] into `out`, reusing its storage.
+pub(crate) fn moist_physics_into(setting: &Setting, column: &ColumnView, out: &mut MoistTendency) {
+    let mut reference = [[0.0; MAX_LAYERS]; 1];
+    convective_references(
+        setting,
+        std::slice::from_ref(column),
+        &[column.parcel_humidity()],
+        &mut reference,
+    );
+    moist_physics_with(setting, column, &reference[0], out);
+}
+
+/// [`moist_physics_into`] given the column's convective reference
+/// ([`convective_references`] with [`ColumnView::parcel_humidity`]).
+pub(crate) fn moist_physics_with(
+    setting: &Setting,
+    column: &ColumnView,
+    reference: &[f64; MAX_LAYERS],
+    out: &mut MoistTendency,
+) {
     let p = setting.params;
     let (gas, ps) = (setting.gas, column.ps);
     let (cp, l) = (gas.heat_capacity, LATENT_HEAT);
     let levels = setting.levels;
     let n = levels.count();
     let bottom = n - 1;
-    let m = setting.masses(ps);
-    let t = &column.temperature;
-    let q: Vec<f64> = column.humidity.iter().map(|q| q.max(0.0)).collect();
-    let sat = setting.saturation(ps, t);
-    let rh: Vec<f64> = (0..n).map(|k| q[k] / sat[k].mean).collect();
-    let mut out = MoistTendency {
-        temperature: vec![0.0; n],
-        humidity: vec![0.0; n],
-        relative_humidity: rh.clone(),
-        ..MoistTendency::default()
-    };
+    let mut m = [0.0; MAX_LAYERS];
+    for (m, ds) in m.iter_mut().zip(levels.dsigma()) {
+        *m = ds * ps / setting.gravity;
+    }
+    let m = &m[..n];
+    let t = column.temperature;
+    let mut q = [0.0; MAX_LAYERS];
+    for (q, h) in q.iter_mut().zip(&column.humidity[..n]) {
+        *q = h.max(0.0);
+    }
+    let q = &q[..n];
+    let mut sat = [LayerSaturation::default(); MAX_LAYERS];
+    setting.saturation_into(ps, t, &mut sat[..n]);
+    let mut rh = [0.0; MAX_LAYERS];
+    for k in 0..n {
+        rh[k] = q[k] / sat[k].mean;
+    }
+    let rh = &rh[..n];
+    zeroed(&mut out.temperature, n);
+    zeroed(&mut out.humidity, n);
+    out.relative_humidity.clear();
+    out.relative_humidity.extend_from_slice(rh);
+    out.rain = 0.0;
+    out.snow = 0.0;
+    out.convective = 0.0;
+    out.orographic = 0.0;
+    out.convective_boundary = 0.0;
 
     // Convection, from the highest layer colder than the parcel down.
-    let surface_q = column
-        .surface_humidity
-        .clamp(0.0, saturation_humidity(column.surface_air, ps));
-    let reference = convective_reference(setting, column, surface_q);
     if let Some(top) = (0..bottom).find(|&k| reference[k] > t[k]) {
         let tau = p.convection_time;
-        let ref_sat = setting.saturation(ps, &reference);
-        let layers = top..n;
+        let mut ref_sat = [LayerSaturation::default(); MAX_LAYERS];
+        setting.saturation_into(ps, &reference[..n], &mut ref_sat[..n]);
         // The subcloud (lowest) layer keeps its temperature: its reference
         // includes moist-adiabatic warming above the condensation level
         // that the well-mixed layer doesn't have.
-        let mut dt: Vec<f64> = layers
-            .clone()
-            .map(|k| {
-                if k == bottom {
-                    0.0
-                } else {
-                    (reference[k] - t[k]) / tau
-                }
-            })
-            .collect();
-        let mut dq: Vec<f64> = layers
-            .clone()
-            .map(|k| (p.convection_humidity * ref_sat[k].shaped - q[k]) / tau)
-            .collect();
+        let (mut dt, mut dq) = ([0.0; MAX_LAYERS], [0.0; MAX_LAYERS]);
+        let (dt, dq) = (&mut dt[..n - top], &mut dq[..n - top]);
+        for (j, k) in (top..n).enumerate() {
+            dt[j] = if k == bottom {
+                0.0
+            } else {
+                (reference[k] - t[k]) / tau
+            };
+            dq[j] = (p.convection_humidity * ref_sat[k].shaped - q[k]) / tau;
+        }
         let mc = &m[top..];
         let weighted = |x: &[f64]| -> f64 {
             let mut s = x[0] * mc[0];
@@ -593,7 +810,7 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             }
             s
         };
-        let rain = -weighted(&dq);
+        let rain = -weighted(dq);
         let mut total = mc[0];
         for m in &mc[1..] {
             total += m;
@@ -603,7 +820,7 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             // the cloud layers above the lowest (the subcloud layer keeps
             // its own relaxation; Betts 1986).
             let cloud = total - mc[mc.len() - 1];
-            let c = (l * rain - cp * weighted(&dt)) / (cp * cloud);
+            let c = (l * rain - cp * weighted(dt)) / (cp * cloud);
             let last = dt.len() - 1;
             dt[..last].iter_mut().for_each(|d| *d += c);
             out.convective = rain;
@@ -624,23 +841,22 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
             dq.iter_mut()
                 .filter(|d| **d > 0.0)
                 .for_each(|d| *d *= scale);
-            let ct = -weighted(&dt) / (total - mc[mc.len() - 1]);
+            let ct = -weighted(dt) / (total - mc[mc.len() - 1]);
             let last = dt.len() - 1;
             dt[..last].iter_mut().for_each(|d| *d += ct);
         }
         out.convective_boundary = dq[dq.len() - 1] * mc[mc.len() - 1];
-        out.temperature[top..].copy_from_slice(&dt);
-        out.humidity[top..].copy_from_slice(&dq);
+        out.temperature[top..].copy_from_slice(dt);
+        out.humidity[top..].copy_from_slice(dq);
     }
 
     // Large-scale condensation, per layer.
-    let threshold: Vec<f64> = (0..n)
-        .map(|k| {
-            let (a, b) = levels.bounds(k);
-            p.condensation_threshold(a, b)
-        })
-        .collect();
-    let mut condensed = vec![0.0; n];
+    let mut threshold = [0.0; MAX_LAYERS];
+    for (k, threshold) in threshold.iter_mut().enumerate().take(n) {
+        let (a, b) = levels.bounds(k);
+        *threshold = p.condensation_threshold(a, b);
+    }
+    let mut condensed = [0.0; MAX_LAYERS];
     for k in 0..n {
         let rh_c = threshold[k];
         let excess = q[k] - rh_c * sat[k].mean;
@@ -668,7 +884,7 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     }
     // Rain from above re-evaporates partly in each layer it falls through,
     // up to that layer's condensation threshold.
-    let mut evaporated = vec![0.0; n];
+    let mut evaporated = [0.0; MAX_LAYERS];
     let mut falling = condensed[0];
     for k in 1..n {
         let room = ((threshold[k] * sat[k].mean - q[k]) * m[k] / p.condensation_time).max(0.0);
@@ -680,10 +896,10 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
 
     // Rain or snow.
     let mut total = out.convective + out.orographic;
-    for c in &condensed {
+    for c in &condensed[..n] {
         total += c;
     }
-    for e in &evaporated {
+    for e in &evaporated[..n] {
         total -= e;
     }
     let (cold, warm) = p.snow_temperature;
@@ -691,8 +907,10 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     out.snow = snow_share * total;
     out.rain = total - out.snow;
     out.temperature[bottom] += FUSION_HEAT * out.snow / (cp * m[bottom]);
-    out.condensed = condensed;
-    out.reevaporated = evaporated;
+    out.condensed.clear();
+    out.condensed.extend_from_slice(&condensed[..n]);
+    out.reevaporated.clear();
+    out.reevaporated.extend_from_slice(&evaporated[..n]);
 
     // Clouds.
     let c = &p.clouds;
@@ -707,7 +925,6 @@ pub fn moist_physics(setting: &Setting, column: &MoistColumn) -> MoistTendency {
     };
     let low_share = freeze_dry_share(q[levels.layer_of(c.sigma[1])], c.freeze_dry_humidity);
     out.clouds = [1.0 - (1.0 - cover(0)) * (1.0 - anvil), cover(1) * low_share];
-    out
 }
 
 /// The surface humidity (kg kg⁻¹) of the lowest layer's profile for surface

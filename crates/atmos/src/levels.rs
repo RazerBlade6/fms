@@ -29,6 +29,7 @@ pub struct Levels {
     /// `δσₖ` per layer.
     dsigma: Vec<f64>,
     profile: ProfileCache,
+    nodes: NodeCache,
 }
 
 /// Memoized constants of the in-layer temperature profile
@@ -37,6 +38,17 @@ pub struct Levels {
 struct ProfileCache(OnceLock<ProfileShape>);
 
 impl PartialEq for ProfileCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// A memoized list of quadrature nodes ([`Levels::quadrature_nodes`]). Not
+/// part of the levels' identity.
+#[derive(Clone, Debug, Default)]
+struct NodeCache(OnceLock<Vec<(usize, f64, f64)>>);
+
+impl PartialEq for NodeCache {
     fn eq(&self, _: &Self) -> bool {
         true
     }
@@ -64,6 +76,7 @@ impl Levels {
             interfaces,
             dsigma,
             profile: ProfileCache::default(),
+            nodes: NodeCache::default(),
         }
     }
 
@@ -85,6 +98,15 @@ impl Levels {
     /// The memoized profile constants, computed by `init` on first use.
     pub(crate) fn profile_shape(&self, init: impl FnOnce() -> ProfileShape) -> &ProfileShape {
         self.profile.0.get_or_init(init)
+    }
+
+    /// The memoized nodes made by `init` on first use (the same for every
+    /// column; [`crate::moisture`]'s quadrature).
+    pub(crate) fn quadrature_nodes(
+        &self,
+        init: impl FnOnce() -> Vec<(usize, f64, f64)>,
+    ) -> &[(usize, f64, f64)] {
+        self.nodes.0.get_or_init(init)
     }
 
     /// Number of layers `N`.
@@ -124,6 +146,25 @@ impl Levels {
     /// Layer Exner functions `Pₖ` for surface pressure `ps`, into `out`
     /// (one per layer).
     pub fn layer_exner_into(&self, gas: Gas, ps: f64, out: &mut [f64]) {
+        self.exner_columns(gas, ps, out, None);
+    }
+
+    /// As [`layer_exner_into`](Self::layer_exner_into), with the Exner
+    /// function `Π = (p/p₀)^κ` at each layer's bottom interface into
+    /// `bottom` (one per layer; the last is the surface's, `Π(p_s)`): the
+    /// values the layer means are made from, so equal to `gas.exner(σ p_s)`
+    /// at each interface.
+    pub fn exner_into(&self, gas: Gas, ps: f64, layer: &mut [f64], bottom: &mut [f64]) {
+        self.exner_columns(gas, ps, layer, Some(bottom));
+    }
+
+    fn exner_columns(
+        &self,
+        gas: Gas,
+        ps: f64,
+        out: &mut [f64],
+        mut interfaces: Option<&mut [f64]>,
+    ) {
         let kappa = gas.kappa();
         let n = self.count();
         // p Π at the top of the current layer (0 at the model top).
@@ -132,6 +173,9 @@ impl Levels {
             let s = self.interfaces[k + 1];
             let p = s * ps;
             let exner = gas.exner(p);
+            if let Some(at) = interfaces.as_deref_mut() {
+                at[k] = exner;
+            }
             let bottom = p * exner;
             out[k] = if k == 0 {
                 // p_{½} = 0: P₀ = Π_{3/2} / (1 + κ).

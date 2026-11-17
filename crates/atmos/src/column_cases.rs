@@ -178,6 +178,7 @@ pub fn run_case(case: &ColumnCase, params: &PhysicsParams) -> CaseResult {
                 theta_above: theta[above],
                 humidity_above: humidity[above],
                 exner_above: exner[above],
+                exner_top,
                 sensible: case.sensible,
                 evaporation,
                 cloud_top_cooling: case.cloud_top_cooling,

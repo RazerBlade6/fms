@@ -130,6 +130,9 @@ pub struct Exchange {
     pub richardson: f64,
     /// Friction velocity (m s⁻¹).
     pub friction_velocity: f64,
+    /// Saturation specific humidity at the surface's temperature and
+    /// pressure (kg kg⁻¹).
+    pub surface_saturation: f64,
 }
 
 impl Exchange {
@@ -139,10 +142,10 @@ impl Exchange {
     }
 }
 
-/// Neutral exchange coefficient between heights `z` over roughness lengths
-/// `a` and `b`.
-fn neutral(z: f64, a: f64, b: f64) -> f64 {
-    KARMAN * KARMAN / (fms_math::ln(z / a) * fms_math::ln(z / b))
+/// The neutral exchange coefficient between heights `z` over roughness
+/// lengths `a` and `b`, given `ln(z/a)` and `ln(z/b)`.
+fn neutral_of_logs(log_a: f64, log_b: f64) -> f64 {
+    KARMAN * KARMAN / (log_a * log_b)
 }
 
 /// Louis (1979) stability factors `(f_m, f_h)` for bulk Richardson number
@@ -161,8 +164,91 @@ pub fn stability(ri: f64, z: f64, z0: f64, cn: f64) -> (f64, f64) {
 
 /// Surface exchange for `air` over `surface`.
 pub fn exchange(params: &SurfaceLayerParams, surface: Surface, air: &SurfaceAir) -> Exchange {
+    match surface {
+        Surface::Ocean => {
+            // Roughness and drag depend on each other over water: a few
+            // fixed-point passes from a moderate sea converge to well under
+            // a percent.
+            let z = WIND_HEIGHT;
+            let height = air.height.max(2.0 * z);
+            let mut u_star = 0.25;
+            for i in 0..4 {
+                let u = f64::max(u_star, 1e-3);
+                let z0 = params.charnock * u * u / air.gravity + 0.11 * VISCOSITY / u;
+                let lengths = RoughnessLogs {
+                    z0,
+                    log_z0: fms_math::ln(z / z0),
+                    log_height: fms_math::ln(height / z0),
+                    heat: (i == 3).then(|| {
+                        let (z0h, z0q) = (0.40 * VISCOSITY / u, 0.62 * VISCOSITY / u);
+                        let log_h = fms_math::ln(z / z0h);
+                        // Equal lengths have equal logarithms.
+                        let log_q = if z0q == z0h {
+                            log_h
+                        } else {
+                            fms_math::ln(z / z0q)
+                        };
+                        (log_h, log_q)
+                    }),
+                };
+                let result = exchange_over(params, &lengths, air);
+                if i == 3 {
+                    return result;
+                }
+                u_star = result.friction_velocity;
+            }
+            unreachable!("the last pass returns")
+        }
+        // Fixed lengths: every pass of the fixed point gives the same
+        // exchange.
+        Surface::Rough(z0) => exchange_over(params, &RoughnessLogs::rough(z0, air.height), air),
+    }
+}
+
+/// Roughness lengths as the exchange uses them: `z₀`, `ln(z/z₀)` at the
+/// wind's height `z` and `ln(h/z₀)` at the layer's (`h`, at least `2z`),
+/// and, when the heat and moisture coefficients are wanted, `ln(z/z₀ₕ)` and
+/// `ln(z/z₀q)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RoughnessLogs {
+    z0: f64,
+    log_z0: f64,
+    log_height: f64,
+    heat: Option<(f64, f64)>,
+}
+
+impl RoughnessLogs {
+    /// A fixed roughness length `z0` ([`Surface::Rough`]; a tenth of it for
+    /// heat and moisture) under a layer whose mean level is `height` m up
+    /// ([`SurfaceAir::height`]): the same for any surface temperature.
+    pub(crate) fn rough(z0: f64, height: f64) -> Self {
+        let z = WIND_HEIGHT;
+        let height = height.max(2.0 * z);
+        let (z0h, z0q) = (0.1 * z0, 0.1 * z0);
+        let log_h = fms_math::ln(z / z0h);
+        let log_q = if z0q == z0h {
+            log_h
+        } else {
+            fms_math::ln(z / z0q)
+        };
+        Self {
+            z0,
+            log_z0: fms_math::ln(z / z0),
+            log_height: fms_math::ln(height / z0),
+            heat: Some((log_h, log_q)),
+        }
+    }
+}
+
+/// One pass of the exchange's fixed point over roughness `lengths` (for
+/// [`SurfaceAir::height`] `air.height`); the heat and moisture coefficients
+/// are zero unless `lengths` has them.
+pub(crate) fn exchange_over(
+    params: &SurfaceLayerParams,
+    lengths: &RoughnessLogs,
+    air: &SurfaceAir,
+) -> Exchange {
     let z = WIND_HEIGHT;
-    let height = air.height.max(2.0 * z);
     let gust2 = (params.gust * air.convective_velocity).powi(2) + params.calm * params.calm;
     // Virtual potential temperatures of the air and of saturated air at the
     // surface.
@@ -170,42 +256,39 @@ pub fn exchange(params: &SurfaceLayerParams, surface: Surface, air: &SurfaceAir)
     let q_s = saturation_humidity(air.surface_temperature, air.ps);
     let tv_air = air.theta * (1.0 + VIRTUAL * air.humidity);
     let tv_surface = theta_s * (1.0 + VIRTUAL * q_s);
-    let roughness = |u_star: f64| match surface {
-        Surface::Ocean => {
-            let u = u_star.max(1e-3);
-            let z0 = params.charnock * u * u / air.gravity + 0.11 * VISCOSITY / u;
-            (z0, 0.40 * VISCOSITY / u, 0.62 * VISCOSITY / u)
-        }
-        Surface::Rough(z0) => (z0, 0.1 * z0, 0.1 * z0),
-    };
-    // Roughness and drag depend on each other over water: a few fixed-point
-    // passes from a moderate sea converge to well under a percent.
-    let mut u_star = 0.25;
-    let mut result = Exchange::default();
-    for _ in 0..4 {
-        let (z0, z0h, z0q) = roughness(u_star);
-        let ratio = fms_math::ln(z / z0) / fms_math::ln(height / z0);
-        let wind = ratio * air.wind;
-        let speed = (wind * wind + gust2).sqrt();
-        let ri =
-            air.gravity * z * (tv_air - tv_surface) / (0.5 * (tv_air + tv_surface) * speed * speed);
-        let cn = neutral(z, z0, z0);
-        let (fm, fh) = stability(ri, z, z0, cn);
-        let drag = params.drag_factor * cn * fm;
-        u_star = drag.sqrt() * speed;
-        result = Exchange {
-            wind_ratio: ratio,
-            wind,
-            speed,
-            drag,
-            heat: neutral(z, z0, z0h) * fh,
-            moisture: neutral(z, z0, z0q) * fh,
-            roughness: z0,
-            richardson: ri,
-            friction_velocity: u_star,
-        };
+    let RoughnessLogs {
+        z0,
+        log_z0,
+        log_height,
+        heat,
+    } = *lengths;
+    let ratio = log_z0 / log_height;
+    let wind = ratio * air.wind;
+    let speed = (wind * wind + gust2).sqrt();
+    let ri =
+        air.gravity * z * (tv_air - tv_surface) / (0.5 * (tv_air + tv_surface) * speed * speed);
+    let cn = neutral_of_logs(log_z0, log_z0);
+    let (fm, fh) = stability(ri, z, z0, cn);
+    let drag = params.drag_factor * cn * fm;
+    let u_star = drag.sqrt() * speed;
+    let (heat, moisture) = heat.map_or((0.0, 0.0), |(log_h, log_q)| {
+        (
+            neutral_of_logs(log_z0, log_h) * fh,
+            neutral_of_logs(log_z0, log_q) * fh,
+        )
+    });
+    Exchange {
+        wind_ratio: ratio,
+        wind,
+        speed,
+        drag,
+        heat,
+        moisture,
+        roughness: z0,
+        richardson: ri,
+        friction_velocity: u_star,
+        surface_saturation: q_s,
     }
-    result
 }
 
 /// Convective velocity `w*` (m s⁻¹) of a boundary layer `depth` m deep with
