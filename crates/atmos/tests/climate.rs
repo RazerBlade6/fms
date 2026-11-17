@@ -1388,10 +1388,10 @@ fn the_timings_count_every_phase_of_a_step_and_add_up_within_the_wall_time() {
                 "the column physics within its branch"
             );
             assert!(t.time(Phase::Physics) <= t.time(Phase::Tendencies));
-            assert!(
-                sum(&[Phase::Dynamics, Phase::Hyperdiffusion]) <= t.time(Phase::Tendencies),
-                "one branch runs the dynamics, then the hyperdiffusion"
-            );
+            // The dynamics and the hyperdiffusion run beside each other and
+            // beside the physics.
+            assert!(t.time(Phase::Dynamics) <= t.time(Phase::Tendencies));
+            assert!(t.time(Phase::Hyperdiffusion) <= t.time(Phase::Tendencies));
             let advance = sum(&[
                 Phase::OceanSurface,
                 Phase::OceanTransport,
