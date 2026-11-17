@@ -11,7 +11,7 @@
 //! the winds' kinetic-energy rate exactly.
 
 use fms_grid::Operators;
-use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
+use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS, for_each_mut};
 use rayon::prelude::*;
 
 use crate::layered::Gas;
@@ -97,25 +97,38 @@ impl KineticHeating {
         du: &[f64],
         theta_ps: &mut [f64],
     ) {
+        self.add_with_exner(&self.exner, ops, ps, from, into, u, du, theta_ps);
+    }
+
+    /// [`add`](Self::add) with the layer Exner functions of `ps` given
+    /// (`n` per cell, as [`prepare`](Self::prepare) computes them).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_with_exner(
+        &self,
+        exner: &[f64],
+        ops: &Operators,
+        ps: &[f64],
+        from: usize,
+        into: usize,
+        u: &[f64],
+        du: &[f64],
+        theta_ps: &mut [f64],
+    ) {
         let mesh = ops.mesh();
         let edges = mesh.edges();
         let n = self.levels.count();
         let ds = self.levels.dsigma();
         let ratio = ds[from] / ds[into];
         let areas = &self.edge_areas;
-        theta_ps
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, t)| {
-                let mut gain = 0.0;
-                for &e in mesh.cell_edges(i as u32) {
-                    let e = e as usize;
-                    let [a, b] = edges[e].cells;
-                    gain += 0.5 * areas[e] * (ps[a as usize] + ps[b as usize]) * u[e] * du[e];
-                }
-                // Θ rate = g q / (c_p δσ Π) with q = −gain δσ_from / (g Aᵢ).
-                *t -= gain * ratio * self.cell_weights[i] / self.exner[i * n + into];
-            });
+        for_each_mut(theta_ps, |i, t| {
+            let mut gain = 0.0;
+            for &e in mesh.cell_edges(i as u32) {
+                let e = e as usize;
+                let [a, b] = edges[e].cells;
+                gain += 0.5 * areas[e] * (ps[a as usize] + ps[b as usize]) * u[e] * du[e];
+            }
+            // Θ rate = g q / (c_p δσ Π) with q = −gain δσ_from / (g Aᵢ).
+            *t -= gain * ratio * self.cell_weights[i] / exner[i * n + into];
+        });
     }
 }

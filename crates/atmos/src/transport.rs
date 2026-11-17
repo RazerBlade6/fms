@@ -39,8 +39,10 @@
 #![allow(clippy::needless_range_loop)]
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{MIN_CHUNK, for_each_mut, for_each_mut2, for_each_mut3};
 use rayon::prelude::*;
+
+use crate::levels::MAX_LAYERS;
 
 /// Largest share of a cell's water an upwind substep may move out.
 const MAX_OUTFLOW: f64 = 0.9;
@@ -160,29 +162,25 @@ impl Transport {
             }
             (horizontal + vertical) / (ds[k] * input.ps_old[c].min(input.ps_new[c]))
         };
-        let max_rate = (0..mesh.n_cells())
-            .into_par_iter()
-            .with_min_len(MIN_CHUNK)
-            .map(|c| {
-                let mut m = outflow_rate(c, 0);
-                for k in 1..n {
-                    m = m.max(outflow_rate(c, k));
-                }
-                m
-            })
-            .reduce(|| 0.0, f64::max);
+        // Per layer, then over the layers: a maximum is exact in any order.
+        let mut layer_max = [0.0; MAX_LAYERS];
+        layer_max[..n]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(k, m)| {
+                *m = (0..mesh.n_cells())
+                    .into_par_iter()
+                    .with_min_len(MIN_CHUNK)
+                    .map(|c| outflow_rate(c, k))
+                    .reduce(|| 0.0, f64::max);
+            });
+        let max_rate = layer_max[..n].iter().fold(0.0, |a: f64, &b| a.max(b));
         let substeps = ((t * max_rate / MAX_OUTFLOW).ceil() as u32).max(1);
         let h = t / f64::from(substeps);
 
-        // 1. Low order: upwind substeps from n−1, with the sources.
-        for k in 0..n {
-            self.content[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(input.q_old[k].par_iter())
-                .for_each(|(c, &q)| *c = ds[k] * q);
-            self.low_flux[k].fill(0.0);
-        }
+        // 1. Low order: upwind substeps from n−1, with the sources. Each
+        // substep's horizontal part per layer (the first also starting the
+        // layer's water from n−1), then the exchange across the interfaces.
         for x in &mut self.low_interface {
             x.fill(0.0);
         }
@@ -197,202 +195,176 @@ impl Transport {
                 .enumerate()
                 .for_each(
                     |(k, ((((content, q), low_flux), edge_amount), divergence))| {
+                        if m == 0 {
+                            let q_old = input.q_old[k];
+                            for_each_mut(content, |i, c| *c = ds[k] * q_old[i]);
+                            low_flux.fill(0.0);
+                        }
                         {
                             let content = &*content;
-                            q.par_iter_mut()
-                                .with_min_len(MIN_CHUNK)
-                                .enumerate()
-                                .for_each(|(i, q)| {
-                                    let ps =
-                                        input.ps_old[i] + s * (input.ps_new[i] - input.ps_old[i]);
-                                    *q = content[i] / (ds[k] * ps);
-                                });
+                            for_each_mut(q, |i, q| {
+                                let ps = input.ps_old[i] + s * (input.ps_new[i] - input.ps_old[i]);
+                                *q = content[i] / (ds[k] * ps);
+                            });
                         }
                         let (q, flux) = (&*q, input.flux[k]);
-                        edge_amount
-                            .par_iter_mut()
-                            .with_min_len(MIN_CHUNK)
-                            .zip(low_flux.par_iter_mut())
-                            .enumerate()
-                            .for_each(|(e, (x, total))| {
-                                let [a, b] = edges[e].cells;
-                                let upwind = if flux[e] >= 0.0 {
-                                    q[a as usize]
-                                } else {
-                                    q[b as usize]
-                                };
-                                *x = h * flux[e] * upwind;
-                                *total += *x;
-                            });
+                        for_each_mut2(edge_amount, low_flux, |e, x, total| {
+                            let [a, b] = edges[e].cells;
+                            let upwind = if flux[e] >= 0.0 {
+                                q[a as usize]
+                            } else {
+                                q[b as usize]
+                            };
+                            *x = h * flux[e] * upwind;
+                            *total += *x;
+                        });
                         ops.divergence(edge_amount, divergence);
                         let (div, source) = (&*divergence, input.source[k]);
-                        content
-                            .par_iter_mut()
-                            .with_min_len(MIN_CHUNK)
-                            .enumerate()
-                            .for_each(|(i, c)| *c += -div[i] + h * ds[k] * source[i]);
+                        for_each_mut(content, |i, c| *c += -div[i] + h * ds[k] * source[i]);
                     },
                 );
-            // Across each interface (downward positive: from layer j to j+1).
+            // Across each interface (downward positive: from layer j to j+1):
+            // cheap, and it couples the layers, so on this thread.
             for j in 0..n - 1 {
                 let (upper, lower) = self.content.split_at_mut(j + 1);
                 let (c0, c1) = (&mut upper[j], &mut lower[0]);
                 let (q, w, ratio) = (&self.q, w[j], ratio[j]);
-                c0.par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(c1.par_iter_mut())
-                    .zip(self.low_interface[j].par_iter_mut())
-                    .enumerate()
-                    .for_each(|(i, ((c0, c1), total))| {
-                        let upwind = if w[i] >= 0.0 {
-                            ratio[0][i] * q[j][i]
-                        } else {
-                            ratio[1][i] * q[j + 1][i]
-                        };
-                        let x = h * w[i] * upwind;
-                        *c0 -= x;
-                        *c1 += x;
-                        *total += x;
-                    });
+                for_each_mut3(c0, c1, &mut self.low_interface[j], |i, c0, c1, total| {
+                    let upwind = if w[i] >= 0.0 {
+                        ratio[0][i] * q[j][i]
+                    } else {
+                        ratio[1][i] * q[j + 1][i]
+                    };
+                    let x = h * w[i] * upwind;
+                    *c0 -= x;
+                    *c1 += x;
+                    *total += x;
+                });
             }
         }
-        for k in 0..n {
-            let content = &self.content[k];
-            self.q_low[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, q)| *q = content[i] / (ds[k] * input.ps_new[i]));
-        }
 
-        // 2. Antidiffusive fluxes: centred at n minus upwind.
+        // Per layer: the low-order solution, and the antidiffusive fluxes
+        // (centred at n minus upwind) along the edges and across the
+        // interface below.
         {
-            let low_flux = &self.low_flux;
-            self.anti.par_iter_mut().enumerate().for_each(|(k, anti)| {
-                let (q, flux, low) = (input.q_mid[k], input.flux[k], &low_flux[k]);
-                anti.par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(e, a)| {
+            let (content_all, low_flux_all, low_interface) =
+                (&self.content, &self.low_flux, &self.low_interface);
+            let mut anti_below: [Option<&mut Vec<f64>>; MAX_LAYERS] = {
+                let mut a = self.anti_interface.iter_mut();
+                std::array::from_fn(|_| a.next())
+            };
+            self.q_low
+                .par_iter_mut()
+                .zip(self.anti.par_iter_mut())
+                .zip(anti_below[..n].par_iter_mut())
+                .enumerate()
+                .for_each(|(k, ((q_low, anti), anti_below))| {
+                    let content = &content_all[k];
+                    for_each_mut(q_low, |i, q| *q = content[i] / (ds[k] * input.ps_new[i]));
+                    let (q, flux, low) = (input.q_mid[k], input.flux[k], &low_flux_all[k]);
+                    for_each_mut(anti, |e, a| {
                         let [i, j] = edges[e].cells;
                         let centred = 0.5 * (q[i as usize] + q[j as usize]);
                         *a = t * flux[e] * centred - low[e];
                     });
-            });
-        }
-        for j in 0..n - 1 {
-            let (q, w, ratio) = (&input.q_mid, w[j], ratio[j]);
-            let low = &self.low_interface[j];
-            self.anti_interface[j]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, a)| {
-                    let centred = 0.5 * (ratio[0][i] * q[j][i] + ratio[1][i] * q[j + 1][i]);
-                    *a = t * w[i] * centred - low[i];
+                    if let Some(anti_below) = anti_below.as_deref_mut() {
+                        let j = k;
+                        let (q, w, ratio) = (&input.q_mid, w[j], ratio[j]);
+                        let low = &low_interface[j];
+                        for_each_mut(anti_below, |i, a| {
+                            let centred = 0.5 * (ratio[0][i] * q[j][i] + ratio[1][i] * q[j + 1][i]);
+                            *a = t * w[i] * centred - low[i];
+                        });
+                    }
                 });
         }
 
-        // 3. Bounds: q at n−1, n and in the low-order solution, over the cell,
-        // its neighbours and the adjacent layers.
+        // Per layer: the bounds (q at n−1, n and in the low-order solution,
+        // over the cell, its neighbours and the adjacent layers), then
+        // Zalesak's ratios: the share of the incoming (outgoing)
+        // antidiffusive water each cell can take (give) within them.
+        let q_low_all = &self.q_low;
         let local = |k: usize, i: usize| -> (f64, f64) {
             let values = [
                 input.q_old[k][i] / input.ps_old[i],
                 input.q_mid[k][i],
-                self.q_low[k][i],
+                q_low_all[k][i],
             ];
             values
                 .iter()
                 .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
         };
+        let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
+        let content_all = &self.content;
         self.q_min
             .par_iter_mut()
             .zip(self.q_max.par_iter_mut())
-            .enumerate()
-            .for_each(|(k, (q_min, q_max))| {
-                q_min
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(q_max.par_iter_mut())
-                    .enumerate()
-                    .for_each(|(i, (lo, hi))| {
-                        let (mut a, mut b) = local(k, i);
-                        for l in [k.checked_sub(1), (k + 1 < n).then_some(k + 1)]
-                            .into_iter()
-                            .flatten()
-                        {
-                            let (c, d) = local(l, i);
-                            (a, b) = (a.min(c), b.max(d));
-                        }
-                        for &c in mesh.cell_neighbors(i as u32) {
-                            let (c, d) = local(k, c as usize);
-                            (a, b) = (a.min(c), b.max(d));
-                        }
-                        *lo = a.max(0.0);
-                        *hi = b;
-                    });
-            });
-
-        // Zalesak's ratios: the share of the incoming (outgoing)
-        // antidiffusive water each cell can take (give) within its bounds.
-        let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
-        let (content_all, q_min_all, q_max_all) = (&self.content, &self.q_min, &self.q_max);
-        self.r_plus
-            .par_iter_mut()
+            .zip(self.r_plus.par_iter_mut())
             .zip(self.r_minus.par_iter_mut())
             .enumerate()
-            .for_each(|(k, (r_plus, r_minus))| {
+            .for_each(|(k, (((q_min, q_max), r_plus), r_minus))| {
+                for_each_mut2(q_min, q_max, |i, lo, hi| {
+                    let (mut a, mut b) = local(k, i);
+                    for l in [k.checked_sub(1), (k + 1 < n).then_some(k + 1)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        let (c, d) = local(l, i);
+                        (a, b) = (a.min(c), b.max(d));
+                    }
+                    for &c in mesh.cell_neighbors(i as u32) {
+                        let (c, d) = local(k, c as usize);
+                        (a, b) = (a.min(c), b.max(d));
+                    }
+                    *lo = a.max(0.0);
+                    *hi = b;
+                });
                 let anti = &anti_all[k];
-                let (content, q_min, q_max) = (&content_all[k], &q_min_all[k], &q_max_all[k]);
-                r_plus
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(r_minus.par_iter_mut())
-                    .enumerate()
-                    .for_each(|(i, (rp, rm))| {
-                        let cid = i as u32;
-                        let scale = 1.0 / (g.cell_areas[i] * r);
-                        let (mut incoming, mut outgoing) = (0.0, 0.0);
-                        for (&e, &s) in mesh.cell_edges(cid).iter().zip(g.cell_edge_signs(cid)) {
-                            let x = s * anti[e as usize] * g.edge_lengths[e as usize] * scale;
-                            if x > 0.0 {
-                                outgoing += x;
-                            } else {
-                                incoming -= x;
-                            }
-                        }
-                        // Downward positive: out through the bottom, in through
-                        // the top.
-                        let mut vertical = |v: f64| {
-                            if v > 0.0 {
-                                outgoing += v;
-                            } else {
-                                incoming -= v;
-                            }
-                        };
-                        if k + 1 < n {
-                            vertical(anti_v[k][i]);
-                        }
-                        if k > 0 {
-                            vertical(-anti_v[k - 1][i]);
-                        }
-                        let mass = ds[k] * input.ps_new[i];
-                        let room = mass * q_max[i] - content[i];
-                        let spare = content[i] - mass * q_min[i];
-                        *rp = if incoming > 0.0 {
-                            (room / incoming).clamp(0.0, 1.0)
+                let (content, q_min, q_max) = (&content_all[k], &*q_min, &*q_max);
+                for_each_mut2(r_plus, r_minus, |i, rp, rm| {
+                    let cid = i as u32;
+                    let scale = 1.0 / (g.cell_areas[i] * r);
+                    let (mut incoming, mut outgoing) = (0.0, 0.0);
+                    for (&e, &s) in mesh.cell_edges(cid).iter().zip(g.cell_edge_signs(cid)) {
+                        let x = s * anti[e as usize] * g.edge_lengths[e as usize] * scale;
+                        if x > 0.0 {
+                            outgoing += x;
                         } else {
-                            0.0
-                        };
-                        *rm = if outgoing > 0.0 {
-                            (spare / outgoing).clamp(0.0, 1.0)
+                            incoming -= x;
+                        }
+                    }
+                    // Downward positive: out through the bottom, in through
+                    // the top.
+                    let mut vertical = |v: f64| {
+                        if v > 0.0 {
+                            outgoing += v;
                         } else {
-                            0.0
-                        };
-                    });
+                            incoming -= v;
+                        }
+                    };
+                    if k + 1 < n {
+                        vertical(anti_v[k][i]);
+                    }
+                    if k > 0 {
+                        vertical(-anti_v[k - 1][i]);
+                    }
+                    let mass = ds[k] * input.ps_new[i];
+                    let room = mass * q_max[i] - content[i];
+                    let spare = content[i] - mass * q_min[i];
+                    *rp = if incoming > 0.0 {
+                        (room / incoming).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    *rm = if outgoing > 0.0 {
+                        (spare / outgoing).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                });
             });
 
-        // Limit and apply.
+        // Limit and apply, per layer.
         let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
         let (content_all, r_plus, r_minus) = (&self.content, &self.r_plus, &self.r_minus);
         out.into_par_iter()
@@ -401,20 +373,16 @@ impl Transport {
             .enumerate()
             .for_each(|(k, ((out, edge_amount), divergence))| {
                 let (anti, rp, rm) = (&anti_all[k], &r_plus[k], &r_minus[k]);
-                edge_amount
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(e, x)| {
-                        let [a, b] = edges[e].cells;
-                        let (a, b) = (a as usize, b as usize);
-                        let c = if anti[e] >= 0.0 {
-                            rm[a].min(rp[b])
-                        } else {
-                            rp[a].min(rm[b])
-                        };
-                        *x = c * anti[e];
-                    });
+                for_each_mut(edge_amount, |e, x| {
+                    let [a, b] = edges[e].cells;
+                    let (a, b) = (a as usize, b as usize);
+                    let c = if anti[e] >= 0.0 {
+                        rm[a].min(rp[b])
+                    } else {
+                        rp[a].min(rm[b])
+                    };
+                    *x = c * anti[e];
+                });
                 ops.divergence(edge_amount, divergence);
                 let (content, div) = (&content_all[k], &*divergence);
                 // The limited flux across interface j (downward positive).
@@ -427,19 +395,16 @@ impl Transport {
                     };
                     c * a
                 };
-                out.par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(i, q)| {
-                        let mut vertical = 0.0;
-                        if k > 0 {
-                            vertical += limited(k - 1, i);
-                        }
-                        if k + 1 < n {
-                            vertical -= limited(k, i);
-                        }
-                        *q = (content[i] - div[i] + vertical) / ds[k];
-                    });
+                for_each_mut(out, |i, q| {
+                    let mut vertical = 0.0;
+                    if k > 0 {
+                        vertical += limited(k - 1, i);
+                    }
+                    if k + 1 < n {
+                        vertical -= limited(k, i);
+                    }
+                    *q = (content[i] - div[i] + vertical) / ds[k];
+                });
             });
         TransportReport { substeps }
     }

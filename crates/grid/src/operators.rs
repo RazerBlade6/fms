@@ -55,6 +55,85 @@ pub const MIN_CHUNK: usize = 4096;
 /// and their costs differ (the column physics).
 pub const MIN_COLUMNS: usize = 32;
 
+/// Whether a loop over `len` elements in chunks of at least [`MIN_CHUNK`] is
+/// split between threads: rayon splits a range only while both halves keep
+/// `MIN_CHUNK` elements, so below `2 × MIN_CHUNK` it is one chunk.
+#[inline]
+pub fn splits(len: usize) -> bool {
+    len >= 2 * MIN_CHUNK
+}
+
+/// `f(i, &mut out[i])` for every element: in chunks of at least
+/// [`MIN_CHUNK`] on the pool's threads when that [`splits`], otherwise a
+/// plain loop on the calling thread, which pushes no job and wakes no
+/// worker. Each element is computed the same way either way.
+#[inline]
+pub fn for_each_mut<T: Send>(out: &mut [T], f: impl Fn(usize, &mut T) + Sync + Send) {
+    if splits(out.len()) {
+        out.par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .enumerate()
+            .for_each(|(i, o)| f(i, o));
+    } else {
+        for (i, o) in out.iter_mut().enumerate() {
+            f(i, o);
+        }
+    }
+}
+
+/// [`for_each_mut`] over two slices of the same length at once.
+///
+/// # Panics
+/// If the lengths differ.
+#[inline]
+pub fn for_each_mut2<A: Send, B: Send>(
+    a: &mut [A],
+    b: &mut [B],
+    f: impl Fn(usize, &mut A, &mut B) + Sync + Send,
+) {
+    assert_eq!(a.len(), b.len(), "the slices must have the same length");
+    if splits(a.len()) {
+        a.par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(b.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, (a, b))| f(i, a, b));
+    } else {
+        for (i, (a, b)) in a.iter_mut().zip(b.iter_mut()).enumerate() {
+            f(i, a, b);
+        }
+    }
+}
+
+/// [`for_each_mut`] over three slices of the same length at once.
+///
+/// # Panics
+/// If the lengths differ.
+#[inline]
+pub fn for_each_mut3<A: Send, B: Send, C: Send>(
+    a: &mut [A],
+    b: &mut [B],
+    c: &mut [C],
+    f: impl Fn(usize, &mut A, &mut B, &mut C) + Sync + Send,
+) {
+    assert!(
+        a.len() == b.len() && a.len() == c.len(),
+        "the slices must have the same length"
+    );
+    if splits(a.len()) {
+        a.par_iter_mut()
+            .with_min_len(MIN_CHUNK)
+            .zip(b.par_iter_mut())
+            .zip(c.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, ((a, b), c))| f(i, a, b, c));
+    } else {
+        for (i, ((a, b), c)) in a.iter_mut().zip(b.iter_mut()).zip(c.iter_mut()).enumerate() {
+            f(i, a, b, c);
+        }
+    }
+}
+
 /// The TRiSK operators for one mesh at one planet radius.
 #[derive(Clone, Copy, Debug)]
 pub struct Operators<'a> {
@@ -112,13 +191,10 @@ impl<'a> Operators<'a> {
         let edges = self.mesh.edges();
         let d = &self.geometry.dual_edge_lengths;
         let r = self.radius;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, out)| {
-                let [a, b] = edges[e].cells;
-                *out = (h[b as usize] - h[a as usize]) / (d[e] * r);
-            });
+        for_each_mut(out, |e, out| {
+            let [a, b] = edges[e].cells;
+            *out = (h[b as usize] - h[a as usize]) / (d[e] * r);
+        });
     }
 
     /// Divergence of an edge flux (normal component per edge), per cell:
@@ -132,20 +208,17 @@ impl<'a> Operators<'a> {
         );
         let g = self.geometry;
         let r = self.radius;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(c, out)| {
-                let c = c as CellId;
-                let sum: f64 = self
-                    .mesh
-                    .cell_edges(c)
-                    .iter()
-                    .zip(g.cell_edge_signs(c))
-                    .map(|(&e, &s)| s * g.edge_lengths[e as usize] * flux[e as usize])
-                    .sum();
-                *out = sum / (g.cell_areas[c as usize] * r);
-            });
+        for_each_mut(out, |c, out| {
+            let c = c as CellId;
+            let sum: f64 = self
+                .mesh
+                .cell_edges(c)
+                .iter()
+                .zip(g.cell_edge_signs(c))
+                .map(|(&e, &s)| s * g.edge_lengths[e as usize] * flux[e as usize])
+                .sum();
+            *out = sum / (g.cell_areas[c as usize] * r);
+        });
     }
 
     /// Relative vorticity of an edge velocity, per vertex:
@@ -160,20 +233,17 @@ impl<'a> Operators<'a> {
         );
         let g = self.geometry;
         let r = self.radius;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(v, out)| {
-                let v = v as VertexId;
-                let sum: f64 = self
-                    .mesh
-                    .vertex_edges(v)
-                    .iter()
-                    .zip(g.vertex_edge_signs(v))
-                    .map(|(&e, s)| s * g.dual_edge_lengths[e as usize] * u[e as usize])
-                    .sum();
-                *out = sum / (g.vertex_areas[v as usize] * r);
-            });
+        for_each_mut(out, |v, out| {
+            let v = v as VertexId;
+            let sum: f64 = self
+                .mesh
+                .vertex_edges(v)
+                .iter()
+                .zip(g.vertex_edge_signs(v))
+                .map(|(&e, s)| s * g.dual_edge_lengths[e as usize] * u[e as usize])
+                .sum();
+            *out = sum / (g.vertex_areas[v as usize] * r);
+        });
     }
 
     /// Derivative of a vertex scalar along each edge tangent `tₑ`:
@@ -194,13 +264,10 @@ impl<'a> Operators<'a> {
         let edges = self.mesh.edges();
         let l = &self.geometry.edge_lengths;
         let r = self.radius;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, out)| {
-                let [a, b] = edges[e].vertices;
-                *out = (psi[b as usize] - psi[a as usize]) / (l[e] * r);
-            });
+        for_each_mut(out, |e, out| {
+            let [a, b] = edges[e].vertices;
+            *out = (psi[b as usize] - psi[a as usize]) / (l[e] * r);
+        });
     }
 
     /// Tangential component (along `tₑ`) of the velocity at each edge, from
@@ -209,18 +276,15 @@ impl<'a> Operators<'a> {
     pub fn tangential(&self, u: &[f64], out: &mut [f64]) {
         self.check(u.len(), self.mesh.n_edges(), out.len(), self.mesh.n_edges());
         let g = self.geometry;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, out)| {
-                let (stencil, weights) = g.trisk_stencil(e as u32);
-                let sum: f64 = stencil
-                    .iter()
-                    .zip(weights)
-                    .map(|(&f, &w)| w * g.edge_lengths[f as usize] * u[f as usize])
-                    .sum();
-                *out = sum / g.dual_edge_lengths[e];
-            });
+        for_each_mut(out, |e, out| {
+            let (stencil, weights) = g.trisk_stencil(e as u32);
+            let sum: f64 = stencil
+                .iter()
+                .zip(weights)
+                .map(|(&f, &w)| w * g.edge_lengths[f as usize] * u[f as usize])
+                .sum();
+            *out = sum / g.dual_edge_lengths[e];
+        });
     }
 
     /// The potential-vorticity flux `q F⊥` at each edge, in the
@@ -238,21 +302,18 @@ impl<'a> Operators<'a> {
         self.check(flux.len(), n, out.len(), n);
         assert_eq!(q.len(), n, "q has the wrong length");
         let g = self.geometry;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, out)| {
-                let (stencil, weights) = g.trisk_stencil(e as u32);
-                let sum: f64 = stencil
-                    .iter()
-                    .zip(weights)
-                    .map(|(&f, &w)| {
-                        let f = f as usize;
-                        w * g.edge_lengths[f] * flux[f] * 0.5 * (q[e] + q[f])
-                    })
-                    .sum();
-                *out = sum / g.dual_edge_lengths[e];
-            });
+        for_each_mut(out, |e, out| {
+            let (stencil, weights) = g.trisk_stencil(e as u32);
+            let sum: f64 = stencil
+                .iter()
+                .zip(weights)
+                .map(|(&f, &w)| {
+                    let f = f as usize;
+                    w * g.edge_lengths[f] * flux[f] * 0.5 * (q[e] + q[f])
+                })
+                .sum();
+            *out = sum / g.dual_edge_lengths[e];
+        });
     }
 
     /// Kinetic energy per unit mass at each cell (Ringler et al. 2010):
@@ -260,35 +321,29 @@ impl<'a> Operators<'a> {
     pub fn kinetic_energy(&self, u: &[f64], out: &mut [f64]) {
         self.check(u.len(), self.mesh.n_edges(), out.len(), self.mesh.n_cells());
         let g = self.geometry;
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(c, out)| {
-                let c = c as CellId;
-                let sum: f64 = self
-                    .mesh
-                    .cell_edges(c)
-                    .iter()
-                    .map(|&e| {
-                        let e = e as usize;
-                        0.25 * g.edge_lengths[e] * g.dual_edge_lengths[e] * u[e] * u[e]
-                    })
-                    .sum();
-                *out = sum / g.cell_areas[c as usize];
-            });
+        for_each_mut(out, |c, out| {
+            let c = c as CellId;
+            let sum: f64 = self
+                .mesh
+                .cell_edges(c)
+                .iter()
+                .map(|&e| {
+                    let e = e as usize;
+                    0.25 * g.edge_lengths[e] * g.dual_edge_lengths[e] * u[e] * u[e]
+                })
+                .sum();
+            *out = sum / g.cell_areas[c as usize];
+        });
     }
 
     /// Cell scalar at edges: the mean of the two cells either side.
     pub fn cell_to_edge(&self, h: &[f64], out: &mut [f64]) {
         self.check(h.len(), self.mesh.n_cells(), out.len(), self.mesh.n_edges());
         let edges = self.mesh.edges();
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, out)| {
-                let [a, b] = edges[e].cells;
-                *out = 0.5 * (h[a as usize] + h[b as usize]);
-            });
+        for_each_mut(out, |e, out| {
+            let [a, b] = edges[e].cells;
+            *out = 0.5 * (h[a as usize] + h[b as usize]);
+        });
     }
 
     /// Cell scalar at vertices: the mean of the three cells around each,
@@ -302,18 +357,15 @@ impl<'a> Operators<'a> {
         );
         let g = self.geometry;
         let triangles = self.mesh.triangles();
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(v, out)| {
-                let kites = g.vertex_kites(v as VertexId);
-                let sum: f64 = triangles[v]
-                    .iter()
-                    .zip(kites)
-                    .map(|(&c, k)| k * h[c as usize])
-                    .sum();
-                *out = sum / g.vertex_areas[v];
-            });
+        for_each_mut(out, |v, out| {
+            let kites = g.vertex_kites(v as VertexId);
+            let sum: f64 = triangles[v]
+                .iter()
+                .zip(kites)
+                .map(|(&c, k)| k * h[c as usize])
+                .sum();
+            *out = sum / g.vertex_areas[v];
+        });
     }
 
     /// Vertex scalar at edges: the mean of the edge's two end vertices.
@@ -325,13 +377,10 @@ impl<'a> Operators<'a> {
             self.mesh.n_edges(),
         );
         let edges = self.mesh.edges();
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, out)| {
-                let [a, b] = edges[e].vertices;
-                *out = 0.5 * (q[a as usize] + q[b as usize]);
-            });
+        for_each_mut(out, |e, out| {
+            let [a, b] = edges[e].vertices;
+            *out = 0.5 * (q[a as usize] + q[b as usize]);
+        });
     }
 
     fn check(&self, input: usize, expected_in: usize, output: usize, expected_out: usize) {

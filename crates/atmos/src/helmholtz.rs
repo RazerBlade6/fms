@@ -10,7 +10,7 @@
 //! and the iteration count are identical on any thread count.
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{for_each_mut, for_each_mut2, splits};
 use rayon::prelude::*;
 
 /// Convergence report of one solve.
@@ -85,10 +85,7 @@ impl<'a> Helmholtz<'a> {
     fn apply(ops: &Operators, c: f64, areas: &[f64], edge: &mut [f64], x: &[f64], out: &mut [f64]) {
         ops.gradient(x, edge);
         ops.divergence(edge, out);
-        out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, o)| *o = areas[i] * (x[i] - c * *o));
+        for_each_mut(out, |i, o| *o = areas[i] * (x[i] - c * *o));
     }
 
     /// Solve `(I − c∇²) x = b`, starting from the guess already in `x`.
@@ -108,10 +105,7 @@ impl<'a> Helmholtz<'a> {
         } = self;
         // Residual of the symmetric system A(I − c∇²)x = A b.
         Self::apply(ops, *c, areas, edge, x, ap);
-        r.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, r)| *r = areas[i] * b[i] - ap[i]);
+        for_each_mut(r, |i, r| *r = areas[i] * b[i] - ap[i]);
         let b_norm = {
             let ab: Vec<f64> = b.iter().zip(areas.iter()).map(|(b, a)| a * b).collect();
             dot(&ab, &ab).sqrt()
@@ -131,22 +125,15 @@ impl<'a> Helmholtz<'a> {
         while residual > *tolerance && iterations < *max_iterations {
             Self::apply(ops, *c, areas, edge, p, ap);
             let alpha = rz / dot(p, ap);
-            x.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(r.par_iter_mut().with_min_len(MIN_CHUNK))
-                .enumerate()
-                .for_each(|(i, (x, r))| {
-                    *x += alpha * p[i];
-                    *r -= alpha * ap[i];
-                });
+            for_each_mut2(x, r, |i, x, r| {
+                *x += alpha * p[i];
+                *r -= alpha * ap[i];
+            });
             precondition(inverse_diagonal, r, z);
             let rz_next = dot(r, z);
             let beta = rz_next / rz;
             rz = rz_next;
-            p.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(z.par_iter())
-                .for_each(|(p, &z)| *p = z + beta * *p);
+            for_each_mut(p, |i, p| *p = z[i] + beta * *p);
             residual = dot(r, r).sqrt() / b_norm;
             iterations += 1;
         }
@@ -158,24 +145,60 @@ impl<'a> Helmholtz<'a> {
 }
 
 fn precondition(inverse_diagonal: &[f64], r: &[f64], z: &mut [f64]) {
-    z.par_iter_mut()
-        .with_min_len(MIN_CHUNK)
-        .enumerate()
-        .for_each(|(i, z)| *z = inverse_diagonal[i] * r[i]);
+    for_each_mut(z, |i, z| *z = inverse_diagonal[i] * r[i]);
 }
 
 /// Elements per partial sum of [`dot`]. Results depend on it: changing it
 /// changes every solve in the last bits.
 const DOT_CHUNK: usize = 4096;
 
-/// Dot product with a fixed summation order: chunk sums in parallel, then
-/// the chunk sums in order.
+/// Most chunk sums [`dot`] keeps on the stack (arrays up to 256k
+/// elements); longer ones collect them in a `Vec`.
+const STACK_CHUNKS: usize = 64;
+
+/// Dot product with a fixed summation order: chunk sums (in parallel when
+/// the arrays are long enough to split), then the chunk sums in order. A
+/// short array is summed on the calling thread without allocating.
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len());
-    a.par_chunks(DOT_CHUNK)
-        .zip(b.par_chunks(DOT_CHUNK))
-        .map(|(a, b)| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>())
-        .collect::<Vec<f64>>()
-        .iter()
-        .sum()
+    chunked(a.len(), |lo, hi| {
+        a[lo..hi]
+            .iter()
+            .zip(&b[lo..hi])
+            .map(|(x, y)| x * y)
+            .sum::<f64>()
+    })
+}
+
+/// `Σᵢ term(i)` for `i` in `0..len`, in [`dot`]'s order: each chunk of
+/// [`DOT_CHUNK`] terms summed left to right, then the chunk sums in order.
+/// So `sum_of(n, |i| a[i] * b[i])` is bit for bit `dot(a, b)`, without
+/// storing the factors.
+pub fn sum_of(len: usize, term: impl Fn(usize) -> f64 + Sync + Send) -> f64 {
+    chunked(len, |lo, hi| (lo..hi).map(&term).sum::<f64>())
+}
+
+/// The sum of `chunk(lo, hi)` over consecutive [`DOT_CHUNK`]-element
+/// ranges of `0..len`, in order; the chunks computed side by side only when
+/// the length [`splits`].
+fn chunked(len: usize, chunk: impl Fn(usize, usize) -> f64 + Sync + Send) -> f64 {
+    let chunk = |c: usize| chunk(c * DOT_CHUNK, ((c + 1) * DOT_CHUNK).min(len));
+    let chunks = len.div_ceil(DOT_CHUNK);
+    if !splits(len) {
+        (0..chunks).map(chunk).sum()
+    } else if chunks <= STACK_CHUNKS {
+        let mut sums = [0.0; STACK_CHUNKS];
+        sums[..chunks]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(c, s)| *s = chunk(c));
+        sums[..chunks].iter().sum()
+    } else {
+        (0..chunks)
+            .into_par_iter()
+            .map(chunk)
+            .collect::<Vec<f64>>()
+            .iter()
+            .sum()
+    }
 }

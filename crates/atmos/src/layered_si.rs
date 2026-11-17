@@ -86,14 +86,14 @@
 use std::time::{Duration, Instant};
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{MIN_CHUNK, for_each_mut, for_each_mut2};
 use fms_restart::{Restart, RestartError, count};
 use rayon::prelude::*;
 
 use crate::forcing::EnergyTerms;
 use crate::helmholtz::{Helmholtz, SolveReport, dot};
 use crate::layered::{LayeredModel, LayeredState, Linearization};
-use crate::levels::Eigen;
+use crate::levels::{Eigen, MAX_LAYERS};
 use crate::safety::{self, BlowUp, Health, Limits};
 use crate::semi_implicit::SolverStats;
 use crate::timing::{Phase, Stopwatch, Timings};
@@ -753,10 +753,7 @@ impl<'a> LayeredSemiImplicit<'a> {
                     .into_iter()
                     .zip(self.forcing.parts())
                 {
-                    p.par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .zip(f.par_iter())
-                        .for_each(|(p, f)| *p += f);
+                    for_each_mut(p, |i, p| *p += f[i]);
                 }
             } else {
                 std::mem::swap(&mut self.physics, &mut self.forcing);
@@ -767,30 +764,46 @@ impl<'a> LayeredSemiImplicit<'a> {
         let d = &self.physics;
         self.timings.add(Phase::BudgetsAndLagged, clock.lap());
 
-        // Divergences of uⁿ and uⁿ⁻¹.
+        // Per layer: the divergences of uⁿ and uⁿ⁻¹, and the θᴸ rows of yⁿ⁻¹
+        // and yⁿ (whose first row is p_s itself).
+        let nc = current.ps.len();
+        let th_bar = &th_bar;
+        let mut y_prev = vec![vec![0.0; nc]; n];
+        let mut y_now = vec![vec![0.0; nc]; n];
         {
-            let (now, old) = (&current.u, &self.previous.u);
+            let (now, old) = (&current, &self.previous);
+            let theta_l = |s: &LayeredState, k: usize, out: &mut [f64]| {
+                for_each_mut(out, |i, y| {
+                    *y = (s.theta_ps[k][i] - th_bar[k] * s.ps[i]) / p_bar
+                });
+            };
             self.div
                 .par_iter_mut()
                 .zip(self.div_prev.par_iter_mut())
+                .zip(y_prev.par_iter_mut())
+                .zip(y_now.par_iter_mut())
                 .enumerate()
-                .for_each(|(k, (d, d_prev))| {
-                    ops.divergence(&now[k], d);
-                    ops.divergence(&old[k], d_prev);
+                .for_each(|(k, (((div, div_prev), y_prev), y_now))| {
+                    ops.divergence(&now.u[k], div);
+                    ops.divergence(&old.u[k], div_prev);
+                    theta_l(old, k, y_prev);
+                    theta_l(now, k, y_now);
                 });
         }
         let (div, div_prev) = (&self.div, &self.div_prev);
+        let y_prev = rows(&self.previous.ps, &y_prev);
+        let y_now = rows(&current.ps, &y_now);
+        let (y_prev, y_now) = (&y_prev[..=n], &y_now[..=n]);
 
-        // Y = yⁿ⁻¹ + 2Δt (T_y − B δⁿ) + Δt B δⁿ⁻¹, in y-space.
-        let y_prev = self.y_of(&self.previous);
-        let nc = current.ps.len();
+        // Per layer, with every layer's divergences and y at hand:
+        // Y = yⁿ⁻¹ + 2Δt (T_y − B δⁿ) + Δt B δⁿ⁻¹, in y-space (row k + 1, and
+        // row 0 with layer 0), then
+        // Uₖ = uₖⁿ⁻¹ + 2Δt (T_u + ∇Mₖ(yⁿ)) − Δt ∇Mₖ(yⁿ⁻¹) and its divergence.
         let mut big_y = vec![vec![0.0; nc]; n + 1];
-        big_y.par_iter_mut().enumerate().for_each(|(r, out)| {
-            let th_bar = &th_bar;
-            out.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, o)| {
+        let mut div_u = vec![vec![0.0; nc]; n];
+        {
+            let y_row = |r: usize, out: &mut [f64]| {
+                for_each_mut(out, |i, o| {
                     let t_y = if r == 0 {
                         t.ps[i]
                     } else {
@@ -804,48 +817,43 @@ impl<'a> LayeredSemiImplicit<'a> {
                     }
                     *o = y_prev[r][i] + 2.0 * dt * (t_y - b_now) + dt * b_old;
                 });
-        });
-
-        // Uₖ = uₖⁿ⁻¹ + 2Δt (T_u + ∇Mₖ(yⁿ)) − Δt ∇Mₖ(yⁿ⁻¹).
-        let y_now = self.y_of(&current);
-        let (m_now, m_prev) = (self.potentials(&y_now), self.potentials(&y_prev));
-        let mut div_u = vec![vec![0.0; nc]; n];
-        {
-            let (m_now, m_prev, previous) = (&m_now, &m_prev, &self.previous);
-            self.big_u
+            };
+            let (big_y_0, big_y_rows) = big_y.split_first_mut().expect("y has rows");
+            let mut first: [Option<&mut Vec<f64>>; MAX_LAYERS] = std::array::from_fn(|_| None);
+            first[0] = Some(big_y_0);
+            let previous = &self.previous;
+            big_y_rows
                 .par_iter_mut()
+                .zip(first[..n].par_iter_mut())
+                .zip(self.big_u.par_iter_mut())
                 .zip(self.cells.par_iter_mut())
                 .zip(self.grad.par_iter_mut())
                 .zip(div_u.par_iter_mut())
                 .enumerate()
-                .for_each(|(k, (((big_u, cells), grad), div_u))| {
+                .for_each(|(k, (((((big_y, big_y_0), big_u), cells), grad), div_u))| {
+                    if let Some(big_y_0) = big_y_0.as_deref_mut() {
+                        y_row(0, big_y_0);
+                    }
+                    y_row(k + 1, big_y);
                     // ∇(2 Mₖ(yⁿ) − Mₖ(yⁿ⁻¹)) combines both linear terms in one gradient.
-                    cells
-                        .par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(i, c)| *c = 2.0 * m_now[k][i] - m_prev[k][i]);
+                    for_each_mut(cells, |i, c| {
+                        *c = 2.0 * combine_at(&j[k], y_now, i) - combine_at(&j[k], y_prev, i);
+                    });
                     ops.gradient(cells, grad);
                     let (prev_u, t_u, d_u, grad) = (&previous.u[k], &t.u[k], &d.u[k], &*grad);
-                    big_u
-                        .par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(e, u)| {
-                            let diffusion = if diffuse { d_u[e] } else { 0.0 };
-                            *u = prev_u[e] + 2.0 * dt * (t_u[e] + diffusion) + dt * grad[e];
-                        });
+                    for_each_mut(big_u, |e, u| {
+                        let diffusion = if diffuse { d_u[e] } else { 0.0 };
+                        *u = prev_u[e] + 2.0 * dt * (t_u[e] + diffusion) + dt * grad[e];
+                    });
                     ops.divergence(big_u, div_u);
                 });
         }
 
-        // rhs = J Y + Δt A ∇·U.
-        self.rhs.par_iter_mut().enumerate().for_each(|(k, out)| {
+        // rhs = J Y + Δt A ∇·U, per layer.
+        {
             let (big_y, div_u) = (&big_y, &div_u);
-            out.par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, r)| {
+            self.rhs.iter_mut().enumerate().for_each(|(k, out)| {
+                for_each_mut(out, |i, r| {
                     let mut jy = j[k][0] * big_y[0][i];
                     for c in 1..=n {
                         jy += j[k][c] * big_y[c][i];
@@ -856,24 +864,30 @@ impl<'a> LayeredSemiImplicit<'a> {
                     }
                     *r = jy + dt * ad;
                 });
-        });
-
-        // N scalar Helmholtz problems in the vertical modes.
-        let rhs_modal = self.to_modes(&self.rhs);
+            });
+        }
         self.timings.add(Phase::ImplicitRhs, clock.lap());
-        // Beside them, the humidity's interface ratios for the transport
-        // below (they need only the middle level).
+
+        // N scalar Helmholtz problems in the vertical modes, each mode's
+        // right-hand side taken from rhs in its own task. Beside them, the
+        // humidity's interface ratios for the transport below (they need
+        // only the middle level, whose Exner functions the dynamics' tendency
+        // left).
         let (helmholtz, modal, model) = (&mut self.helmholtz, &mut self.modal, &self.model);
+        let (v_inv, rhs) = (&self.modes.v_inv, &self.rhs);
         let solve_time = &mut self.solve_time;
         let moist = self.transport.is_some();
+        let mut rhs_modal = vec![vec![0.0; nc]; n];
         let (reports, ratio): (Vec<SolveReport>, _) = rayon::join(
             || {
                 helmholtz
                     .par_iter_mut()
                     .zip(modal.par_iter_mut())
-                    .zip(rhs_modal.par_iter())
+                    .zip(rhs_modal.par_iter_mut())
                     .zip(solve_time.par_iter_mut())
-                    .map(|(((solver, x), b), time)| {
+                    .enumerate()
+                    .map(|(mode, (((solver, x), b), time))| {
+                        combine_into(&v_inv[mode], rhs, b);
                         let start = Instant::now();
                         let report = solver.solve(b, x);
                         *time += start.elapsed();
@@ -884,7 +898,10 @@ impl<'a> LayeredSemiImplicit<'a> {
             || {
                 moist.then(|| {
                     let start = Instant::now();
-                    (model.interface_ratios(&current), start.elapsed())
+                    (
+                        model.interface_ratios_of_tendency_state(&current),
+                        start.elapsed(),
+                    )
                 })
             },
         );
@@ -893,59 +910,43 @@ impl<'a> LayeredSemiImplicit<'a> {
             self.timings.add(Phase::InterfaceRatios, time);
             ratio
         });
-        {
-            let (v, modal) = (&self.modes.v, &self.modal);
-            self.m
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(k, out)| *out = combine(&v[k], modal));
-        }
 
-        // uⁿ⁺¹ = U − Δt ∇Mⁿ⁺¹; yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹.
+        // Per layer: Mₖⁿ⁺¹ from the modes, uₖⁿ⁺¹ = Uₖ − Δt ∇Mₖⁿ⁺¹ and its
+        // divergence.
         let next = &mut self.next;
         {
-            let (m, big_u) = (&self.m, &self.big_u);
+            let (v, modal, big_u) = (&self.modes.v, &self.modal, &self.big_u);
             next.u
                 .par_iter_mut()
+                .zip(self.m.par_iter_mut())
                 .zip(self.grad.par_iter_mut())
                 .zip(self.div.par_iter_mut())
                 .enumerate()
-                .for_each(|(k, ((u, grad), div))| {
-                    ops.gradient(&m[k], grad);
+                .for_each(|(k, (((u, m), grad), div))| {
+                    combine_into(&v[k], modal, m);
+                    ops.gradient(m, grad);
                     let (big_u, grad) = (&big_u[k], &*grad);
-                    u.par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(e, u)| *u = big_u[e] - dt * grad[e]);
+                    for_each_mut(u, |e, u| *u = big_u[e] - dt * grad[e]);
                     ops.divergence(u, div);
                 });
         }
-        let div = &self.div;
-        let y_new: Vec<Vec<f64>> = (0..=n)
-            .into_par_iter()
-            .map(|r| {
-                let big_y = &big_y;
-                (0..nc)
-                    .into_par_iter()
-                    .with_min_len(MIN_CHUNK)
-                    .map(|i| {
-                        let mut bd = b[r][0] * div[0][i];
-                        for l in 1..n {
-                            bd += b[r][l] * div[l][i];
-                        }
-                        big_y[r][i] + dt * bd
-                    })
-                    .collect()
-            })
-            .collect();
-        next.ps.copy_from_slice(&y_new[0]);
-        for k in 0..n {
-            let (ps, yk, th) = (&y_new[0], &y_new[k + 1], th_bar[k]);
-            next.theta_ps[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, t)| *t = p_bar * yk[i] + th * ps[i]);
+        // yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹: cheap, and across the layers, so on this
+        // thread.
+        {
+            let (div, big_y) = (&self.div, &big_y);
+            let y_new = |r: usize, i: usize| {
+                let mut bd = b[r][0] * div[0][i];
+                for l in 1..n {
+                    bd += b[r][l] * div[l][i];
+                }
+                big_y[r][i] + dt * bd
+            };
+            for_each_mut(&mut next.ps, |i, p| *p = y_new(0, i));
+            let ps = &next.ps;
+            for (k, theta_ps) in next.theta_ps.iter_mut().enumerate() {
+                let th = th_bar[k];
+                for_each_mut(theta_ps, |i, t| *t = p_bar * y_new(k + 1, i) + th * ps[i]);
+            }
         }
         self.timings.add(Phase::BackSubstitution, clock.lap());
 
@@ -955,52 +956,51 @@ impl<'a> LayeredSemiImplicit<'a> {
             let ds = self.model.dsigma();
             ops.cell_to_edge(&current.ps, &mut self.grad[0]);
             let mut flux_div = vec![vec![0.0; nc]; n];
+            let mut q_mid = vec![vec![0.0; nc]; n];
             {
-                let (ps_e, previous, next) = (&self.grad[0], &self.previous, &*next);
+                let (ps_e, previous, next, current) =
+                    (&self.grad[0], &self.previous, &*next, &current);
                 self.mass_flux
                     .par_iter_mut()
                     .zip(flux_div.par_iter_mut())
+                    .zip(q_mid.par_iter_mut())
                     .enumerate()
-                    .for_each(|(k, (flux, div))| {
+                    .for_each(|(k, ((flux, div), q_mid))| {
                         let (now, old, new) = (&current.u[k], &previous.u[k], &next.u[k]);
-                        flux.par_iter_mut()
-                            .with_min_len(MIN_CHUNK)
-                            .enumerate()
-                            .for_each(|(e, f)| {
-                                *f = ds[k]
-                                    * (ps_e[e] * now[e]
-                                        + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
-                            });
+                        for_each_mut(flux, |e, f| {
+                            *f = ds[k]
+                                * (ps_e[e] * now[e]
+                                    + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
+                        });
                         ops.divergence(flux, div);
+                        let (q, ps) = (&current.q_ps[k], &current.ps);
+                        for_each_mut(q_mid, |i, x| *x = q[i] / ps[i]);
                     });
             }
-            // The interface fluxes they imply (as in the dynamics).
-            let interface: Vec<Vec<f64>> = self
+            // The interface fluxes they imply (as in the dynamics): cheap,
+            // and across the layers, so on this thread.
+            let mut interface = vec![vec![0.0; nc]; n - 1];
+            for (j, (&s, out)) in self
                 .model
                 .levels()
                 .interior()
                 .iter()
+                .zip(&mut interface)
                 .enumerate()
-                .map(|(j, &s)| {
-                    let flux_div = &flux_div;
-                    (0..nc)
-                        .into_par_iter()
-                        .with_min_len(MIN_CHUNK)
-                        .map(|i| {
-                            let mut above = flux_div[0][i];
-                            for d in &flux_div[1..=j] {
-                                above += d[i];
-                            }
-                            let mut below = flux_div[j + 1][i];
-                            for d in &flux_div[j + 2..] {
-                                below += d[i];
-                            }
-                            s * below - (1.0 - s) * above
-                        })
-                        .collect()
-                })
-                .collect();
-            let q_mid: Vec<Vec<f64>> = (0..n).map(|k| current.humidity(k)).collect();
+            {
+                let flux_div = &flux_div;
+                for_each_mut(out, |i, x| {
+                    let mut above = flux_div[0][i];
+                    for d in &flux_div[1..=j] {
+                        above += d[i];
+                    }
+                    let mut below = flux_div[j + 1][i];
+                    for d in &flux_div[j + 2..] {
+                        below += d[i];
+                    }
+                    *x = s * below - (1.0 - s) * above;
+                });
+            }
             let ratio = ratio.expect("a moist state has interface ratios");
             let source: Vec<&[f64]> = if diffuse {
                 d.q_ps.iter().map(Vec::as_slice).collect()
@@ -1035,50 +1035,95 @@ impl<'a> LayeredSemiImplicit<'a> {
         // RAW filter on xⁿ and xⁿ⁺¹, then rotate the three levels (the old
         // xⁿ⁻¹ buffer becomes scratch for the next step).
         let (nu, alpha) = (self.options.filter_strength, self.options.filter_alpha);
-        // Humidity's range over the three levels, per cell and layer, and the
-        // water of the two levels the filter changes.
         let moist = self.transport.is_some();
-        let (bounds, water_before) = if moist {
-            let bounds: Vec<Vec<(f64, f64)>> = (0..n)
-                .map(|k| {
-                    let (previous, current, next) = (&self.previous, &current, &*next);
-                    (0..nc)
-                        .into_par_iter()
-                        .with_min_len(MIN_CHUNK)
-                        .map(|i| {
-                            let q = [
-                                previous.q_ps[k][i] / previous.ps[i],
-                                current.q_ps[k][i] / current.ps[i],
-                                next.q_ps[k][i] / next.ps[i],
-                            ];
-                            (q[0].min(q[1]).min(q[2]), q[0].max(q[1]).max(q[2]))
-                        })
-                        .collect()
-                })
-                .collect();
-            let w = self.model.water(&current) + self.model.water(next);
-            (Some(bounds), w)
-        } else {
-            (None, 0.0)
-        };
-        raw_filter(&self.previous, &mut current, next, nu, alpha);
         let mut filtered = None;
-        if let Some(bounds) = bounds {
-            // Keep the filtered humidity within the range of the three levels
-            // (the filter is linear, so this never acts on a uniform q), and
-            // account for the water the filter changed.
-            for level in [&mut current, &mut *next] {
-                for k in 0..n {
-                    let (ps, b) = (&level.ps, &bounds[k]);
-                    level.q_ps[k]
-                        .par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(i, q)| *q = q.clamp(ps[i] * b[i].0, ps[i] * b[i].1));
-                }
+        if moist {
+            // Per layer: humidity's range over the three levels, the water of
+            // the two levels the filter changes, the filter, and the filtered
+            // humidity kept within that range (the filter is linear, so this
+            // never acts on a uniform q) against the filtered surface
+            // pressure, and the water after. Surface pressure is filtered
+            // after the layers, which take its filtered value as the filter
+            // gives it.
+            let raw = |old: f64, now: f64, next: f64| {
+                let d = 0.5 * nu * (old - 2.0 * now + next);
+                (now + alpha * d, next - (1.0 - alpha) * d)
+            };
+            let mut bounds = vec![vec![(0.0, 0.0); nc]; n];
+            let mut water = [[0.0; 4]; MAX_LAYERS];
+            {
+                let previous = &self.previous;
+                let model = &self.model;
+                let LayeredState {
+                    ps: now_ps,
+                    u: now_u,
+                    theta_ps: now_theta,
+                    q_ps: now_q,
+                } = &mut current;
+                let LayeredState {
+                    ps: next_ps,
+                    u: next_u,
+                    theta_ps: next_theta,
+                    q_ps: next_q,
+                } = &mut *next;
+                let (now_ps, next_ps) = (&*now_ps, &*next_ps);
+                now_u
+                    .par_iter_mut()
+                    .zip(now_theta.par_iter_mut())
+                    .zip(now_q.par_iter_mut())
+                    .zip(next_u.par_iter_mut())
+                    .zip(next_theta.par_iter_mut())
+                    .zip(next_q.par_iter_mut())
+                    .zip(bounds.par_iter_mut())
+                    .zip(water[..n].par_iter_mut())
+                    .enumerate()
+                    .for_each(
+                        |(
+                            k,
+                            (
+                                ((((((now_u, now_theta), now_q), next_u), next_theta), next_q), b),
+                                water,
+                            ),
+                        )| {
+                            let old_q = &previous.q_ps[k];
+                            {
+                                let (now_q, next_q) = (&*now_q, &*next_q);
+                                for_each_mut(b, |i, b| {
+                                    let q = [
+                                        old_q[i] / previous.ps[i],
+                                        now_q[i] / now_ps[i],
+                                        next_q[i] / next_ps[i],
+                                    ];
+                                    *b = (q[0].min(q[1]).min(q[2]), q[0].max(q[1]).max(q[2]));
+                                });
+                            }
+                            water[0] = model.layer_water(k, now_q);
+                            water[1] = model.layer_water(k, next_q);
+                            raw_filter_part(&previous.u[k], now_u, next_u, nu, alpha);
+                            raw_filter_part(
+                                &previous.theta_ps[k],
+                                now_theta,
+                                next_theta,
+                                nu,
+                                alpha,
+                            );
+                            raw_filter_part(old_q, now_q, next_q, nu, alpha);
+                            let (b, old_ps) = (&*b, &previous.ps);
+                            for_each_mut2(now_q, next_q, |i, now, next| {
+                                let (p_now, p_next) = raw(old_ps[i], now_ps[i], next_ps[i]);
+                                *now = now.clamp(p_now * b[i].0, p_now * b[i].1);
+                                *next = next.clamp(p_next * b[i].0, p_next * b[i].1);
+                            });
+                            water[2] = model.layer_water(k, now_q);
+                            water[3] = model.layer_water(k, next_q);
+                        },
+                    );
             }
-            let after = self.model.water(&current) + self.model.water(next);
-            self.water.filter += 0.5 * (after - water_before);
+            raw_filter_part(&self.previous.ps, &mut current.ps, &mut next.ps, nu, alpha);
+            let total = |level: usize| water[..n].iter().map(|w| w[level]).sum::<f64>();
+            let before = total(0) + total(1);
+            let after = total(2) + total(3);
+            self.water.filter += 0.5 * (after - before);
             filtered = Some(clock.lap());
             let g = self.model.gravity();
             let ds = self.model.dsigma();
@@ -1087,6 +1132,8 @@ impl<'a> LayeredSemiImplicit<'a> {
                 self.water.fixer += 0.5 * added;
                 self.water.borrowed += 0.5 * borrowed;
             }
+        } else {
+            raw_filter(&self.previous, &mut current, next, nu, alpha);
         }
         let old_previous = std::mem::replace(&mut self.previous, current);
         self.current = std::mem::replace(&mut self.next, old_previous);
@@ -1151,17 +1198,35 @@ fn level_arrays_mut(s: &mut LayeredState) -> Vec<&mut [f64]> {
 
 /// `Σᵢ cᵢ xᵢ` per cell, left to right.
 fn combine(c: &[f64], x: &[Vec<f64>]) -> Vec<f64> {
-    (0..x[0].len())
-        .into_par_iter()
-        .with_min_len(MIN_CHUNK)
-        .map(|i| {
-            let mut s = c[0] * x[0][i];
-            for (c, x) in c.iter().zip(x).skip(1) {
-                s += c * x[i];
-            }
-            s
-        })
-        .collect()
+    let mut out = vec![0.0; x[0].len()];
+    combine_into(c, x, &mut out);
+    out
+}
+
+/// [`combine`] into `out`.
+fn combine_into(c: &[f64], x: &[Vec<f64>], out: &mut [f64]) {
+    for_each_mut(out, |i, o| *o = combine_at(c, x, i));
+}
+
+/// `Σᵢ cᵢ xᵢ` at cell `i`, left to right.
+#[inline]
+fn combine_at<X: AsRef<[f64]>>(c: &[f64], x: &[X], i: usize) -> f64 {
+    let mut s = c[0] * x[0].as_ref()[i];
+    for (c, x) in c.iter().zip(x).skip(1) {
+        s += c * x.as_ref()[i];
+    }
+    s
+}
+
+/// The rows of `y = (p_s, θ₀ᴸ, …)`: `ps`, then `theta_l`'s (the first
+/// `theta_l.len() + 1` are set).
+fn rows<'r>(ps: &'r [f64], theta_l: &'r [Vec<f64>]) -> [&'r [f64]; MAX_LAYERS + 1] {
+    let mut rows: [&[f64]; MAX_LAYERS + 1] = [&[]; MAX_LAYERS + 1];
+    rows[0] = ps;
+    for (row, t) in rows[1..].iter_mut().zip(theta_l) {
+        *row = t;
+    }
+    rows
 }
 
 /// The layers next to `k` of `n`.
@@ -1185,16 +1250,17 @@ fn raw_filter(
         .zip(now.parts_mut())
         .zip(next.parts_mut())
     {
-        now.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(next.par_iter_mut().with_min_len(MIN_CHUNK))
-            .zip(old.par_iter())
-            .for_each(|((now, next), &old)| {
-                let d = 0.5 * nu * (old - 2.0 * *now + *next);
-                *now += alpha * d;
-                *next -= (1.0 - alpha) * d;
-            });
+        raw_filter_part(old, now, next, nu, alpha);
     }
+}
+
+/// The RAW filter on one field.
+fn raw_filter_part(old: &[f64], now: &mut [f64], next: &mut [f64], nu: f64, alpha: f64) {
+    for_each_mut2(now, next, |i, now, next| {
+        let d = 0.5 * nu * (old[i] - 2.0 * *now + *next);
+        *now += alpha * d;
+        *next -= (1.0 - alpha) * d;
+    });
 }
 
 /// Fill negative humidity in `state`: from the same column's other layers

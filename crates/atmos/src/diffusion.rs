@@ -45,7 +45,7 @@
 //! [`crate::LayeredModel::energy_tendency`] for the budget.
 
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::for_each_mut;
 use rayon::prelude::*;
 
 use crate::dissipation::KineticHeating;
@@ -201,6 +201,34 @@ impl Hyperdiffusion {
     /// Adds the diffusion tendencies of `state` to `out` (every layer's winds
     /// and `Θ`; `out.ps` is untouched).
     pub fn add_tendency(&mut self, ops: &Operators, state: &LayeredState, out: &mut LayeredState) {
+        if let Some(h) = &mut self.heating {
+            h.prepare(&state.ps);
+        }
+        self.add(ops, state, None, out);
+    }
+
+    /// [`add_tendency`](Self::add_tendency), with the state's layer Exner
+    /// functions `exner` (`n` per cell) for the dissipative heating, instead
+    /// of computing them.
+    pub(crate) fn add_tendency_with_exner(
+        &mut self,
+        ops: &Operators,
+        state: &LayeredState,
+        exner: &[f64],
+        out: &mut LayeredState,
+    ) {
+        self.add(ops, state, Some(exner), out);
+    }
+
+    /// The layers' tendencies, one layer to a task, with the heating's Exner
+    /// functions `exner` or (`None`) those it prepared.
+    fn add(
+        &mut self,
+        ops: &Operators,
+        state: &LayeredState,
+        exner: Option<&[f64]>,
+        out: &mut LayeredState,
+    ) {
         let n = self.options.order / 2;
         let sign = if n % 2 == 1 { 1.0 } else { -1.0 };
         let nu = self.nu;
@@ -209,9 +237,6 @@ impl Hyperdiffusion {
             self.layers.resize(layers, self.work.clone());
         }
         ops.cell_to_edge(&state.ps, &mut self.work.ps_edge);
-        if let Some(h) = &mut self.heating {
-            h.prepare(&state.ps);
-        }
         let (ps_edge, heating) = (&self.work.ps_edge, self.heating.as_ref());
         self.layers[..layers]
             .par_iter_mut()
@@ -237,41 +262,42 @@ impl Hyperdiffusion {
                     vertex_laplacian(ops, vertices, edges2);
                 }
                 ops.tangential_gradient(vertices, edges2);
-                edges
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(edges2.par_iter())
-                    .for_each(|(d, &r)| *d = sign * nu * (*d - r));
-                out_u
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(edges.par_iter())
-                    .for_each(|(o, &du)| *o += du);
+                {
+                    let edges2 = &*edges2;
+                    for_each_mut(edges, |e, d| *d = sign * nu * (*d - edges2[e]));
+                }
+                {
+                    let edges = &*edges;
+                    for_each_mut(out_u, |e, o| *o += edges[e]);
+                }
                 if let Some(h) = heating {
-                    h.add(ops, &state.ps, k, k, &state.u[k], edges, out_theta);
+                    match exner {
+                        Some(exner) => h.add_with_exner(
+                            exner,
+                            ops,
+                            &state.ps,
+                            k,
+                            k,
+                            &state.u[k],
+                            edges,
+                            out_theta,
+                        ),
+                        None => h.add(ops, &state.ps, k, k, &state.u[k], edges, out_theta),
+                    }
                 }
 
                 // θ, in flux form.
-                cells
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(i, c)| *c = state.theta_ps[k][i] / state.ps[i]);
+                for_each_mut(cells, |i, c| *c = state.theta_ps[k][i] / state.ps[i]);
                 for _ in 1..n {
                     cell_laplacian(ops, cells, edges);
                 }
                 ops.gradient(cells, edges);
-                edges
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(ps_edge.par_iter())
-                    .for_each(|(f, &p)| *f *= p);
+                for_each_mut(edges, |e, f| *f *= ps_edge[e]);
                 ops.divergence(edges, cells);
-                out_theta
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(cells.par_iter())
-                    .for_each(|(o, &c)| *o += sign * nu * c);
+                {
+                    let cells = &*cells;
+                    for_each_mut(out_theta, |i, o| *o += sign * nu * cells[i]);
+                }
             });
     }
 }
@@ -292,9 +318,7 @@ fn cell_laplacian(ops: &Operators, x: &mut [f64], edges: &mut [f64]) {
 fn vertex_laplacian(ops: &Operators, x: &mut [f64], edges: &mut [f64]) {
     ops.tangential_gradient(x, edges);
     ops.curl(edges, x);
-    x.par_iter_mut()
-        .with_min_len(MIN_CHUNK)
-        .for_each(|v| *v = -*v);
+    for_each_mut(x, |_, v| *v = -*v);
 }
 
 /// Largest eigenvalue of `−L` on cells or vertices, by power iteration with

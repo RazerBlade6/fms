@@ -66,17 +66,21 @@
 use std::time::{Duration, Instant};
 
 use fms_grid::Operators;
-use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
+use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS, for_each_mut, for_each_mut2};
 use rayon::prelude::*;
 
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};
 use crate::dissipation::KineticHeating;
 use crate::forcing::{EnergyTerms, Forcing};
-use crate::helmholtz::dot;
+use crate::helmholtz::{dot, sum_of};
 pub use crate::levels::Levels;
 use crate::levels::{Eigen, MAX_LAYERS};
 use crate::radiation::{RadiationParams, interface_humidity_ratios};
-use crate::timing::Stopwatch;
+
+/// Smallest number of columns handed to one thread in the loops that only
+/// take each column's Exner functions (and geopotentials): about 70 ns a
+/// column, so a task of 256 is ~20 µs, worth more than the wake-up it costs.
+const EXNER_COLUMNS: usize = 256;
 
 /// Reference pressure for potential temperature (Pa).
 pub const REFERENCE_PRESSURE: f64 = 1.0e5;
@@ -330,7 +334,6 @@ struct Work {
     theta_interface: Vec<Vec<f64>>,
     /// Per cell, every layer's Exner function then geopotential.
     column: Vec<f64>,
-    cell_scratch: Vec<f64>,
     edge_scratch: Vec<f64>,
 }
 
@@ -344,7 +347,12 @@ pub struct LayeredModel<'a> {
     coriolis: Vec<f64>,
     /// Surface geopotential `g · z_s` at cells (m² s⁻²).
     surface_geopotential: Vec<f64>,
+    /// Edge areas `Aₑ` (m²), for the energy rates.
+    edge_areas: Vec<f64>,
     work: Work,
+    /// The old level's layer Exner functions (`n` per cell), for
+    /// [`step_tendencies`](Self::step_tendencies).
+    old_exner: Vec<f64>,
     stages: [LayeredState; 4],
     stage_state: LayeredState,
     diffusion: Option<Hyperdiffusion>,
@@ -403,13 +411,14 @@ impl<'a> LayeredModel<'a> {
             levels,
             coriolis,
             surface_geopotential,
+            edge_areas: ops.edge_areas(),
+            old_exner: vec![0.0; n * nc],
             work: Work {
                 layers: (0..n).map(|_| layer()).collect(),
                 w: vec![vec![0.0; nc]; n - 1],
                 w_edge: vec![vec![0.0; ne]; n - 1],
                 theta_interface: vec![vec![0.0; nc]; n - 1],
                 column: vec![0.0; 2 * n * nc],
-                cell_scratch: vec![0.0; nc],
                 edge_scratch: vec![0.0; ne],
             },
             stages: std::array::from_fn(|_| LayeredState::dry_zeros(n, nc, ne)),
@@ -438,6 +447,7 @@ impl<'a> LayeredModel<'a> {
             coriolis: &self.coriolis,
             surface_geopotential: &self.surface_geopotential,
             humidity_profile: &self.humidity_profile,
+            edge_areas: &self.edge_areas,
         }
     }
 
@@ -445,7 +455,19 @@ impl<'a> LayeredModel<'a> {
     /// adjacent layer's mean (`[upper layer at its bottom, lower layer at
     /// its top]`; [`crate::radiation::interface_humidity_ratios`]).
     pub fn interface_ratios(&self, state: &LayeredState) -> Vec<[Vec<f64>; 2]> {
-        interface_ratios(&self.parameters(), state)
+        interface_ratios(&self.parameters(), state, None)
+    }
+
+    /// [`interface_ratios`](Self::interface_ratios) of the state the last
+    /// [`step_tendencies`](Self::step_tendencies) or
+    /// [`tendency`](Self::tendency) took its dynamics tendency of, with the
+    /// Exner functions that computed: the same values, without computing
+    /// them again.
+    pub(crate) fn interface_ratios_of_tendency_state(
+        &self,
+        state: &LayeredState,
+    ) -> Vec<[Vec<f64>; 2]> {
+        interface_ratios(&self.parameters(), state, Some(&self.work.column))
     }
 
     /// The model with hyperdiffusion ([`crate::diffusion`]). Without it the
@@ -706,6 +728,7 @@ impl<'a> LayeredModel<'a> {
             coriolis: &self.coriolis,
             surface_geopotential: &self.surface_geopotential,
             humidity_profile: &self.humidity_profile,
+            edge_areas: &self.edge_areas,
         };
         compute_tendency(params, &mut self.work, state, out);
     }
@@ -739,7 +762,10 @@ impl<'a> LayeredModel<'a> {
     /// into the part through the winds and the part through `Θ`.
     /// `tendency.ps` is ignored.
     pub fn energy_tendency(&self, state: &LayeredState, tendency: &LayeredState) -> EnergyTerms {
-        energy_rate(&self.parameters(), state, tendency)
+        let params = self.parameters();
+        let mut exner = vec![0.0; self.layers() * state.ps.len()];
+        layer_exners(&params, &state.ps, &mut exner);
+        energy_rate(&params, state, &exner, tendency)
     }
 
     /// The step's three tendencies at once, computed side by side:
@@ -767,9 +793,18 @@ impl<'a> LayeredModel<'a> {
             coriolis: &self.coriolis,
             surface_geopotential: &self.surface_geopotential,
             humidity_profile: &self.humidity_profile,
+            edge_areas: &self.edge_areas,
         };
         let (work, diffuser, forcer) = (&mut self.work, &mut self.diffusion, &mut self.forcing);
-        let ((forcing_rate, physics), (diffusion_rate, dynamics, hyperdiffusion)) = rayon::join(
+        // The old level's Exner functions, once for both energy rates and
+        // the dissipative heating.
+        if diffuser.is_some() || forcer.is_some() {
+            layer_exners(&params, &old.ps, &mut self.old_exner);
+        }
+        let old_exner = &self.old_exner;
+        // The forcing beside the dynamics and the hyperdiffusion, which run
+        // beside each other.
+        let ((forcing_rate, physics), (dynamics, (diffusion_rate, hyperdiffusion))) = rayon::join(
             || {
                 let t = Instant::now();
                 let rate = forcer.as_mut().map(|f| {
@@ -777,22 +812,28 @@ impl<'a> LayeredModel<'a> {
                         x.fill(0.0);
                     }
                     f.add_tendency(old, forcing);
-                    energy_rate(&params, old, forcing)
+                    energy_rate(&params, old, old_exner, forcing)
                 });
                 (rate, rate.map(|_| t.elapsed()))
             },
             || {
-                let mut t = Stopwatch::start();
-                compute_tendency(params, work, now, out);
-                let dynamics = t.lap();
-                let rate = diffuser.as_mut().map(|d| {
-                    for x in diffusion.parts_mut() {
-                        x.fill(0.0);
-                    }
-                    d.add_tendency(params.ops, old, diffusion);
-                    energy_rate(&params, old, diffusion)
-                });
-                (rate, dynamics, rate.map(|_| t.lap()))
+                let mut dynamics = || {
+                    let t = Instant::now();
+                    compute_tendency(params, work, now, out);
+                    t.elapsed()
+                };
+                match diffuser.as_mut() {
+                    None => (dynamics(), (None, None)),
+                    Some(d) => rayon::join(dynamics, || {
+                        let t = Instant::now();
+                        for x in diffusion.parts_mut() {
+                            x.fill(0.0);
+                        }
+                        d.add_tendency_with_exner(params.ops, old, old_exner, diffusion);
+                        let rate = energy_rate(&params, old, old_exner, diffusion);
+                        (Some(rate), Some(t.elapsed()))
+                    }),
+                }
             },
         );
         let times = TendencyTimes {
@@ -818,7 +859,9 @@ impl<'a> LayeredModel<'a> {
             gravity,
             coriolis,
             surface_geopotential,
+            edge_areas,
             work,
+            old_exner: _,
             stages,
             stage_state,
             diffusion,
@@ -834,6 +877,7 @@ impl<'a> LayeredModel<'a> {
             coriolis,
             surface_geopotential,
             humidity_profile,
+            edge_areas,
         };
         let mut full = |x: &LayeredState, out: &mut LayeredState| {
             compute_tendency(params, work, x, out);
@@ -926,14 +970,18 @@ impl<'a> LayeredModel<'a> {
         if !x.is_moist() {
             return 0.0;
         }
+        (0..x.q_ps.len())
+            .map(|k| self.layer_water(k, &x.q_ps[k]))
+            .sum()
+    }
+
+    /// Layer `k`'s term of [`water_tendency`](Self::water_tendency), of
+    /// its humidity field or tendency `q_ps`.
+    pub(crate) fn layer_water(&self, k: usize, q_ps: &[f64]) -> f64 {
         let ops = &self.ops;
         let a = &ops.geometry().cell_areas;
         let scale = ops.radius() * ops.radius() / self.gravity;
-        self.dsigma()
-            .iter()
-            .zip(&x.q_ps)
-            .map(|(ds, q)| ds * scale * dot(a, q))
-            .sum()
+        self.dsigma()[k] * scale * dot(a, q_ps)
     }
 
     /// An RK4 time step (s) at Courant number `courant` for the fastest
@@ -967,15 +1015,32 @@ struct Parameters<'p, 'a> {
     coriolis: &'p [f64],
     surface_geopotential: &'p [f64],
     humidity_profile: &'p RadiationParams,
+    edge_areas: &'p [f64],
 }
 
-/// [`LayeredModel::energy_tendency`].
-fn energy_rate(params: &Parameters, state: &LayeredState, tendency: &LayeredState) -> EnergyTerms {
+/// Layer Exner functions (`n` per cell) for surface pressures `ps`.
+fn layer_exners(params: &Parameters, ps: &[f64], out: &mut [f64]) {
+    let (gas, levels) = (params.gas, params.levels);
+    out.par_chunks_mut(levels.count())
+        .with_min_len(EXNER_COLUMNS)
+        .zip(ps.par_iter())
+        .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
+}
+
+/// [`LayeredModel::energy_tendency`], with the state's layer Exner
+/// functions `exner` (`n` per cell).
+fn energy_rate(
+    params: &Parameters,
+    state: &LayeredState,
+    exner: &[f64],
+    tendency: &LayeredState,
+) -> EnergyTerms {
     let Parameters {
         ops,
         gas,
         levels,
         gravity,
+        edge_areas,
         ..
     } = *params;
     let r2 = ops.radius() * ops.radius();
@@ -983,52 +1048,39 @@ fn energy_rate(params: &Parameters, state: &LayeredState, tendency: &LayeredStat
     let ds = levels.dsigma();
     let n = levels.count();
     let edges = ops.mesh().edges();
-    let edge_areas = ops.edge_areas();
-    let mut rate = EnergyTerms::default();
     let cp = gas.heat_capacity;
-    // Layer Exner functions, once per cell.
-    let mut exner = vec![0.0; n * state.ps.len()];
-    exner
-        .par_chunks_mut(n)
-        .with_min_len(MIN_COLUMNS)
-        .zip(state.ps.par_iter())
-        .for_each(|(e, &ps)| levels.layer_exner_into(gas, ps, e));
-    let exner = &exner;
-    let edge_areas = &edge_areas;
-    let terms: Vec<(f64, f64)> = (0..n)
-        .into_par_iter()
-        .map(|k| {
-            let dsk = ds[k];
-            // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
-            let kinetic: Vec<f64> = (0..edges.len())
-                .into_par_iter()
-                .with_min_len(MIN_CHUNK)
-                .map(|e| {
-                    let [a, b] = edges[e].cells;
-                    let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
-                    edge_areas[e] * dp * state.u[k][e] / gravity
-                })
-                .collect();
-            // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
-            let enthalpy: Vec<f64> = (0..state.ps.len())
-                .into_par_iter()
-                .with_min_len(MIN_CHUNK)
-                .map(|i| g.cell_areas[i] * r2 * dsk * cp * exner[i * n + k] / gravity)
-                .collect();
-            (
-                dot(&kinetic, &tendency.u[k]),
-                dot(&enthalpy, &tendency.theta_ps[k]),
-            )
-        })
-        .collect();
-    for (kinetic, thermal) in terms {
+    let mut terms = [(0.0, 0.0); MAX_LAYERS];
+    terms[..n].iter_mut().enumerate().for_each(|(k, terms)| {
+        let dsk = ds[k];
+        // ∂E/∂uₑ = 2 Aₑ δpₑ uₑ / g, with δpₑ the mean of the two cells.
+        let (u, du) = (&state.u[k], &tendency.u[k]);
+        let kinetic = sum_of(edges.len(), |e| {
+            let [a, b] = edges[e].cells;
+            let dp = dsk * (state.ps[a as usize] + state.ps[b as usize]);
+            edge_areas[e] * dp * u[e] / gravity * du[e]
+        });
+        // ∂E/∂Θₖ = Aᵢ δσₖ c_p Πₖ / g.
+        let dtheta = &tendency.theta_ps[k];
+        let thermal = sum_of(state.ps.len(), |i| {
+            g.cell_areas[i] * r2 * dsk * cp * exner[i * n + k] / gravity * dtheta[i]
+        });
+        *terms = (kinetic, thermal);
+    });
+    let mut rate = EnergyTerms::default();
+    for &(kinetic, thermal) in &terms[..n] {
         rate.kinetic += kinetic;
         rate.thermal += thermal;
     }
     rate
 }
 
-fn interface_ratios(params: &Parameters, state: &LayeredState) -> Vec<[Vec<f64>; 2]> {
+/// [`LayeredModel::interface_ratios`]; with `column` (as in [`Work`]), the
+/// Exner functions stored there for this state.
+fn interface_ratios(
+    params: &Parameters,
+    state: &LayeredState,
+    column: Option<&[f64]>,
+) -> Vec<[Vec<f64>; 2]> {
     let n = params.levels.count();
     let ratios: Vec<Vec<[f64; 2]>> = (0..state.ps.len())
         .into_par_iter()
@@ -1036,9 +1088,12 @@ fn interface_ratios(params: &Parameters, state: &LayeredState) -> Vec<[Vec<f64>;
         .map(|i| {
             let ps = state.ps[i];
             let mut exner = [0.0; MAX_LAYERS];
-            params
-                .levels
-                .layer_exner_into(params.gas, ps, &mut exner[..n]);
+            match column {
+                Some(c) => exner[..n].copy_from_slice(&c[2 * n * i..2 * n * i + n]),
+                None => params
+                    .levels
+                    .layer_exner_into(params.gas, ps, &mut exner[..n]),
+            }
             let t: Vec<f64> = (0..n)
                 .map(|k| state.theta_ps[k][i] / ps * exner[k])
                 .collect();
@@ -1100,6 +1155,8 @@ fn geopotentials(
     }
 }
 
+// Layers index several per-layer arrays together.
+#[allow(clippy::needless_range_loop)]
 fn compute_tendency(
     params: Parameters,
     work: &mut Work,
@@ -1124,181 +1181,86 @@ fn compute_tendency(
         w_edge,
         theta_interface,
         column,
-        cell_scratch,
         edge_scratch,
     } = work;
 
-    // Thickness fluxes, divergence and θ per layer.
+    // Thickness fluxes, divergence and θ per layer; beside them, each
+    // column's Exner functions and geopotentials, which need every layer's
+    // θ (taken from Θ/p_s, as the layers' own are).
     ops.cell_to_edge(&state.ps, edge_scratch);
     {
         let ps_edge = &*edge_scratch;
-        layers.par_iter_mut().enumerate().for_each(|(k, l)| {
-            l.dp_edge
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(ps_edge.par_iter())
-                .for_each(|(d, &p)| *d = ds[k] * p);
-            l.flux
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(e, f)| *f = l.dp_edge[e] * state.u[k][e]);
-            ops.divergence(&l.flux, &mut l.divergence);
-            l.theta
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, t)| *t = state.theta_ps[k][i] / state.ps[i]);
+        rayon::join(
+            || {
+                layers.par_iter_mut().enumerate().for_each(|(k, l)| {
+                    for_each_mut(&mut l.dp_edge, |e, d| *d = ds[k] * ps_edge[e]);
+                    let dp_edge = &l.dp_edge;
+                    for_each_mut(&mut l.flux, |e, f| *f = dp_edge[e] * state.u[k][e]);
+                    ops.divergence(&l.flux, &mut l.divergence);
+                    for_each_mut(&mut l.theta, |i, t| {
+                        *t = state.theta_ps[k][i] / state.ps[i];
+                    });
+                });
+            },
+            || {
+                column
+                    .par_chunks_mut(2 * n)
+                    .with_min_len(EXNER_COLUMNS)
+                    .enumerate()
+                    .for_each(|(i, c)| {
+                        let (exner, phi) = c.split_at_mut(n);
+                        levels.layer_exner_into(gas, state.ps[i], exner);
+                        let mut theta = [0.0; MAX_LAYERS];
+                        for k in 0..n {
+                            theta[k] = state.theta_ps[k][i] / state.ps[i];
+                        }
+                        geopotentials(
+                            gas,
+                            levels,
+                            &theta[..n],
+                            exner,
+                            surface_geopotential[i],
+                            phi,
+                        );
+                    });
+            },
+        );
+    }
+
+    // Interface mass fluxes Wⱼ = σⱼ Σ_{k>j} Dₖ − (1 − σⱼ) Σ_{k≤j} Dₖ, and θ̂ⱼ;
+    // the surface pressure. Cheap, and they need every layer: on this
+    // thread.
+    let layers_now = &*layers;
+    for j in 0..n - 1 {
+        let s = sigma[j];
+        for_each_mut2(&mut w[j], &mut theta_interface[j], |i, w, t| {
+            let mut above = layers_now[0].divergence[i];
+            for l in &layers_now[1..=j] {
+                above += l.divergence[i];
+            }
+            let mut below = layers_now[j + 1].divergence[i];
+            for l in &layers_now[j + 2..] {
+                below += l.divergence[i];
+            }
+            *w = s * below - (1.0 - s) * above;
+            *t = 0.5 * (layers_now[j].theta[i] + layers_now[j + 1].theta[i]);
         });
+        ops.cell_to_edge(&w[j], &mut w_edge[j]);
     }
-    // Exner functions and geopotentials need every layer's θ.
-    {
-        let layers = &*layers;
-        column
-            .par_chunks_mut(2 * n)
-            .with_min_len(MIN_COLUMNS)
-            .enumerate()
-            .for_each(|(i, c)| {
-                let (exner, phi) = c.split_at_mut(n);
-                levels.layer_exner_into(gas, state.ps[i], exner);
-                let mut theta = [0.0; MAX_LAYERS];
-                for (k, l) in layers.iter().enumerate() {
-                    theta[k] = l.theta[i];
-                }
-                geopotentials(
-                    gas,
-                    levels,
-                    &theta[..n],
-                    exner,
-                    surface_geopotential[i],
-                    phi,
-                );
-            });
-    }
-    // Interface mass fluxes Wⱼ = σⱼ Σ_{k>j} Dₖ − (1 − σⱼ) Σ_{k≤j} Dₖ, and θ̂ⱼ.
-    {
-        let layers = &*layers;
-        w.par_iter_mut()
-            .zip(theta_interface.par_iter_mut())
-            .zip(w_edge.par_iter_mut())
-            .enumerate()
-            .for_each(|(j, ((w, theta_interface), w_edge))| {
-                let s = sigma[j];
-                w.par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(theta_interface.par_iter_mut())
-                    .enumerate()
-                    .for_each(|(i, (w, t))| {
-                        let mut above = layers[0].divergence[i];
-                        for l in &layers[1..=j] {
-                            above += l.divergence[i];
-                        }
-                        let mut below = layers[j + 1].divergence[i];
-                        for l in &layers[j + 2..] {
-                            below += l.divergence[i];
-                        }
-                        *w = s * below - (1.0 - s) * above;
-                        *t = 0.5 * (layers[j].theta[i] + layers[j + 1].theta[i]);
-                    });
-                ops.cell_to_edge(w, w_edge);
-            });
-    }
+    for_each_mut(&mut out.ps, |i, d| {
+        let mut total = layers_now[0].divergence[i];
+        for l in &layers_now[1..] {
+            total += l.divergence[i];
+        }
+        *d = -total;
+    });
 
-    // Surface pressure.
-    {
-        let layers = &*layers;
-        out.ps
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(i, d)| {
-                let mut total = layers[0].divergence[i];
-                for l in &layers[1..] {
-                    total += l.divergence[i];
-                }
-                *d = -total;
-            });
-    }
-
-    {
-        let (w, theta_interface, column) = (&*w, &*theta_interface, &*column);
-        layers
-            .par_iter_mut()
-            .zip(out.theta_ps.par_iter_mut())
-            .enumerate()
-            .for_each(|(k, (l, out_theta))| {
-                l.exner
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(l.geopotential.par_iter_mut())
-                    .enumerate()
-                    .for_each(|(i, (e, g))| {
-                        *e = column[2 * n * i + k];
-                        *g = column[2 * n * i + n + k];
-                    });
-                // Thermodynamics: δσₖ ∂Θₖ/∂t = −∇·(Fₖ θₖ,ₑ) + W_{k−1} θ̂_{k−1} − Wₖ θ̂ₖ.
-                ops.cell_to_edge(&l.theta, &mut l.theta_edge);
-                {
-                    let (flux, theta_edge) = (&l.flux, &l.theta_edge);
-                    l.edge_scratch
-                        .par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(e, f)| *f = flux[e] * theta_edge[e]);
-                }
-                ops.divergence(&l.edge_scratch, &mut l.theta_flux_divergence);
-                out_theta
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .enumerate()
-                    .for_each(|(i, d)| {
-                        let mut vertical = 0.0;
-                        if k > 0 {
-                            vertical += w[k - 1][i] * theta_interface[k - 1][i];
-                        }
-                        if k + 1 < n {
-                            vertical -= w[k][i] * theta_interface[k][i];
-                        }
-                        *d = (-l.theta_flux_divergence[i] + vertical) / ds[k];
-                    });
-
-                // Momentum: PV flux, Bernoulli gradient, Exner-gradient term.
-                ops.kinetic_energy(&state.u[k], &mut l.kinetic);
-                {
-                    let (kinetic, geopotential) = (&l.kinetic, &l.geopotential);
-                    l.bernoulli
-                        .par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(i, b)| *b = kinetic[i] + geopotential[i]);
-                }
-                ops.gradient(&l.bernoulli, &mut l.gradient);
-                ops.gradient(&l.exner, &mut l.exner_gradient);
-
-                ops.curl(&state.u[k], &mut l.vorticity);
-                l.cell_scratch
-                    .par_iter_mut()
-                    .with_min_len(MIN_CHUNK)
-                    .zip(state.ps.par_iter())
-                    .for_each(|(d, &p)| *d = ds[k] * p);
-                ops.cell_to_vertex(&l.cell_scratch, &mut l.dp_vertex);
-                {
-                    let (vorticity, dp_vertex) = (&l.vorticity, &l.dp_vertex);
-                    l.q_vertex
-                        .par_iter_mut()
-                        .with_min_len(MIN_CHUNK)
-                        .enumerate()
-                        .for_each(|(v, q)| *q = (vorticity[v] + coriolis[v]) / dp_vertex[v]);
-                }
-                ops.vertex_to_edge(&l.q_vertex, &mut l.q_edge);
-                ops.pv_flux(&l.q_edge, &l.flux, &mut l.pv_flux);
-            });
-    }
-
-    // Humidity, centred like θ (only where both the state and the output
-    // carry it): δσₖ ∂Qₖ/∂t = −∇·(Fₖ qₖ,ₑ) + W_{k−1} q̂_{k−1} − Wₖ q̂ₖ.
-    if state.is_moist() && out.is_moist() {
-        let ratio = interface_ratios(&params, state);
+    // Humidity (only where both the state and the output carry it): its
+    // value per layer and q̂ⱼ, the mean of the two layers' profiles at the
+    // interface.
+    let moist = state.is_moist() && out.is_moist();
+    let humidity = moist.then(|| {
+        let ratio = interface_ratios(&params, state, None);
         let q: Vec<Vec<f64>> = (0..n)
             .map(|k| {
                 state.q_ps[k]
@@ -1309,7 +1271,6 @@ fn compute_tendency(
                     .collect()
             })
             .collect();
-        // q̂ⱼ: the mean of the two layers' profiles at the interface.
         let q_hat: Vec<Vec<f64>> = (0..n - 1)
             .map(|j| {
                 let (q, r) = (&q, &ratio[j]);
@@ -1320,21 +1281,78 @@ fn compute_tendency(
                     .collect()
             })
             .collect();
-        for k in 0..n {
-            let l = &mut layers[k];
-            ops.cell_to_edge(&q[k], &mut l.theta_edge);
-            edge_scratch
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(e, f)| *f = l.flux[e] * l.theta_edge[e]);
-            ops.divergence(edge_scratch, cell_scratch);
-            let (w, q_hat, cells) = (&*w, &q_hat, &*cell_scratch);
-            out.q_ps[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .enumerate()
-                .for_each(|(i, d)| {
+        (q, q_hat)
+    });
+    let mut out_q: [Option<&mut Vec<f64>>; MAX_LAYERS] = {
+        let mut q = out.q_ps.iter_mut().filter(|_| moist);
+        std::array::from_fn(|_| q.next())
+    };
+
+    // Per layer, everything else: θ (and Q), then the winds.
+    let (w, theta_interface, w_edge, column) = (&*w, &*theta_interface, &*w_edge, &*column);
+    let humidity = humidity.as_ref();
+    layers
+        .par_iter_mut()
+        .zip(out.theta_ps.par_iter_mut())
+        .zip(out.u.par_iter_mut())
+        .zip(out_q[..n].par_iter_mut())
+        .enumerate()
+        .for_each(|(k, (((l, out_theta), out_u), out_q))| {
+            for_each_mut2(&mut l.exner, &mut l.geopotential, |i, e, g| {
+                *e = column[2 * n * i + k];
+                *g = column[2 * n * i + n + k];
+            });
+            // Thermodynamics: δσₖ ∂Θₖ/∂t = −∇·(Fₖ θₖ,ₑ) + W_{k−1} θ̂_{k−1} − Wₖ θ̂ₖ.
+            ops.cell_to_edge(&l.theta, &mut l.theta_edge);
+            {
+                let (flux, theta_edge) = (&l.flux, &l.theta_edge);
+                for_each_mut(&mut l.edge_scratch, |e, f| *f = flux[e] * theta_edge[e]);
+            }
+            ops.divergence(&l.edge_scratch, &mut l.theta_flux_divergence);
+            {
+                let divergence = &l.theta_flux_divergence;
+                for_each_mut(out_theta, |i, d| {
+                    let mut vertical = 0.0;
+                    if k > 0 {
+                        vertical += w[k - 1][i] * theta_interface[k - 1][i];
+                    }
+                    if k + 1 < n {
+                        vertical -= w[k][i] * theta_interface[k][i];
+                    }
+                    *d = (-divergence[i] + vertical) / ds[k];
+                });
+            }
+
+            // Momentum: PV flux, Bernoulli gradient, Exner-gradient term.
+            ops.kinetic_energy(&state.u[k], &mut l.kinetic);
+            {
+                let (kinetic, geopotential) = (&l.kinetic, &l.geopotential);
+                for_each_mut(&mut l.bernoulli, |i, b| *b = kinetic[i] + geopotential[i]);
+            }
+            ops.gradient(&l.bernoulli, &mut l.gradient);
+            ops.gradient(&l.exner, &mut l.exner_gradient);
+
+            ops.curl(&state.u[k], &mut l.vorticity);
+            for_each_mut(&mut l.cell_scratch, |i, d| *d = ds[k] * state.ps[i]);
+            ops.cell_to_vertex(&l.cell_scratch, &mut l.dp_vertex);
+            {
+                let (vorticity, dp_vertex) = (&l.vorticity, &l.dp_vertex);
+                for_each_mut(&mut l.q_vertex, |v, q| {
+                    *q = (vorticity[v] + coriolis[v]) / dp_vertex[v];
+                });
+            }
+            ops.vertex_to_edge(&l.q_vertex, &mut l.q_edge);
+            ops.pv_flux(&l.q_edge, &l.flux, &mut l.pv_flux);
+
+            // Humidity, centred like θ:
+            // δσₖ ∂Qₖ/∂t = −∇·(Fₖ qₖ,ₑ) + W_{k−1} q̂_{k−1} − Wₖ q̂ₖ.
+            if let (Some(out_q), Some((q, q_hat))) = (out_q.as_deref_mut(), humidity) {
+                ops.cell_to_edge(&q[k], &mut l.edge_scratch);
+                let flux = &l.flux;
+                for_each_mut(&mut l.edge_scratch, |e, f| *f *= flux[e]);
+                ops.divergence(&l.edge_scratch, &mut l.cell_scratch);
+                let cells = &l.cell_scratch;
+                for_each_mut(out_q, |i, d| {
                     let mut vertical = 0.0;
                     if k > 0 {
                         vertical += w[k - 1][i] * q_hat[k - 1][i];
@@ -1344,22 +1362,12 @@ fn compute_tendency(
                     }
                     *d = (-cells[i] + vertical) / ds[k];
                 });
-            // Restore θ at edges for the momentum equation below.
-            ops.cell_to_edge(&l.theta, &mut l.theta_edge);
-        }
-    }
+            }
 
-    // Assemble the wind tendencies, including vertical advection.
-    let layers = &*layers;
-    let w_edge = &*w_edge;
-    out.u.par_iter_mut().enumerate().for_each(|(k, out_u)| {
-        let l = &layers[k];
-        let u = &state.u;
-        out_u
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .enumerate()
-            .for_each(|(e, d)| {
+            // The wind tendency, including vertical advection.
+            let l = &*l;
+            let u = &state.u;
+            for_each_mut(out_u, |e, d| {
                 let mut vertical = 0.0;
                 if k + 1 < n {
                     vertical += w_edge[k][e] * (u[k + 1][e] - u[k][e]);
@@ -1372,5 +1380,5 @@ fn compute_tendency(
                     - cp * l.theta_edge[e] * l.exner_gradient[e]
                     - vertical / (2.0 * l.dp_edge[e]);
             });
-    });
+        });
 }
