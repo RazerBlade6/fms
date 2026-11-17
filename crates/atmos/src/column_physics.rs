@@ -102,7 +102,7 @@
 
 use fms_grid::Operators;
 use fms_grid::mesh::CellId;
-use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
+use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS, splits};
 use fms_grid::zonal::east_north;
 use fms_ocean::{IceForcing, JumpLayers, Ocean, OceanParams, OceanSnapshot};
 use fms_planet::{Planet, Sunlight};
@@ -705,6 +705,17 @@ fn snow_melted(snow: f64, surplus: f64, dt: f64) -> f64 {
     (surplus.max(0.0) * dt / FUSION_HEAT).min(snow)
 }
 
+/// A cell's terms of the budgets [`ColumnPhysics::advance`] keeps, by index:
+/// water to the ocean, runoff, absorbed and outgoing radiation, evaporation
+/// and precipitation.
+const BUDGET_TERMS: usize = 6;
+const OCEAN_EXCHANGE: usize = 0;
+const RUNOFF: usize = 1;
+const ABSORBED: usize = 2;
+const OUTGOING: usize = 3;
+const EVAPORATED: usize = 4;
+const PRECIPITATED: usize = 5;
+
 /// Black-body emission (W m⁻²) at temperature `t`.
 fn black_body(t: f64) -> f64 {
     STEFAN_BOLTZMANN * t * t * t * t
@@ -1265,6 +1276,9 @@ pub struct ColumnPhysics<'a> {
     precipitated: f64,
     runoff: f64,
     ocean_exchange: f64,
+    /// Scratch: each cell's terms of the budgets in the latest
+    /// [`advance`](Forcing::advance), in the order of [`BUDGET_TERMS`].
+    budget_terms: Vec<[f64; BUDGET_TERMS]>,
     /// Time spent in each phase ([`Forcing::timings`]).
     timings: Timings,
 }
@@ -1377,6 +1391,7 @@ impl<'a> ColumnPhysics<'a> {
             precipitated: 0.0,
             runoff: 0.0,
             ocean_exchange: 0.0,
+            budget_terms: vec![[0.0; BUDGET_TERMS]; n],
             timings: Timings::default(),
         };
         if physics.ice_sheet_age.is_finite() {
@@ -2070,52 +2085,62 @@ impl Forcing for ColumnPhysics<'_> {
         let (u_low, u_up) = (&state.u[lowest], &state.u[above]);
         let mut du_low = std::mem::take(&mut self.du_low);
         let mut du_up = std::mem::take(&mut self.du_up);
-        du_low
-            .par_iter_mut()
-            .with_min_len(MIN_CHUNK)
-            .zip(du_up.par_iter_mut())
-            .enumerate()
-            .for_each(|(e, (dl, du))| {
-                let [a, b] = edges[e].cells.map(|c| c as usize);
-                let drag = 0.5 * (surface[a].drag + surface[b].drag);
-                let exchange = |s: &SurfaceFlux| s.entrainment + s.cumulus;
-                let mixing = 0.5 * (exchange(&surface[a]) + exchange(&surface[b])) * gravity
-                    / (0.5 * (state.ps[a] + state.ps[b]));
-                let shear = u_up[e] - u_low[e];
-                *dl = -drag * u_low[e] + mixing * shear / ds[lowest];
-                *du = -mixing * shear / ds[above];
-            });
+        {
+            // The tendencies, and the same added to the two layers' own.
+            let (upper, lower) = out.u.split_at_mut(lowest);
+            let (out_up, out_low) = (&mut upper[above], &mut lower[0]);
+            let edge =
+                |e: usize, dl: &mut f64, du: &mut f64, out_low: &mut f64, out_up: &mut f64| {
+                    let [a, b] = edges[e].cells.map(|c| c as usize);
+                    let drag = 0.5 * (surface[a].drag + surface[b].drag);
+                    let exchange = |s: &SurfaceFlux| s.entrainment + s.cumulus;
+                    let mixing = 0.5 * (exchange(&surface[a]) + exchange(&surface[b])) * gravity
+                        / (0.5 * (state.ps[a] + state.ps[b]));
+                    let shear = u_up[e] - u_low[e];
+                    *dl = -drag * u_low[e] + mixing * shear / ds[lowest];
+                    *du = -mixing * shear / ds[above];
+                    *out_low += *dl;
+                    *out_up += *du;
+                };
+            if splits(edges.len()) {
+                (
+                    du_low.par_iter_mut(),
+                    du_up.par_iter_mut(),
+                    out_low.par_iter_mut(),
+                    out_up.par_iter_mut(),
+                )
+                    .into_par_iter()
+                    .with_min_len(MIN_CHUNK)
+                    .enumerate()
+                    .for_each(|(e, (dl, du, ol, ou))| edge(e, dl, du, ol, ou));
+            } else {
+                for (e, (((dl, du), ol), ou)) in du_low
+                    .iter_mut()
+                    .zip(du_up.iter_mut())
+                    .zip(out_low.iter_mut())
+                    .zip(out_up.iter_mut())
+                    .enumerate()
+                {
+                    edge(e, dl, du, ol, ou);
+                }
+            }
+        }
         let heating = &self.heating;
         let ops = &self.ops;
-        heating.add_with_exner(
+        let from = [
+            (lowest, &u_low[..], &du_low[..]),
+            (above, &u_up[..], &du_up[..]),
+        ];
+        heating.add_each_with_exner(
             exner,
             ops,
             &state.ps,
+            from,
             lowest,
-            lowest,
-            u_low,
-            &du_low,
             &mut out.theta_ps[lowest],
         );
-        heating.add_with_exner(
-            exner,
-            ops,
-            &state.ps,
-            above,
-            lowest,
-            u_up,
-            &du_up,
-            &mut out.theta_ps[lowest],
-        );
-        self.dissipation = -(heating.rate(ops, &state.ps, lowest, gravity, u_low, &du_low)
-            + heating.rate(ops, &state.ps, above, gravity, u_up, &du_up));
-        for (k, du) in [(lowest, &du_low), (above, &du_up)] {
-            out.u[k]
-                .par_iter_mut()
-                .with_min_len(MIN_CHUNK)
-                .zip(du.par_iter())
-                .for_each(|(o, &d)| *o += d);
-        }
+        let [low, up] = heating.rates(ops, &state.ps, gravity, from);
+        self.dissipation = -(low + up);
         self.du_low = du_low;
         self.du_up = du_up;
         self.timings.add(Phase::ColumnTendencies, clock.lap());
@@ -2184,53 +2209,99 @@ impl Forcing for ColumnPhysics<'_> {
         if !surface_timed {
             self.timings.add(Phase::OceanSurface, clock.lap());
         }
-        let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
-        let (mut runoff, mut ocean_exchange) = (0.0, 0.0);
-        for i in 0..areas.len() {
+        // Per cell, side by side on a grid whose loops are split: the land's
+        // snow, cover and soil, and the cell's terms of the budgets (zero
+        // where it has none), which are then added up in order, as one
+        // pass over the cells would.
+        let (ocean, land_params) = (&self.ocean, &self.params.land);
+        let cell = |i: usize,
+                    snow: &mut f64,
+                    cover_age: &mut f64,
+                    soil_temperature: &mut f64,
+                    soil_water: &mut f64| {
             let a = areas[i];
             let (f, falling) = (land[i], moist[i].rain + moist[i].snow);
+            let mut terms = [0.0; BUDGET_TERMS];
             if f < 1.0 {
-                let ice = self.ocean.ice_fraction(i);
+                let ice = ocean.ice_fraction(i);
                 let evaporation = if ice > 0.0 {
                     (1.0 - ice) * surface[i].tiles[OCEAN].evaporation
                         + ice * surface[i].tiles[ICE].evaporation
                 } else {
                     surface[i].tiles[OCEAN].evaporation
                 };
-                ocean_exchange += a * (1.0 - f) * (evaporation - falling);
+                terms[OCEAN_EXCHANGE] = a * (1.0 - f) * (evaporation - falling);
             }
             if f > 0.0 {
                 let evaporation = surface[i].tiles[LAND].evaporation;
-                let pack = self.snow[i] + dt * moist[i].snow;
+                let pack = *snow + dt * moist[i].snow;
                 // Evaporation takes the snow first, which costs its fusion.
                 let sublimated = (dt * evaporation).clamp(0.0, pack);
                 let mut heat = net(i, LAND) - FUSION_HEAT * sublimated / dt;
                 // A skin held at freezing: what the balance leaves after
                 // conduction into the soil melts the snow.
                 let melted = if skin[i] == MELTING_POINT {
-                    let conducted = self.params.land.step_conductance(dt)
-                        * (skin[i] - self.soil_temperature[i]);
+                    let conducted =
+                        land_params.step_conductance(dt) * (skin[i] - *soil_temperature);
                     snow_melted(pack - sublimated, heat - conducted, dt)
                 } else {
                     0.0
                 };
                 heat -= FUSION_HEAT * melted / dt;
-                self.snow[i] = pack - sublimated - melted;
-                self.cover_age[i] = self
-                    .params
-                    .land
-                    .cover_age(self.cover_age[i], self.snow[i], dt);
-                self.soil_temperature[i] += dt * heat / land_capacity;
+                *snow = pack - sublimated - melted;
+                *cover_age = land_params.cover_age(*cover_age, *snow, dt);
+                *soil_temperature += dt * heat / land_capacity;
                 let gain = dt * (moist[i].rain - evaporation) + sublimated + melted;
-                let (water, overflow) = self.params.land.fill(self.soil_water[i], gain);
-                self.soil_water[i] = water;
-                runoff += a * f * overflow;
+                let (water, overflow) = land_params.fill(*soil_water, gain);
+                *soil_water = water;
+                terms[RUNOFF] = a * f * overflow;
             }
-            absorbed += a * radiation[i].absorbed;
-            outgoing += a * radiation[i].outgoing;
-            evaporated += a * surface[i].evaporation;
-            precipitated += a * (moist[i].rain + moist[i].snow);
+            terms[ABSORBED] = a * radiation[i].absorbed;
+            terms[OUTGOING] = a * radiation[i].outgoing;
+            terms[EVAPORATED] = a * surface[i].evaporation;
+            terms[PRECIPITATED] = a * (moist[i].rain + moist[i].snow);
+            terms
+        };
+        let terms = &mut self.budget_terms;
+        let (snow, cover_age) = (&mut self.snow, &mut self.cover_age);
+        let (soil_temperature, soil_water) = (&mut self.soil_temperature, &mut self.soil_water);
+        if splits(terms.len()) {
+            (
+                terms.par_iter_mut(),
+                snow.par_iter_mut(),
+                cover_age.par_iter_mut(),
+                soil_temperature.par_iter_mut(),
+                soil_water.par_iter_mut(),
+            )
+                .into_par_iter()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(i, (terms, snow, age, t, w))| *terms = cell(i, snow, age, t, w));
+        } else {
+            for (i, terms) in terms.iter_mut().enumerate() {
+                *terms = cell(
+                    i,
+                    &mut snow[i],
+                    &mut cover_age[i],
+                    &mut soil_temperature[i],
+                    &mut soil_water[i],
+                );
+            }
         }
+        let mut totals = [0.0; BUDGET_TERMS];
+        for terms in &self.budget_terms {
+            for (total, term) in totals.iter_mut().zip(terms) {
+                *total += term;
+            }
+        }
+        let [
+            ocean_exchange,
+            runoff,
+            absorbed,
+            outgoing,
+            evaporated,
+            precipitated,
+        ] = totals;
         self.absorbed += dt * r2 * absorbed;
         self.outgoing += dt * r2 * outgoing;
         self.evaporated += dt * r2 * evaporated;
@@ -2288,6 +2359,7 @@ impl Forcing for ColumnPhysics<'_> {
             interface_exner: _,
             du_low: _,
             du_up: _,
+            budget_terms: _,
             // Made from the radiation.
             stratosphere: _,
             // This process's own timings.

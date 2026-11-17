@@ -19,7 +19,9 @@
 //! below that the two temperatures are one. Each layer is linear between
 //! its two boundary temperatures.
 
+use fms_grid::operators::{MIN_CHUNK, splits};
 use fms_restart::{Restart, RestartError};
+use rayon::prelude::*;
 
 /// How sea ice forms, melts and looks; [`Default`] is the authors'.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -198,6 +200,44 @@ struct Column {
     surface: f64,
 }
 
+/// The [`Column`] of ice `h` thick under `snow` (kg m⁻²).
+fn column(p: &IceParams, h: f64, snow: f64) -> Column {
+    let ice = p.capacity(h);
+    let half_snow = 0.5 * p.specific_heat * snow;
+    if snow > p.snow_critical {
+        Column {
+            ice: p.conductivity / h,
+            snow: Some(p.snow_conductivity * p.snow_density / snow),
+            interface: ice + half_snow,
+            surface: half_snow,
+        }
+    } else {
+        Column {
+            ice: p.conductivity / h,
+            snow: None,
+            interface: ice + 2.0 * half_snow,
+            surface: 0.0,
+        }
+    }
+}
+
+/// The interface temperature after `dt` seconds, from `interface` (K) under
+/// a snow layer of conductance `snow`, is `a + b × surface`.
+fn interface_response(
+    p: &IceParams,
+    interface: f64,
+    column: &Column,
+    snow: f64,
+    dt: f64,
+) -> (f64, f64) {
+    let storage = column.interface / dt;
+    let denominator = storage + column.ice + snow;
+    (
+        (storage * interface + column.ice * p.freezing) / denominator,
+        snow / denominator,
+    )
+}
+
 impl SeaIce {
     pub(crate) fn new(params: IceParams, n: usize) -> Self {
         Self {
@@ -316,24 +356,7 @@ impl SeaIce {
     }
 
     fn column(&self, h: f64, snow: f64) -> Column {
-        let p = &self.params;
-        let ice = p.capacity(h);
-        let half_snow = 0.5 * p.specific_heat * snow;
-        if snow > p.snow_critical {
-            Column {
-                ice: p.conductivity / h,
-                snow: Some(p.snow_conductivity * p.snow_density / snow),
-                interface: ice + half_snow,
-                surface: half_snow,
-            }
-        } else {
-            Column {
-                ice: p.conductivity / h,
-                snow: None,
-                interface: ice + 2.0 * half_snow,
-                surface: 0.0,
-            }
-        }
+        column(&self.params, h, snow)
     }
 
     /// Heat held by cell `i`'s ice and snow (J per m² of ocean), from water
@@ -371,27 +394,38 @@ impl SeaIce {
 
     /// The interface temperature after `dt` seconds is `a + b × surface`.
     fn interface_response(&self, i: usize, column: &Column, snow: f64, dt: f64) -> (f64, f64) {
-        let storage = column.interface / dt;
-        let denominator = storage + column.ice + snow;
-        (
-            (storage * self.interface[i] + column.ice * self.params.freezing) / denominator,
-            snow / denominator,
-        )
+        interface_response(&self.params, self.interface[i], column, snow, dt)
     }
 
     /// Advance the temperatures `dt` seconds, take the ocean's heat, and
-    /// record what is left for melting and growth.
+    /// record what is left for melting and growth. Work per cell, side by
+    /// side on a grid whose loops are split between threads.
     pub(crate) fn step(
         &mut self,
         dt: f64,
         water: &mut Water,
-        forcing: impl Fn(usize) -> IceForcing,
+        forcing: impl Fn(usize) -> IceForcing + Sync,
     ) {
         let p = self.params;
-        for i in 0..self.fraction.len() {
-            let (f, h) = (self.fraction[i], self.thickness[i]);
-            if f <= 0.0 || water.area[i] <= 0.0 {
-                continue;
+        let (fraction, thickness, snow) = (&self.fraction, &self.thickness, &self.snow);
+        let Water {
+            mixed,
+            area,
+            capacity,
+            density,
+            specific_heat,
+        } = water;
+        let (area, capacity, density, specific_heat) = (*area, *capacity, *density, *specific_heat);
+        let cell = |i: usize,
+                    mixed: &mut f64,
+                    fallen: &mut f64,
+                    temperature: &mut f64,
+                    interface: &mut f64,
+                    top: &mut f64,
+                    bottom: &mut f64| {
+            let (f, h) = (fraction[i], thickness[i]);
+            if f <= 0.0 || area[i] <= 0.0 {
+                return;
             }
             let IceForcing {
                 net,
@@ -401,51 +435,78 @@ impl SeaIce {
                 snowfall,
             } = forcing(i);
             // The ocean gives up heat only from above freezing.
-            let excess = water.mixed[i] - p.freezing;
-            let friction = ((1.0 - f) * stress / water.density)
+            let excess = *mixed - p.freezing;
+            let friction = ((1.0 - f) * stress / density)
                 .sqrt()
                 .max(p.min_friction_velocity);
-            let turbulent =
-                (p.ocean_exchange * water.density * water.specific_heat * friction * excess)
-                    .min(water.capacity * excess / dt)
-                    .max(0.0);
-            water.mixed[i] -= dt * f * turbulent / water.capacity;
+            let turbulent = (p.ocean_exchange * density * specific_heat * friction * excess)
+                .min(capacity * excess / dt)
+                .max(0.0);
+            *mixed -= dt * f * turbulent / capacity;
             // What blows off melts in the water.
             let blown = p.snow_blown * (1.0 - f);
-            water.mixed[i] -= dt * f * blown * snowfall * p.fusion / water.capacity;
-            self.fallen[i] += dt * (1.0 - blown) * snowfall;
+            *mixed -= dt * f * blown * snowfall * p.fusion / capacity;
+            *fallen += dt * (1.0 - blown) * snowfall;
 
-            let column = self.column(h, self.snow[i]);
+            let column = column(&p, h, snow[i]);
             let conducted = if let Some(snow) = column.snow {
-                let (a, b) = self.interface_response(i, &column, snow, dt);
-                let interface = a + b * skin;
+                let (a, b) = interface_response(&p, *interface, &column, snow, dt);
+                let interface_then = a + b * skin;
                 let mut surface =
-                    self.temperature[i] + dt * (net + snow * (interface - skin)) / column.surface;
-                let mut interface_now = interface;
+                    *temperature + dt * (net + snow * (interface_then - skin)) / column.surface;
+                let mut interface_now = interface_then;
                 if surface > p.melting {
-                    self.top[i] += column.surface * (surface - p.melting);
+                    *top += column.surface * (surface - p.melting);
                     surface = p.melting;
                 }
                 if interface_now > p.melting {
-                    self.top[i] += column.interface * (interface_now - p.melting);
+                    *top += column.interface * (interface_now - p.melting);
                     interface_now = p.melting;
                 }
-                self.temperature[i] = surface;
-                self.interface[i] = interface_now;
-                column.ice * (p.freezing - interface)
+                *temperature = surface;
+                *interface = interface_now;
+                column.ice * (p.freezing - interface_then)
             } else {
                 let conducted = column.ice * (p.freezing - skin);
-                let mut t = self.interface[i] + dt * (net + conducted) / column.interface;
+                let mut t = *interface + dt * (net + conducted) / column.interface;
                 if t > p.melting {
-                    self.top[i] += column.interface * (t - p.melting);
+                    *top += column.interface * (t - p.melting);
                     t = p.melting;
                 }
-                self.temperature[i] = t;
-                self.interface[i] = t;
+                *temperature = t;
+                *interface = t;
                 conducted
             };
-            self.top[i] += dt * sublimation;
-            self.bottom[i] += dt * (turbulent - conducted);
+            *top += dt * sublimation;
+            *bottom += dt * (turbulent - conducted);
+        };
+        let (fallen, temperature) = (&mut self.fallen, &mut self.temperature);
+        let (interface, top, bottom) = (&mut self.interface, &mut self.top, &mut self.bottom);
+        if splits(fraction.len()) {
+            (
+                mixed.par_iter_mut(),
+                fallen.par_iter_mut(),
+                temperature.par_iter_mut(),
+                interface.par_iter_mut(),
+                top.par_iter_mut(),
+                bottom.par_iter_mut(),
+            )
+                .into_par_iter()
+                .with_min_len(MIN_CHUNK)
+                .enumerate()
+                .for_each(|(i, (m, f, t, s, top, bottom))| cell(i, m, f, t, s, top, bottom));
+        } else {
+            for i in 0..fraction.len() {
+                cell(
+                    i,
+                    &mut mixed[i],
+                    &mut fallen[i],
+                    &mut temperature[i],
+                    &mut interface[i],
+                    &mut top[i],
+                    &mut bottom[i],
+                );
+            }
         }
     }
 

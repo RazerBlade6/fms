@@ -338,6 +338,44 @@ pub fn sum_of(len: usize, term: impl Fn(usize) -> f64 + Sync + Send) -> f64 {
     chunked(len, |lo, hi| (lo..hi).map(&term).sum::<f64>())
 }
 
+/// `K` sums at once: `terms(i)` holds term `i` of each, and each total is
+/// bit for bit [`sum_of`] of its own terms, from one pass over `0..len`.
+pub fn sums_of<const K: usize>(
+    len: usize,
+    terms: impl Fn(usize) -> [f64; K] + Sync + Send,
+) -> [f64; K] {
+    let chunk = |c: usize| {
+        let mut s = [neutral(); K];
+        for i in c * DOT_CHUNK..((c + 1) * DOT_CHUNK).min(len) {
+            for (s, t) in s.iter_mut().zip(terms(i)) {
+                *s += t;
+            }
+        }
+        s
+    };
+    let chunks = len.div_ceil(DOT_CHUNK);
+    let mut totals = [neutral(); K];
+    let mut add = |s: [f64; K]| {
+        for (t, s) in totals.iter_mut().zip(s) {
+            *t += s;
+        }
+    };
+    if !splits(len) {
+        (0..chunks).map(chunk).for_each(add);
+    } else if chunks <= STACK_CHUNKS {
+        let mut sums = [[0.0; K]; STACK_CHUNKS];
+        sums[..chunks]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(c, s)| *s = chunk(c));
+        sums[..chunks].iter().for_each(|&s| add(s));
+    } else {
+        let sums: Vec<[f64; K]> = (0..chunks).into_par_iter().map(chunk).collect();
+        sums.into_iter().for_each(add);
+    }
+    totals
+}
+
 /// The sum of `chunk(lo, hi)` over consecutive [`DOT_CHUNK`]-element
 /// ranges of `0..len`, in order; the chunks computed side by side only when
 /// the length [`splits`].

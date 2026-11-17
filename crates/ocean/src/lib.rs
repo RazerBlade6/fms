@@ -1484,7 +1484,7 @@ impl Ocean {
 
     /// Advance the ice's temperature `dt` seconds under `forcing(i)`, and
     /// take the heat the ocean gives it. Does nothing without ice.
-    pub fn step_ice(&mut self, dt: f64, forcing: impl Fn(usize) -> IceForcing) {
+    pub fn step_ice(&mut self, dt: f64, forcing: impl Fn(usize) -> IceForcing + Sync) {
         if let Some(ice) = &mut self.ice {
             let mut water = Water {
                 mixed: &mut self.mixed,

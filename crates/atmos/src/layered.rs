@@ -271,6 +271,32 @@ impl LayeredState {
         }
     }
 
+    /// `f` on each field and `other`'s field of the same kind and layer, as
+    /// [`zip_parts_mut`](Self::zip_parts_mut), with the fields side by side.
+    pub(crate) fn par_zip_parts_mut(
+        &mut self,
+        other: &Self,
+        f: impl Fn(&mut [f64], &[f64]) + Sync + Send,
+    ) {
+        let layers = |x: &mut Vec<Vec<f64>>, y: &Vec<Vec<f64>>| {
+            x.par_iter_mut().zip(y).for_each(|(x, y)| f(x, y));
+        };
+        rayon::join(
+            || f(&mut self.ps, &other.ps),
+            || {
+                rayon::join(
+                    || layers(&mut self.u, &other.u),
+                    || {
+                        rayon::join(
+                            || layers(&mut self.theta_ps, &other.theta_ps),
+                            || layers(&mut self.q_ps, &other.q_ps),
+                        )
+                    },
+                )
+            },
+        );
+    }
+
     /// `self = base + a · tendency`.
     fn set_axpy(&mut self, base: &Self, a: f64, tendency: &Self) {
         for ((out, x), y) in self

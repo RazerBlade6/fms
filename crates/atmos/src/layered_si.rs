@@ -86,7 +86,7 @@
 use std::time::{Duration, Instant};
 
 use fms_grid::Operators;
-use fms_grid::operators::{MIN_CHUNK, for_each_mut, for_each_mut2};
+use fms_grid::operators::{MIN_CHUNK, for_each_mut, for_each_mut2, splits};
 use fms_restart::{Restart, RestartError, count};
 use rayon::prelude::*;
 
@@ -236,6 +236,8 @@ pub struct LayeredSemiImplicit<'a> {
     ratio_cells: Vec<f64>,
     /// Humidity's range over the three levels.
     bounds: Vec<Vec<(f64, f64)>>,
+    /// The columns with humidity to fill ([`fill_negative`]).
+    short: Vec<bool>,
 }
 
 impl<'a> LayeredSemiImplicit<'a> {
@@ -367,6 +369,7 @@ impl<'a> LayeredSemiImplicit<'a> {
             ratio: vec![[vec![0.0; nc], vec![0.0; nc]]; n - 1],
             ratio_cells: vec![0.0; 2 * (n - 1) * nc],
             bounds: vec![vec![(0.0, 0.0); nc]; n],
+            short: vec![false; nc],
         };
         // First guess for the modal potentials: those of the current state.
         let y = solver.y_of(&solver.current.clone());
@@ -772,11 +775,24 @@ impl<'a> LayeredSemiImplicit<'a> {
             if let Some(rate) = forcing_rate {
                 self.budget.forcing.add_scaled(dt, rate);
             }
-            self.water.sources += dt * self.model.water_tendency(&self.forcing);
             if diffuse {
-                self.physics
-                    .zip_parts_mut(&self.forcing, |p, f| for_each_mut(p, |i, p| *p += f[i]));
+                // On a grid whose loops are split, the water and the fields
+                // side by side, in one region.
+                let add = |p: &mut [f64], f: &[f64]| for_each_mut(p, |i, p| *p += f[i]);
+                let (model, physics, forcing) = (&self.model, &mut self.physics, &self.forcing);
+                let water = if splits(forcing.ps.len()) {
+                    rayon::join(
+                        || model.water_tendency(forcing),
+                        || physics.par_zip_parts_mut(forcing, add),
+                    )
+                    .0
+                } else {
+                    physics.zip_parts_mut(forcing, add);
+                    model.water_tendency(forcing)
+                };
+                self.water.sources += dt * water;
             } else {
+                self.water.sources += dt * self.model.water_tendency(&self.forcing);
                 std::mem::swap(&mut self.physics, &mut self.forcing);
             }
         }
@@ -1140,7 +1156,7 @@ impl<'a> LayeredSemiImplicit<'a> {
             let g = self.model.gravity();
             let ds = self.model.dsigma();
             for level in [&mut current, &mut *next] {
-                let (added, borrowed) = fill_negative(&ops, ds, g, level);
+                let (added, borrowed) = fill_negative(&ops, ds, g, level, &mut self.short);
                 self.water.fixer += 0.5 * added;
                 self.water.borrowed += 0.5 * borrowed;
             }
@@ -1295,49 +1311,109 @@ fn raw_filter_part(old: &[f64], now: &mut [f64], next: &mut [f64], nu: f64, alph
 /// where they have water to spare (the nearest first, the one below before
 /// the one above), else with zero. Returns the water added and the water
 /// moved between layers (kg).
-// Cells and layers index several arrays together.
-#[allow(clippy::needless_range_loop)]
+///
+/// On a grid whose loops are split between threads, the columns with
+/// nothing to fill (most of them) are done side by side, layer by layer,
+/// and marked in `short`; the others then in order on this thread, which
+/// adds up the water exactly as one pass over every column does.
 fn fill_negative(
     ops: &Operators,
     ds: &[f64],
     gravity: f64,
     state: &mut LayeredState,
+    short: &mut [bool],
 ) -> (f64, f64) {
     let areas = &ops.geometry().cell_areas;
     let scale = ops.radius() * ops.radius() / gravity;
     let n = ds.len();
     let (mut added, mut borrowed) = (0.0, 0.0);
-    let mut c = [0.0; MAX_LAYERS];
-    for i in 0..state.ps.len() {
-        // Column contents δσₖ Qₖ (Pa).
-        for k in 0..n {
-            c[k] = ds[k] * state.q_ps[k][i];
+    let mut fill = |i: usize, q_ps: &mut [Vec<f64>]| {
+        fill_column(
+            ds,
+            &mut q_ps[..n],
+            i,
+            (areas[i], scale),
+            &mut added,
+            &mut borrowed,
+        );
+    };
+    if !splits(state.ps.len()) {
+        for i in 0..state.ps.len() {
+            fill(i, &mut state.q_ps);
         }
-        for k in 0..n {
-            if c[k] >= 0.0 {
-                continue;
-            }
-            for distance in 1..n {
-                let donors = [Some(k + distance), k.checked_sub(distance)];
-                for l in donors.into_iter().flatten().filter(|&l| l < n) {
-                    if c[k] < 0.0 {
-                        let take = (-c[k]).min(c[l].max(0.0));
-                        c[l] -= take;
-                        c[k] += take;
-                        borrowed += take * areas[i] * scale;
+        return (added, borrowed);
+    }
+    {
+        let q_ps = &state.q_ps;
+        for_each_mut(short, |i, s| {
+            *s = (0..n).any(|k| {
+                // A layer `fill_column` takes up: not `c >= 0`.
+                let c = ds[k] * q_ps[k][i];
+                c < 0.0 || c.is_nan()
+            })
+        });
+    }
+    {
+        let short = &*short;
+        state.q_ps[..n]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(k, q)| {
+                for_each_mut(q, |i, q| {
+                    if !short[i] {
+                        *q = ds[k] * *q / ds[k];
                     }
-                }
-            }
-            if c[k] < 0.0 {
-                added -= c[k] * areas[i] * scale;
-                c[k] = 0.0;
-            }
-        }
-        for k in 0..n {
-            state.q_ps[k][i] = c[k] / ds[k];
-        }
+                });
+            });
+    }
+    for (i, _) in short.iter().enumerate().filter(|(_, s)| **s) {
+        fill(i, &mut state.q_ps);
     }
     (added, borrowed)
+}
+
+/// [`fill_negative`] in column `i` of the layers' `q_ps`, whose water is
+/// `area · scale` kg per Pa: adds what it fills with zero to `added` and what it
+/// moves between layers to `borrowed`, in order.
+// Layers index several arrays together.
+#[allow(clippy::needless_range_loop)]
+fn fill_column(
+    ds: &[f64],
+    q_ps: &mut [Vec<f64>],
+    i: usize,
+    (area, scale): (f64, f64),
+    added: &mut f64,
+    borrowed: &mut f64,
+) {
+    let n = ds.len();
+    // Column contents δσₖ Qₖ (Pa).
+    let mut c = [0.0; MAX_LAYERS];
+    for k in 0..n {
+        c[k] = ds[k] * q_ps[k][i];
+    }
+    for k in 0..n {
+        if c[k] >= 0.0 {
+            continue;
+        }
+        for distance in 1..n {
+            let donors = [Some(k + distance), k.checked_sub(distance)];
+            for l in donors.into_iter().flatten().filter(|&l| l < n) {
+                if c[k] < 0.0 {
+                    let take = (-c[k]).min(c[l].max(0.0));
+                    c[l] -= take;
+                    c[k] += take;
+                    *borrowed += take * area * scale;
+                }
+            }
+        }
+        if c[k] < 0.0 {
+            *added -= c[k] * area * scale;
+            c[k] = 0.0;
+        }
+    }
+    for k in 0..n {
+        q_ps[k][i] = c[k] / ds[k];
+    }
 }
 
 /// The default reference: global-mean surface pressure, and an isothermal

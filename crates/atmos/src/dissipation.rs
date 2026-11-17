@@ -14,7 +14,7 @@ use fms_grid::Operators;
 use fms_grid::operators::{MIN_COLUMNS, for_each_mut};
 use rayon::prelude::*;
 
-use crate::helmholtz::sum_of;
+use crate::helmholtz::sums_of;
 use crate::layered::Gas;
 use crate::levels::Levels;
 
@@ -72,13 +72,30 @@ impl KineticHeating {
         u: &[f64],
         du: &[f64],
     ) -> f64 {
+        let [rate] = self.rates(ops, ps, gravity, [(k, u, du)]);
+        rate
+    }
+
+    /// [`rate`](Self::rate) of each `(k, u, du)` of `from`, in one pass
+    /// over the edges; each summed exactly as `rate` sums it.
+    pub(crate) fn rates<const K: usize>(
+        &self,
+        ops: &Operators,
+        ps: &[f64],
+        gravity: f64,
+        from: [(usize, &[f64], &[f64]); K],
+    ) -> [f64; K] {
         let edges = ops.mesh().edges();
-        let ds = self.levels.dsigma()[k];
+        let ds = from.map(|(k, _, _)| self.levels.dsigma()[k]);
         // In a fixed order (a parallel `sum` would add in whatever order the
         // work was split, which varies from run to run on large meshes).
-        sum_of(edges.len(), |e| {
+        sums_of(edges.len(), |e| {
             let [a, b] = edges[e].cells;
-            self.edge_areas[e] * ds * (ps[a as usize] + ps[b as usize]) * u[e] * du[e] / gravity
+            std::array::from_fn(|j| {
+                let (_, u, du) = from[j];
+                self.edge_areas[e] * ds[j] * (ps[a as usize] + ps[b as usize]) * u[e] * du[e]
+                    / gravity
+            })
         })
     }
 
@@ -113,21 +130,37 @@ impl KineticHeating {
         du: &[f64],
         theta_ps: &mut [f64],
     ) {
+        self.add_each_with_exner(exner, ops, ps, [(from, u, du)], into, theta_ps);
+    }
+
+    /// [`add_with_exner`](Self::add_with_exner) of each `(from, u, du)` of
+    /// `from` in turn, in one pass over the cells.
+    pub(crate) fn add_each_with_exner<const K: usize>(
+        &self,
+        exner: &[f64],
+        ops: &Operators,
+        ps: &[f64],
+        from: [(usize, &[f64], &[f64]); K],
+        into: usize,
+        theta_ps: &mut [f64],
+    ) {
         let mesh = ops.mesh();
         let edges = mesh.edges();
         let n = self.levels.count();
         let ds = self.levels.dsigma();
-        let ratio = ds[from] / ds[into];
+        let ratio = from.map(|(k, _, _)| ds[k] / ds[into]);
         let areas = &self.edge_areas;
         for_each_mut(theta_ps, |i, t| {
-            let mut gain = 0.0;
-            for &e in mesh.cell_edges(i as u32) {
-                let e = e as usize;
-                let [a, b] = edges[e].cells;
-                gain += 0.5 * areas[e] * (ps[a as usize] + ps[b as usize]) * u[e] * du[e];
+            for (&(_, u, du), ratio) in from.iter().zip(ratio) {
+                let mut gain = 0.0;
+                for &e in mesh.cell_edges(i as u32) {
+                    let e = e as usize;
+                    let [a, b] = edges[e].cells;
+                    gain += 0.5 * areas[e] * (ps[a as usize] + ps[b as usize]) * u[e] * du[e];
+                }
+                // Θ rate = g q / (c_p δσ Π) with q = −gain δσ_from / (g Aᵢ).
+                *t -= gain * ratio * self.cell_weights[i] / exner[i * n + into];
             }
-            // Θ rate = g q / (c_p δσ Π) with q = −gain δσ_from / (g Aᵢ).
-            *t -= gain * ratio * self.cell_weights[i] / exner[i * n + into];
         });
     }
 }
