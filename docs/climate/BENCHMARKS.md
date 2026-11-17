@@ -51,6 +51,29 @@ the machine, power source and mode, what else is running, CPU idle and free
 memory at the start (`top -l 2`) and end, macOS and rustc versions, the
 commits compared and the date.
 
+## Timing and profiling the climate run
+
+`scripts/perf.sh` runs `fms-climate run` under `/usr/bin/time -l` or the
+[samply](https://github.com/mstange/samply) profiler
+(`cargo install --locked samply`), from a restart file it makes once per
+resolution:
+
+```sh
+scripts/perf.sh spinup 2562       # a full Earth run from rest; saves the restart file
+scripts/perf.sh bench 2562        # one timed year from it
+scripts/perf.sh sweep 2562        # the same at 1, 4, 8 and 15 threads
+scripts/perf.sh profile 2562      # the same under samply
+scripts/perf.sh view profile-earth-2562
+scripts/perf.sh conditions        # the machine's state, as logged below
+```
+
+Each run gets a folder in `output/m2.15/` with its log and the machine's
+state before and after; `RUNS.txt` there has every command and `results.tsv`
+a row per run: steps a second in the time loop, CG iterations, and the whole
+process's user and kernel time, context switches, page faults and peak
+memory. The script's header lists the options (`WORLD=aqua`, `THREADS`,
+`COLD=1` for a run from rest, `THROTTLE=1`).
+
 ## Model cost by number of layers (M2.9.5)
 
 `cargo run --release -p fms-atmos --example bench_layers -- --mode moist|hs --levels … --days 30`
