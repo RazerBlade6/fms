@@ -118,6 +118,31 @@ side by side, so the tendencies take the longer of the two):
 - At 20,252 cells the run makes 37 steps a second, 0.30 of speed 1, with 35%
   of its CPU time in the kernel.
 
+### Thread scheduling and allocation in the dynamics (15.3, 15.4)
+
+Bit-identical to the baseline. Steps a second at 2,562 cells:
+
+| Commit | 15 threads | 8 threads | 4 threads |
+| --- | --- | --- | --- |
+| Baseline `22b0240` | 176 | 189 | 162 |
+| 15.3, thread scheduling `83fbd5b` | 209 | 214 | |
+| 15.4, no allocation in a step `2d60891` | 208 | 216 | 176 |
+
+- 15.3: each phase of the dynamics is one parallel region with the layers
+  (or the vertical modes) as its tasks, each running its layer's whole chain
+  of operators; the couplings between layers are plain loops. A loop over one
+  layer's cells or edges goes to the pool only when it is long enough to be
+  split (8,192 elements), and otherwise runs where it is, waking no worker.
+  The implicit right-hand side fell from 0.53 to 0.24 ms a step, the solves
+  from 0.75 to 0.54, back-substitution from 0.22 to 0.14, humidity transport
+  from 0.98 to 0.75 and the filter from 0.14 to 0.10.
+- A parallel region still costs 50 to 70 µs on the critical path at 15
+  threads, mostly waking sleeping workers, and the kernel's share of the CPU
+  time is still 70%: the regions that remain are the floor of this design.
+- 15.4: every array the dynamics used to allocate each step is owned by the
+  stepper, the model, the transport or the solver. Worth 1 to 2%: allocation
+  was never the cost at this grid (O-29).
+
 ## Earlier benchmarks
 
 Superseded by the performance pass; kept for comparison. Same machine (Apple

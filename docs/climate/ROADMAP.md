@@ -115,9 +115,9 @@ a visual check.
     iterations; a fixed benchmark run from a restart file
   - [x] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
     kernel time goes (O-54); first timing at 20,252 cells
-  - [ ] 15.3. Thread scheduling: fewer and larger parallel regions, small ones
+  - [x] 15.3. Thread scheduling: fewer and larger parallel regions, small ones
     serial (O-8, O-12)
-  - [ ] 15.4. Allocation: scratch buffers reused, per-cell vectors on the
+  - [x] 15.4. Allocation: scratch buffers reused, per-cell vectors on the
     stack, no allocation in a step (O-29)
   - [ ] 15.5. Operator fusion in the dynamics and transport (O-12)
   - [ ] 15.6. Helmholtz solver: fewer iterations a step (O-13)
