@@ -11,9 +11,10 @@
 //! the winds' kinetic-energy rate exactly.
 
 use fms_grid::Operators;
-use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS, for_each_mut};
+use fms_grid::operators::{MIN_COLUMNS, for_each_mut};
 use rayon::prelude::*;
 
+use crate::helmholtz::sum_of;
 use crate::layered::Gas;
 use crate::levels::Levels;
 
@@ -73,14 +74,12 @@ impl KineticHeating {
     ) -> f64 {
         let edges = ops.mesh().edges();
         let ds = self.levels.dsigma()[k];
-        (0..edges.len())
-            .into_par_iter()
-            .with_min_len(MIN_CHUNK)
-            .map(|e| {
-                let [a, b] = edges[e].cells;
-                self.edge_areas[e] * ds * (ps[a as usize] + ps[b as usize]) * u[e] * du[e] / gravity
-            })
-            .sum()
+        // In a fixed order (a parallel `sum` would add in whatever order the
+        // work was split, which varies from run to run on large meshes).
+        sum_of(edges.len(), |e| {
+            let [a, b] = edges[e].cells;
+            self.edge_areas[e] * ds * (ps[a as usize] + ps[b as usize]) * u[e] * du[e] / gravity
+        })
     }
 
     /// Add to `theta_ps` (the `Θ` tendency of layer `into`, Pa K s⁻¹) the
