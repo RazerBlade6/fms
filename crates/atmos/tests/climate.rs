@@ -163,8 +163,9 @@ fn a_world_without_land_is_the_aquaplanet_bit_for_bit() {
     // Pinned from the aquaplanet before land tiles existed (M2 step 10.2.2).
     // If this fails, first ask whether the change was meant to alter the
     // ocean-only climate; only then paste in the new value. Last changed at
-    // M2.13.2: radiation every whole number of steps (2 here, not 3).
-    const GOLDEN: u64 = 0xb1d2_2965_72f6_a502;
+    // M2.15.6: the Helmholtz operator from a precomputed per-cell stencil
+    // (rounding-level).
+    const GOLDEN: u64 = 0x3977_b48f_ad36_6a89;
     let mut hash = 0;
     run(8, 5.0, |si, _, _| hash = state_hash(si.state()));
     assert_eq!(hash, GOLDEN, "new hash: {hash:#018x}");

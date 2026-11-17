@@ -9,6 +9,8 @@
 //! Every dot product sums fixed-size chunks in a fixed order, so the solution
 //! and the iteration count are identical on any thread count.
 
+use std::marker::PhantomData;
+
 use fms_grid::Operators;
 use fms_grid::operators::{for_each_mut, splits};
 use rayon::prelude::*;
@@ -24,7 +26,9 @@ pub struct SolveReport {
 
 /// A Helmholtz solver for one mesh and coefficient `c`.
 pub struct Helmholtz<'a> {
-    ops: Operators<'a>,
+    /// Built from these operators' mesh (the matrix below holds what it
+    /// needs of them).
+    ops: PhantomData<Operators<'a>>,
     c: f64,
     /// Relative residual at which to stop.
     pub tolerance: f64,
@@ -32,6 +36,15 @@ pub struct Helmholtz<'a> {
     pub max_iterations: u32,
     /// Unit-sphere cell areas (the symmetrizing weights).
     areas: Vec<f64>,
+    /// The matrix `A(I − c∇²)` by cells: row `i` is `diagonal[i]` at `i`
+    /// and `−coupling[s]` at `neighbor[s]` for `s` in `start[i]..start[i+1]`
+    /// (the cell's edges in mesh order). Each edge's coupling
+    /// `(c/r²) lₑ/dₑ` is one number, the same in both rows it appears in, so
+    /// the matrix is exactly symmetric.
+    diagonal: Vec<f64>,
+    start: Vec<usize>,
+    neighbor: Vec<u32>,
+    coupling: Vec<f64>,
     /// Inverse of the matrix diagonal.
     inverse_diagonal: Vec<f64>,
     // Scratch.
@@ -39,7 +52,6 @@ pub struct Helmholtz<'a> {
     z: Vec<f64>,
     p: Vec<f64>,
     ap: Vec<f64>,
-    edge: Vec<f64>,
 }
 
 impl<'a> Helmholtz<'a> {
@@ -49,30 +61,44 @@ impl<'a> Helmholtz<'a> {
         let (m, g) = (ops.mesh(), ops.geometry());
         let r2 = ops.radius() * ops.radius();
         let areas = g.cell_areas.clone();
-        // Diagonal of A(I − c∇²): Aᵢ + (c/r²) Σₑ lₑ/dₑ over the cell's edges.
-        let inverse_diagonal = (0..m.n_cells() as u32)
-            .map(|i| {
-                let coupling: f64 = m
-                    .cell_edges(i)
-                    .iter()
-                    .map(|&e| g.edge_lengths[e as usize] / g.dual_edge_lengths[e as usize])
-                    .sum();
-                1.0 / (areas[i as usize] + c / r2 * coupling)
-            })
-            .collect();
-        let (nc, ne) = (m.n_cells(), m.n_edges());
+        // A(I − c∇²) x at cell i is Aᵢ xᵢ − (c/r²) Σₑ (lₑ/dₑ)(xⱼ − xᵢ) over
+        // the cell's edges, j the cell across e: diagonal Aᵢ + (c/r²) Σₑ lₑ/dₑ.
+        let nc = m.n_cells();
+        let edges = m.edges();
+        let mut diagonal = Vec::with_capacity(nc);
+        let mut start = Vec::with_capacity(nc + 1);
+        let (mut neighbor, mut coupling) = (Vec::new(), Vec::new());
+        for i in 0..nc as u32 {
+            start.push(neighbor.len());
+            let mut total = Vec::new();
+            for &e in m.cell_edges(i) {
+                let e = e as usize;
+                let [a, b] = edges[e].cells;
+                neighbor.push(if a == i { b } else { a });
+                let ratio = g.edge_lengths[e] / g.dual_edge_lengths[e];
+                coupling.push(c / r2 * ratio);
+                total.push(ratio);
+            }
+            let total: f64 = total.iter().sum();
+            diagonal.push(areas[i as usize] + c / r2 * total);
+        }
+        start.push(neighbor.len());
+        let inverse_diagonal = diagonal.iter().map(|d| 1.0 / d).collect();
         Self {
-            ops,
+            ops: PhantomData,
             c,
             tolerance: 1e-12,
             max_iterations: 500,
             areas,
+            diagonal,
+            start,
+            neighbor,
+            coupling,
             inverse_diagonal,
             r: vec![0.0; nc],
             z: vec![0.0; nc],
             p: vec![0.0; nc],
             ap: vec![0.0; nc],
-            edge: vec![0.0; ne],
         }
     }
 
@@ -90,29 +116,38 @@ impl<'a> Helmholtz<'a> {
     #[allow(clippy::needless_range_loop)]
     pub fn solve(&mut self, b: &[f64], x: &mut [f64]) -> SolveReport {
         let Self {
-            ops,
-            c,
             tolerance,
             max_iterations,
             areas,
+            diagonal,
+            start,
+            neighbor,
+            coupling,
             inverse_diagonal,
             r,
             z,
             p,
             ap,
-            edge,
+            ..
         } = self;
-        let (ops, c, areas, inverse_diagonal) = (*ops, *c, &*areas, &*inverse_diagonal);
+        let (areas, inverse_diagonal) = (&*areas, &*inverse_diagonal);
+        let (diagonal, start, neighbor, coupling) = (&*diagonal, &*start, &*neighbor, &*coupling);
+        // Row i of A(I − c∇²) times x.
+        let apply = |i: usize, x: &[f64]| {
+            let off: f64 = (start[i]..start[i + 1])
+                .map(|s| coupling[s] * x[neighbor[s] as usize])
+                .sum();
+            diagonal[i] * x[i] - off
+        };
         // Residual of the symmetric system A(I − c∇²)x = A b, preconditioned,
         // the first search direction, and |A b|², r·z and r·r.
-        ops.gradient(x, edge);
         let [bb, mut rz, rr] = {
-            let (x, edge) = (&*x, &*edge);
+            let x = &*x;
             fused3(r, z, p, |o, r, z, p| {
                 let mut s = [neutral(); 3];
                 for j in 0..r.len() {
                     let i = o + j;
-                    let ax = areas[i] * (x[i] - c * ops.divergence_at(i, |e| edge[e]));
+                    let ax = apply(i, x);
                     let ab = areas[i] * b[i];
                     r[j] = ab - ax;
                     z[j] = inverse_diagonal[i] * r[j];
@@ -136,14 +171,13 @@ impl<'a> Helmholtz<'a> {
         let mut iterations = 0;
         while residual > *tolerance && iterations < *max_iterations {
             // ap = A(I − c∇²) p, and p·ap.
-            ops.gradient(p, edge);
             let [pap] = {
-                let (p, edge) = (&*p, &*edge);
+                let p = &*p;
                 fused1(ap, |o, ap| {
                     let mut s = [neutral()];
                     for j in 0..ap.len() {
                         let i = o + j;
-                        ap[j] = areas[i] * (p[i] - c * ops.divergence_at(i, |e| edge[e]));
+                        ap[j] = apply(i, p);
                         s[0] += p[i] * ap[j];
                     }
                     s
