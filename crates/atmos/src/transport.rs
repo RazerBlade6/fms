@@ -59,19 +59,20 @@ pub struct TransportStep<'s> {
     pub ps_new: &'s [f64],
     /// Mass flux `F̄ₖ` per layer at edges (Pa m s⁻¹), positive from
     /// `cells[0]` to `cells[1]`.
-    pub flux: Vec<&'s [f64]>,
+    pub flux: &'s [Vec<f64>],
     /// Mass flux `W̄ⱼ` across each interface (`p_s σ̇`, Pa s⁻¹), positive
     /// downward.
-    pub interface: Vec<&'s [f64]>,
+    pub interface: &'s [Vec<f64>],
     /// `Qₖ` at the start (Pa).
-    pub q_old: Vec<&'s [f64]>,
+    pub q_old: &'s [Vec<f64>],
     /// Specific humidity `qₖ` at the middle level (kg kg⁻¹).
-    pub q_mid: Vec<&'s [f64]>,
-    /// Sources of `Qₖ` (Pa s⁻¹): physics, constant over the step.
-    pub source: Vec<&'s [f64]>,
+    pub q_mid: &'s [Vec<f64>],
+    /// Sources of `Qₖ` (Pa s⁻¹): physics, constant over the step; `None`
+    /// for none (zero).
+    pub source: Option<&'s [Vec<f64>]>,
     /// Per interface, humidity there relative to each adjacent layer's mean:
     /// the upper layer at its bottom, the lower at its top.
-    pub interface_ratio: Vec<[&'s [f64]; 2]>,
+    pub interface_ratio: &'s [[Vec<f64>; 2]],
 }
 
 /// What one transport step did.
@@ -96,6 +97,8 @@ pub struct Transport {
     edge_amount: Vec<Vec<f64>>,
     divergence: Vec<Vec<f64>>,
     q: Vec<Vec<f64>>,
+    /// The sources when there are none.
+    zeros: Vec<f64>,
 }
 
 impl Transport {
@@ -119,6 +122,7 @@ impl Transport {
             edge_amount: edges(),
             divergence: cells(layers),
             q: cells(layers),
+            zeros: vec![0.0; n_cells],
         }
     }
 
@@ -127,7 +131,7 @@ impl Transport {
         &mut self,
         ops: &Operators,
         input: &TransportStep,
-        out: Vec<&mut [f64]>,
+        out: &mut [Vec<f64>],
     ) -> TransportReport {
         let mesh = ops.mesh();
         let g = ops.geometry();
@@ -184,6 +188,7 @@ impl Transport {
         for x in &mut self.low_interface {
             x.fill(0.0);
         }
+        let zeros = &self.zeros;
         for m in 0..substeps {
             let s = f64::from(m) / f64::from(substeps);
             self.content
@@ -196,7 +201,7 @@ impl Transport {
                 .for_each(
                     |(k, ((((content, q), low_flux), edge_amount), divergence))| {
                         if m == 0 {
-                            let q_old = input.q_old[k];
+                            let q_old = &input.q_old[k];
                             for_each_mut(content, |i, c| *c = ds[k] * q_old[i]);
                             low_flux.fill(0.0);
                         }
@@ -207,7 +212,7 @@ impl Transport {
                                 *q = content[i] / (ds[k] * ps);
                             });
                         }
-                        let (q, flux) = (&*q, input.flux[k]);
+                        let (q, flux) = (&*q, &input.flux[k]);
                         for_each_mut2(edge_amount, low_flux, |e, x, total| {
                             let [a, b] = edges[e].cells;
                             let upwind = if flux[e] >= 0.0 {
@@ -219,7 +224,8 @@ impl Transport {
                             *total += *x;
                         });
                         ops.divergence(edge_amount, divergence);
-                        let (div, source) = (&*divergence, input.source[k]);
+                        let source = input.source.map_or(zeros, |s| &s[k]);
+                        let div = &*divergence;
                         for_each_mut(content, |i, c| *c += -div[i] + h * ds[k] * source[i]);
                     },
                 );
@@ -228,7 +234,7 @@ impl Transport {
             for j in 0..n - 1 {
                 let (upper, lower) = self.content.split_at_mut(j + 1);
                 let (c0, c1) = (&mut upper[j], &mut lower[0]);
-                let (q, w, ratio) = (&self.q, w[j], ratio[j]);
+                let (q, w, ratio) = (&self.q, &w[j], &ratio[j]);
                 for_each_mut3(c0, c1, &mut self.low_interface[j], |i, c0, c1, total| {
                     let upwind = if w[i] >= 0.0 {
                         ratio[0][i] * q[j][i]
@@ -261,7 +267,7 @@ impl Transport {
                 .for_each(|(k, ((q_low, anti), anti_below))| {
                     let content = &content_all[k];
                     for_each_mut(q_low, |i, q| *q = content[i] / (ds[k] * input.ps_new[i]));
-                    let (q, flux, low) = (input.q_mid[k], input.flux[k], &low_flux_all[k]);
+                    let (q, flux, low) = (&input.q_mid[k], &input.flux[k], &low_flux_all[k]);
                     for_each_mut(anti, |e, a| {
                         let [i, j] = edges[e].cells;
                         let centred = 0.5 * (q[i as usize] + q[j as usize]);
@@ -269,7 +275,7 @@ impl Transport {
                     });
                     if let Some(anti_below) = anti_below.as_deref_mut() {
                         let j = k;
-                        let (q, w, ratio) = (&input.q_mid, w[j], ratio[j]);
+                        let (q, w, ratio) = (input.q_mid, &w[j], &ratio[j]);
                         let low = &low_interface[j];
                         for_each_mut(anti_below, |i, a| {
                             let centred = 0.5 * (ratio[0][i] * q[j][i] + ratio[1][i] * q[j + 1][i]);
@@ -367,7 +373,7 @@ impl Transport {
         // Limit and apply, per layer.
         let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
         let (content_all, r_plus, r_minus) = (&self.content, &self.r_plus, &self.r_minus);
-        out.into_par_iter()
+        out.par_iter_mut()
             .zip(self.edge_amount.par_iter_mut())
             .zip(self.divergence.par_iter_mut())
             .enumerate()
@@ -486,8 +492,8 @@ mod tests {
         ] {
             let n = levels.count();
             let setup = setup(&ops, &levels);
-            let ones = vec![1.0; nc];
-            let zeros = vec![0.0; nc];
+            let ratios = vec![[vec![1.0; nc], vec![1.0; nc]]; n - 1];
+            let zeros = vec![vec![0.0; nc]; n];
             let mut transport = Transport::new(n, nc, mesh.n_edges());
             let mut step = |q: &[Vec<f64>]| {
                 let q_old: Vec<Vec<f64>> = q
@@ -502,14 +508,14 @@ mod tests {
                         interval: 4000.0,
                         ps_old: &setup.ps_old,
                         ps_new: &setup.ps_new,
-                        flux: setup.flux.iter().map(Vec::as_slice).collect(),
-                        interface: setup.interface.iter().map(Vec::as_slice).collect(),
-                        q_old: q_old.iter().map(Vec::as_slice).collect(),
-                        q_mid: q.iter().map(Vec::as_slice).collect(),
-                        source: vec![zeros.as_slice(); n],
-                        interface_ratio: vec![[ones.as_slice(), ones.as_slice()]; n - 1],
+                        flux: &setup.flux,
+                        interface: &setup.interface,
+                        q_old: &q_old,
+                        q_mid: q,
+                        source: Some(&zeros),
+                        interface_ratio: &ratios,
                     },
-                    out.iter_mut().map(Vec::as_mut_slice).collect(),
+                    &mut out,
                 );
                 assert!(report.substeps > 1, "the test should need substeps");
                 (q_old, out)

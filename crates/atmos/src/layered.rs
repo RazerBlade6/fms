@@ -242,6 +242,35 @@ impl LayeredState {
         parts
     }
 
+    /// `f` on every field in [`parts_mut`](Self::parts_mut)'s order,
+    /// without collecting them.
+    pub(crate) fn for_each_part_mut(&mut self, mut f: impl FnMut(&mut [f64])) {
+        f(&mut self.ps);
+        for x in self
+            .u
+            .iter_mut()
+            .chain(&mut self.theta_ps)
+            .chain(&mut self.q_ps)
+        {
+            f(x);
+        }
+    }
+
+    /// `f` on each field and `other`'s field of the same kind and layer, in
+    /// [`parts_mut`](Self::parts_mut)'s order, as far as both have it.
+    pub(crate) fn zip_parts_mut(&mut self, other: &Self, mut f: impl FnMut(&mut [f64], &[f64])) {
+        f(&mut self.ps, &other.ps);
+        for (x, y) in self.u.iter_mut().zip(&other.u) {
+            f(x, y);
+        }
+        for (x, y) in self.theta_ps.iter_mut().zip(&other.theta_ps) {
+            f(x, y);
+        }
+        for (x, y) in self.q_ps.iter_mut().zip(&other.q_ps) {
+            f(x, y);
+        }
+    }
+
     /// `self = base + a · tendency`.
     fn set_axpy(&mut self, base: &Self, a: f64, tendency: &Self) {
         for ((out, x), y) in self
@@ -455,19 +484,28 @@ impl<'a> LayeredModel<'a> {
     /// adjacent layer's mean (`[upper layer at its bottom, lower layer at
     /// its top]`; [`crate::radiation::interface_humidity_ratios`]).
     pub fn interface_ratios(&self, state: &LayeredState) -> Vec<[Vec<f64>; 2]> {
-        interface_ratios(&self.parameters(), state, None)
+        interface_ratios(&self.parameters(), state)
     }
 
     /// [`interface_ratios`](Self::interface_ratios) of the state the last
     /// [`step_tendencies`](Self::step_tendencies) or
     /// [`tendency`](Self::tendency) took its dynamics tendency of, with the
-    /// Exner functions that computed: the same values, without computing
-    /// them again.
+    /// Exner functions that computed (the same values, without computing
+    /// them again), into `out` (`N − 1` interfaces), with `cells`
+    /// (`2 (N − 1)` per cell) as scratch.
     pub(crate) fn interface_ratios_of_tendency_state(
         &self,
         state: &LayeredState,
-    ) -> Vec<[Vec<f64>; 2]> {
-        interface_ratios(&self.parameters(), state, Some(&self.work.column))
+        cells: &mut [f64],
+        out: &mut [[Vec<f64>; 2]],
+    ) {
+        interface_ratios_into(
+            &self.parameters(),
+            state,
+            Some(&self.work.column),
+            cells,
+            out,
+        );
     }
 
     /// The model with hyperdiffusion ([`crate::diffusion`]). Without it the
@@ -808,9 +846,7 @@ impl<'a> LayeredModel<'a> {
             || {
                 let t = Instant::now();
                 let rate = forcer.as_mut().map(|f| {
-                    for x in forcing.parts_mut() {
-                        x.fill(0.0);
-                    }
+                    forcing.for_each_part_mut(|x| x.fill(0.0));
                     f.add_tendency(old, forcing);
                     energy_rate(&params, old, old_exner, forcing)
                 });
@@ -826,9 +862,7 @@ impl<'a> LayeredModel<'a> {
                     None => (dynamics(), (None, None)),
                     Some(d) => rayon::join(dynamics, || {
                         let t = Instant::now();
-                        for x in diffusion.parts_mut() {
-                            x.fill(0.0);
-                        }
+                        diffusion.for_each_part_mut(|x| x.fill(0.0));
                         d.add_tendency_with_exner(params.ops, old, old_exner, diffusion);
                         let rate = energy_rate(&params, old, old_exner, diffusion);
                         (Some(rate), Some(t.elapsed()))
@@ -1074,47 +1108,63 @@ fn energy_rate(
     rate
 }
 
-/// [`LayeredModel::interface_ratios`]; with `column` (as in [`Work`]), the
-/// Exner functions stored there for this state.
-fn interface_ratios(
+/// [`LayeredModel::interface_ratios`].
+fn interface_ratios(params: &Parameters, state: &LayeredState) -> Vec<[Vec<f64>; 2]> {
+    let (n, nc) = (params.levels.count(), state.ps.len());
+    let mut out = vec![[vec![0.0; nc], vec![0.0; nc]]; n - 1];
+    let mut cells = vec![0.0; 2 * (n - 1) * nc];
+    interface_ratios_into(params, state, None, &mut cells, &mut out);
+    out
+}
+
+/// [`LayeredModel::interface_ratios`] into `out`, with `cells` (`2 (N − 1)`
+/// per cell) as scratch; with `column` (as in [`Work`]), the Exner
+/// functions stored there for this state.
+fn interface_ratios_into(
     params: &Parameters,
     state: &LayeredState,
     column: Option<&[f64]>,
-) -> Vec<[Vec<f64>; 2]> {
+    cells: &mut [f64],
+    out: &mut [[Vec<f64>; 2]],
+) {
     let n = params.levels.count();
-    let ratios: Vec<Vec<[f64; 2]>> = (0..state.ps.len())
-        .into_par_iter()
+    let stride = 2 * (n - 1);
+    cells
+        .par_chunks_mut(stride)
         .with_min_len(MIN_COLUMNS)
-        .map(|i| {
+        .enumerate()
+        .for_each(|(i, c)| {
             let ps = state.ps[i];
             let mut exner = [0.0; MAX_LAYERS];
             match column {
-                Some(c) => exner[..n].copy_from_slice(&c[2 * n * i..2 * n * i + n]),
+                Some(column) => exner[..n].copy_from_slice(&column[2 * n * i..2 * n * i + n]),
                 None => params
                     .levels
                     .layer_exner_into(params.gas, ps, &mut exner[..n]),
             }
-            let t: Vec<f64> = (0..n)
-                .map(|k| state.theta_ps[k][i] / ps * exner[k])
-                .collect();
-            interface_humidity_ratios(
+            let mut t = [0.0; MAX_LAYERS];
+            for k in 0..n {
+                t[k] = state.theta_ps[k][i] / ps * exner[k];
+            }
+            let ratios = interface_humidity_ratios(
                 params.humidity_profile,
                 params.gas,
                 params.levels,
                 ps,
                 params.gravity,
-                &t,
-            )
-        })
-        .collect();
-    (0..n - 1)
-        .map(|j| {
-            [
-                ratios.iter().map(|r| r[j][0]).collect(),
-                ratios.iter().map(|r| r[j][1]).collect(),
-            ]
-        })
-        .collect()
+                &t[..n],
+            );
+            for (j, r) in ratios.iter().enumerate() {
+                c[2 * j] = r[0];
+                c[2 * j + 1] = r[1];
+            }
+        });
+    let cells = &*cells;
+    for (j, sides) in out.iter_mut().enumerate() {
+        for (side, out) in sides.iter_mut().enumerate() {
+            for_each_mut(out, |i, x| *x = cells[i * stride + 2 * j + side]);
+        }
+    }
 }
 
 /// Layer geopotentials `Φₖ` at one cell (see the module docs), from layer
@@ -1260,7 +1310,7 @@ fn compute_tendency(
     // interface.
     let moist = state.is_moist() && out.is_moist();
     let humidity = moist.then(|| {
-        let ratio = interface_ratios(&params, state, None);
+        let ratio = interface_ratios(&params, state);
         let q: Vec<Vec<f64>> = (0..n)
             .map(|k| {
                 state.q_ps[k]

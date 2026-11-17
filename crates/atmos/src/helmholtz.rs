@@ -106,10 +106,12 @@ impl<'a> Helmholtz<'a> {
         // Residual of the symmetric system A(I − c∇²)x = A b.
         Self::apply(ops, *c, areas, edge, x, ap);
         for_each_mut(r, |i, r| *r = areas[i] * b[i] - ap[i]);
-        let b_norm = {
-            let ab: Vec<f64> = b.iter().zip(areas.iter()).map(|(b, a)| a * b).collect();
-            dot(&ab, &ab).sqrt()
-        };
+        // |A b|, as dot(A b, A b) without storing A b.
+        let b_norm = sum_of(b.len(), |i| {
+            let ab = areas[i] * b[i];
+            ab * ab
+        })
+        .sqrt();
         if b_norm == 0.0 {
             x.fill(0.0);
             return SolveReport {
