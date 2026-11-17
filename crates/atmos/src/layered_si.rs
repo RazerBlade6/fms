@@ -885,7 +885,7 @@ impl<'a> LayeredSemiImplicit<'a> {
         // rhs = J Y + Δt A ∇·U, per layer.
         {
             let (big_y, div_u) = (&*big_y, &*div_u);
-            self.rhs.iter_mut().enumerate().for_each(|(k, out)| {
+            for_each_row(&mut self.rhs, |k, out| {
                 for_each_mut(out, |i, r| {
                     let mut jy = j[k][0] * big_y[0][i];
                     for c in 1..=n {
@@ -982,8 +982,7 @@ impl<'a> LayeredSemiImplicit<'a> {
                     }
                 });
         }
-        // yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹: cheap, and across the layers, so on this
-        // thread.
+        // yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹: surface pressure, then the layers.
         {
             let (div, big_y) = (&self.div, &self.big_y);
             let y_new = |r: usize, i: usize| {
@@ -995,10 +994,10 @@ impl<'a> LayeredSemiImplicit<'a> {
             };
             for_each_mut(&mut next.ps, |i, p| *p = y_new(0, i));
             let ps = &next.ps;
-            for (k, theta_ps) in next.theta_ps.iter_mut().enumerate() {
+            for_each_row(&mut next.theta_ps, |k, theta_ps| {
                 let th = th_bar[k];
                 for_each_mut(theta_ps, |i, t| *t = p_bar * y_new(k + 1, i) + th * ps[i]);
-            }
+            });
         }
         self.timings.add(Phase::BackSubstitution, clock.lap());
 
@@ -1007,17 +1006,10 @@ impl<'a> LayeredSemiImplicit<'a> {
         let mut water = [[0.0; 4]; MAX_LAYERS];
         if let Some(transport) = &mut self.transport {
             let flux_div = &self.flux_div;
-            // The interface fluxes the mass fluxes imply (as in the dynamics): cheap,
-            // and across the layers, so on this thread.
-            let interface = &mut self.interface;
-            for (j, (&s, out)) in self
-                .model
-                .levels()
-                .interior()
-                .iter()
-                .zip(interface.iter_mut())
-                .enumerate()
-            {
+            // The interface fluxes the mass fluxes imply (as in the dynamics).
+            let interior = self.model.levels().interior();
+            for_each_row(&mut self.interface, |j, out| {
+                let s = interior[j];
                 for_each_mut(out, |i, x| {
                     let mut above = flux_div[0][i];
                     for d in &flux_div[1..=j] {
@@ -1029,7 +1021,7 @@ impl<'a> LayeredSemiImplicit<'a> {
                     }
                     *x = s * below - (1.0 - s) * above;
                 });
-            }
+            });
             // The RAW filter's work per layer (see below) is done in the
             // transport's last region, as each layer's humidity at n+1 is
             // ready: one region instead of two (timed under
@@ -1305,6 +1297,21 @@ fn raw_filter_part(old: &[f64], now: &mut [f64], next: &mut [f64], nu: f64, alph
         *now += alpha * d;
         *next -= (1.0 - alpha) * d;
     });
+}
+
+/// `f(k, &mut rows[k])` for each per-layer row of cell values: side by side
+/// on a grid whose loops are split between threads (where `f`'s own loop
+/// over the cells is split too), otherwise in order on this thread.
+fn for_each_row<T: Send>(rows: &mut [Vec<T>], f: impl Fn(usize, &mut Vec<T>) + Sync + Send) {
+    if rows.first().is_some_and(|row| splits(row.len())) {
+        rows.par_iter_mut()
+            .enumerate()
+            .for_each(|(k, row)| f(k, row));
+    } else {
+        for (k, row) in rows.iter_mut().enumerate() {
+            f(k, row);
+        }
+    }
 }
 
 /// Fill negative humidity in `state`: from the same column's other layers
