@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.14.8.**
+**Next: M2.15.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -91,7 +91,7 @@ a visual check.
   - [x] 13.5.2. Save and load for the physics, ocean and sea ice, resuming bit for bit
   - [x] 13.5.3. `climate --save-restart` and `--restart`; warm start with changed settings
   - [x] 13.5.4. Close-out
-- [ ] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
+- [x] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
   with assertions on zonal-mean wind and temperature; grid-imprinting check in
   long-run Held–Suarez, with a fix if visible (O-1).
   - [x] 14.1. Circulation diagnostics: overturning streamfunction, Hadley-cell
@@ -106,10 +106,11 @@ a visual check.
     contrast (O-53)
   - [x] 14.7. Fast rotation: narrower Hadley cell, a second belt of westerlies,
     larger contrast (O-53)
-  - [ ] 14.8. Close-out
-- [ ] 15. **Performance pass**: target speed 2 (~340 steps/s) at the default
-  resolution. Solver, operator fusion, scheduler overhead (O-8, O-12, O-13,
-  O-29).
+  - [x] 14.8. Close-out
+- [ ] 15. **Performance pass**: speed 2 (one model week a second) for the full
+  `climate` run at 2,562 cells, about 295 steps/s. Kernel time, scheduler
+  overhead, solver, operator fusion, physics and ocean (O-8, O-12, O-13, O-29,
+  O-54).
 - [ ] 16. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
   winds and temperatures aloft, with a tuning pass: cloud brightness and
   albedo (O-42), trade winds and jets, the tropical rain belt and its

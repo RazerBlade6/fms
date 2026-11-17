@@ -126,6 +126,13 @@ then stack arrays of `MAX_LAYERS` and reuse buffers.
 ### O-49: Ocean transport is about 5% of a step
 *Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing.
 
+### O-54: `climate` spends 40–45% of its CPU time in the kernel
+*Scheduled: M2.15.* Nine-year aquaplanet runs of M2.14 on 15 cores. 2,562 cells,
+coupled, a second run alongside: 3,972 s user and 3,201 s system in 1,090 s of wall
+time, about 127 steps/s. 10,242 cells, prescribed sea, six years, alone: 19,641 s and
+13,606 s in 3,027 s, about 63 steps/s. Speed 2 at 2,562 cells is 294 steps/s (dt 2057
+s). Not profiled; thread scheduling (O-8, O-12) is the suspect.
+
 ## Dynamics
 
 ### O-14: The undamped core collapses to the grid scale
