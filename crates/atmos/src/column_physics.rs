@@ -2085,10 +2085,10 @@ impl Forcing for ColumnPhysics<'_> {
                 *dl = -drag * u_low[e] + mixing * shear / ds[lowest];
                 *du = -mixing * shear / ds[above];
             });
-        let heating = &mut self.heating;
-        heating.prepare(&state.ps);
+        let heating = &self.heating;
         let ops = &self.ops;
-        heating.add(
+        heating.add_with_exner(
+            exner,
             ops,
             &state.ps,
             lowest,
@@ -2097,7 +2097,8 @@ impl Forcing for ColumnPhysics<'_> {
             &du_low,
             &mut out.theta_ps[lowest],
         );
-        heating.add(
+        heating.add_with_exner(
+            exner,
             ops,
             &state.ps,
             above,
