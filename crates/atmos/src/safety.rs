@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use fms_grid::operators::{MIN_CHUNK, splits};
+use fms_grid::operators::{SPLIT_CHUNK, splits};
 use rayon::prelude::*;
 
 use crate::layered::LayeredState;
@@ -239,7 +239,7 @@ fn healthy(state: &LayeredState, limits: &Limits) -> Option<Health> {
 fn cells(len: usize, (lo, hi): (f64, f64), value: impl Fn(usize) -> f64 + Sync) -> Summary {
     (0..len)
         .into_par_iter()
-        .with_min_len(MIN_CHUNK)
+        .with_min_len(SPLIT_CHUNK)
         .fold(
             || Summary::EMPTY,
             |s, i| {
@@ -257,7 +257,7 @@ fn cells(len: usize, (lo, hi): (f64, f64), value: impl Fn(usize) -> f64 + Sync) 
 /// The [`Summary`] of a wind field `u`.
 fn edges(u: &[f64]) -> Summary {
     u.par_iter()
-        .with_min_len(MIN_CHUNK)
+        .with_min_len(SPLIT_CHUNK)
         .enumerate()
         .fold(
             || Summary::EMPTY,

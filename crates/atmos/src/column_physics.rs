@@ -102,7 +102,7 @@
 
 use fms_grid::Operators;
 use fms_grid::mesh::CellId;
-use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS, splits};
+use fms_grid::operators::{MIN_COLUMNS, SPLIT_CHUNK, splits};
 use fms_grid::zonal::east_north;
 use fms_ocean::{IceForcing, JumpLayers, Ocean, OceanParams, OceanSnapshot};
 use fms_planet::{Planet, Sunlight};
@@ -2110,7 +2110,7 @@ impl Forcing for ColumnPhysics<'_> {
                     out_up.par_iter_mut(),
                 )
                     .into_par_iter()
-                    .with_min_len(MIN_CHUNK)
+                    .with_min_len(SPLIT_CHUNK)
                     .enumerate()
                     .for_each(|(e, (dl, du, ol, ou))| edge(e, dl, du, ol, ou));
             } else {
@@ -2274,7 +2274,7 @@ impl Forcing for ColumnPhysics<'_> {
                 soil_water.par_iter_mut(),
             )
                 .into_par_iter()
-                .with_min_len(MIN_CHUNK)
+                .with_min_len(SPLIT_CHUNK)
                 .enumerate()
                 .for_each(|(i, (terms, snow, age, t, w))| *terms = cell(i, snow, age, t, w));
         } else {

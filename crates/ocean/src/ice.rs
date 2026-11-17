@@ -19,7 +19,7 @@
 //! below that the two temperatures are one. Each layer is linear between
 //! its two boundary temperatures.
 
-use fms_grid::operators::{MIN_CHUNK, splits};
+use fms_grid::operators::{SPLIT_CHUNK, splits};
 use fms_restart::{Restart, RestartError};
 use rayon::prelude::*;
 
@@ -492,7 +492,7 @@ impl SeaIce {
                 bottom.par_iter_mut(),
             )
                 .into_par_iter()
-                .with_min_len(MIN_CHUNK)
+                .with_min_len(SPLIT_CHUNK)
                 .enumerate()
                 .for_each(|(i, (m, f, t, s, top, bottom))| cell(i, m, f, t, s, top, bottom));
         } else {

@@ -51,27 +51,37 @@ use crate::mesh::{CellId, SphereMesh, VertexId};
 /// it saves (measured: 7× slower on a 2.5k-cell mesh with 15 threads).
 pub const MIN_CHUNK: usize = 4096;
 
+/// Smallest number of elements handed to one thread once a loop is split
+/// ([`splits`]). Only grids whose loops split get here, and there the pool's
+/// idle threads spin, so a piece of work starts at once: measured at 20,252
+/// cells on 15 threads, a step is 5% faster than with [`MIN_CHUNK`]-element
+/// pieces (the dynamics', transport's and back-substitution's loops 13–20%),
+/// and halving it again gains nothing measurable.
+pub const SPLIT_CHUNK: usize = 1024;
+
 /// Smallest number of columns handed to one thread where each is expensive
 /// and their costs differ (the column physics).
 pub const MIN_COLUMNS: usize = 32;
 
 /// Whether a loop over `len` elements in chunks of at least [`MIN_CHUNK`] is
 /// split between threads: rayon splits a range only while both halves keep
-/// `MIN_CHUNK` elements, so below `2 × MIN_CHUNK` it is one chunk.
+/// `MIN_CHUNK` elements, so below `2 × MIN_CHUNK` it is one chunk. The
+/// helpers below split only such loops, and then into pieces of
+/// [`SPLIT_CHUNK`].
 #[inline]
 pub fn splits(len: usize) -> bool {
     len >= 2 * MIN_CHUNK
 }
 
 /// `f(i, &mut out[i])` for every element: in chunks of at least
-/// [`MIN_CHUNK`] on the pool's threads when that [`splits`], otherwise a
+/// [`SPLIT_CHUNK`] on the pool's threads when the loop [`splits`], otherwise a
 /// plain loop on the calling thread, which pushes no job and wakes no
 /// worker. Each element is computed the same way either way.
 #[inline]
 pub fn for_each_mut<T: Send>(out: &mut [T], f: impl Fn(usize, &mut T) + Sync + Send) {
     if splits(out.len()) {
         out.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
+            .with_min_len(SPLIT_CHUNK)
             .enumerate()
             .for_each(|(i, o)| f(i, o));
     } else {
@@ -94,7 +104,7 @@ pub fn for_each_mut2<A: Send, B: Send>(
     assert_eq!(a.len(), b.len(), "the slices must have the same length");
     if splits(a.len()) {
         a.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
+            .with_min_len(SPLIT_CHUNK)
             .zip(b.par_iter_mut())
             .enumerate()
             .for_each(|(i, (a, b))| f(i, a, b));
@@ -122,7 +132,7 @@ pub fn for_each_mut3<A: Send, B: Send, C: Send>(
     );
     if splits(a.len()) {
         a.par_iter_mut()
-            .with_min_len(MIN_CHUNK)
+            .with_min_len(SPLIT_CHUNK)
             .zip(b.par_iter_mut())
             .zip(c.par_iter_mut())
             .enumerate()
