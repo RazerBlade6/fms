@@ -105,32 +105,41 @@ unknown fields.
 ## Performance
 
 ### O-8: Scheduler overhead is ~119 µs per step
-*Scheduled: M2.15.* 20 trivial systems in 2 stages, ~4% at speed 2. Options: cache
-stage plans, or run tiny stages serially.
+*Parked.* 20 trivial systems in 2 stages. `fms-climate run` steps the model directly,
+not through the scheduler, so this is no part of its step (checked at M2.15); it
+matters once the model's systems run through the scheduler. Options: cache stage
+plans, or run tiny stages serially.
 
 ### O-12: Shallow-water steps are overhead-bound
-*Scheduled: M2.15.* About 70 µs per operator call, mostly thread scheduling. Options:
-fuse operators into fewer passes, run stages over mesh partitions, precompute edge
-factors. M2.11.1.5 didn't reach operator fusion.
+*Resolved at M2.15.3 and M2.15.5* for the layered core: one parallel region per phase
+with the layers as tasks, and operators fused into fewer passes
+([BENCHMARKS.md](BENCHMARKS.md)).
 
 ### O-13: Semi-implicit steps are long but expensive
-*Scheduled: M2.15.* 4.7–7.3× the explicit step, but only 1.35–1.9× faster in wall
-time, because CG iterations grow with Δt (~36 at 7×). Options: multigrid or Chebyshev
-preconditioning, looser tolerance (1e-6 halves iterations), fused iterations. Size the
+*Partly resolved at M2.15.6; the rest parked.* An iteration costs less than half what
+it did (4 passes instead of 9, the operator from a stencil), and the solves are 10% of
+a step at 2,562 cells and 11% at 20,252. The iteration count is unchanged: 22 a solve
+in the external mode, which runs on one thread and sets the solves' wall time. An
+extrapolated first guess raised it. Left: multigrid or Chebyshev preconditioning (a
+large change for a tenth of a step), a looser tolerance (changes results). Size the
 step from a design maximum wind: flows accelerate, and Williamson 5 blew up otherwise.
 
 ### O-29: The layered core is ~12% slower than the two-layer one
-*Scheduled: M2.15.* Likely per-cell small vectors and scratch copies. Plan: profile,
-then stack arrays of `MAX_LAYERS` and reuse buffers.
+*Resolved at M2.15.4:* nothing is allocated in a step. Allocation was 1.5% of the CPU
+time and removing it was worth 1 to 2%.
 
 ### O-49: Ocean transport is about 5% of a step
 *Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing.
 
 ### O-54: `fms-climate run` spends 40–45% of its CPU time in the kernel
-*Scheduled: M2.15.* Measured at M2.15.2 ([BENCHMARKS.md](BENCHMARKS.md)): the kernel
-time is the thread pool's idle workers yielding, sleeping and being woken between the
-step's many small parallel regions (72% of the CPU time on 15 threads at 2,562 cells,
-35% at 20,252), not allocation. The run is fastest on 8 to 10 threads.
+*Resolved at M2.15* ([BENCHMARKS.md](BENCHMARKS.md)). The kernel time was the thread
+pool's idle workers yielding, sleeping and being woken between a step's many short
+parallel regions (72% of the CPU time on 15 threads at 2,562 cells, 35% at 20,252).
+The step has fewer regions, a small grid takes 10 threads, and on a large grid the
+idle threads spin instead of sleeping (context switches at 20,252 cells: 323 million
+a year to 34 million). Left: with every core spinning, a step's serial stretches run
+10 to 25% slower, on whichever core took the step; threads can't be pinned to the
+fast cores without `unsafe` code or a new dependency.
 
 ## Dynamics
 

@@ -75,7 +75,8 @@ cells; normal wind at edges, per layer.
 Gravity-wave terms, linearized about an isothermal 300 K reference (or warmer if
 the start is), are treated implicitly. They split by vertical mode into one
 Helmholtz problem per layer, solved by Jacobi-preconditioned conjugate gradient
-to 1e-8. The step comes from a design maximum wind (120 m/s in the climate run)
+to 1e-8, the operator applied from a per-cell stencil (a diagonal and one coupling
+per edge, shared by its two cells, so the matrix is exactly symmetric). The step comes from a design maximum wind (120 m/s in the climate run)
 at Courant 0.6, rounded to divide the planet's solar day, with at least 24 steps a day. Forcing and diffusion are lagged a step.
 
 **Dissipation.** ∇⁴ hyperdiffusion on winds and θ at the strongest strength the
@@ -88,6 +89,13 @@ of negative humidity is refilled from the column.
 
 **Safety.** `safety::check` stops a run at the first non-finite value, Courant
 violation or out-of-bounds pressure or θ, and writes a diagnostic dump.
+
+**Threads.** Each phase of a step is one parallel region whose tasks are the layers
+(or the vertical modes), each running its whole chain of operators; the column
+physics is one region per call over small groups of columns. A loop over one layer
+goes to the pool only from 8,192 elements, and below that runs where it is. Sums add
+in a fixed order (chunks of 4,096, then the chunks in order), so results are
+identical to the last bit on any number of threads. A step allocates nothing.
 
 ## Column physics (`column_physics`)
 
@@ -404,3 +412,12 @@ jumps, at the ends of years 4 and 7: each repeats that year's change for twenty
 more, moving no temperature over 3 K, and two true-time years follow (O-44).
 Without currents both layers jump at the ends of years 2–4, by three years each
 (O-37). Pinned tests turn jumps off. `--ocean-jumps 0` is the true-time check.
+
+**Thread pool.** The run sizes its own pool. From 8,192 cells, where a layer's
+loops are split between threads, it takes every core and keeps all but one thread
+*spinning* through the time loop: a thread without work keeps looking for some
+instead of sleeping, because waking sleepers for each of a step's short parallel
+regions costs more than the regions' work (18% of the run at 20,252 cells). Below
+8,192 cells the dynamics has only its layers to share out: the run takes a thread
+for every 256 cells and lets idle ones sleep. `--threads` and `--idle` override
+both; fewer threads than cores turn the spinning off.

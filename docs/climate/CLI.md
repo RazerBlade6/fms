@@ -195,9 +195,9 @@ Outputs in `output/baroclinic/`:
 - `timing.csv` and `solver.csv`, the timing report below.
 
 After the time loop, `baroclinic`, `held-suarez` and `run` print a timing
-report to stderr: the loop's wall time by phase (ms a step, share, calls),
-then the Helmholtz solver's iterations by vertical mode, for this run's steps
-only. Phases marked `∥` run side by side, so their times overlap.
+report to stderr: the steps, the threads (and how many spin when idle) and
+the cells, the loop's wall time by phase (ms a step, share, calls), then the
+Helmholtz solver's iterations by vertical mode, for this run's steps only. Phases marked `∥` run side by side, so their times overlap.
 `timing.csv` has the phases as `phase,level,side_by_side,seconds,calls`, the
 first row the whole loop with the steps as its calls; `solver.csv` has a row
 per mode. `run` ends with a line splitting the whole run into setup, time
@@ -334,6 +334,9 @@ first line of `summary.txt` records the schedule.
 | `--movie-days D`, `--frames N`, `--fps N` | 30, 121, 12 | GIF of the last days |
 | `--max-wind U` | 120 | Design maximum wind for the time step (m/s) |
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion |
+| `--threads N` | by the grid | Threads. Default: every core from 8,192 cells; below, one for every 256 cells (10 at 2,562); `RAYON_NUM_THREADS` if set |
+| `--idle spin\|sleep` | by the grid | What threads without work do between a step's parallel regions. `spin` keeps all but one looking for work, which is faster on large grids and holds every thread's core busy for the whole run. Default: `spin` from 8,192 cells with every core in use, otherwise `sleep` |
+| `--stop-after N` | none | Stop after N steps and write only the timing report: for timing a grid whose year is long |
 | `--save-restart FILE` | none | Write the run's final state to FILE when it reaches its last step, before the maps and summary |
 | `--restart FILE` | none | Start from a state saved by `--save-restart`. `--years` counts from the restart and may be 1 |
 | `--fixed-sea-temperature` | off | Hold the sea temperatures at the Aqua-Planet Experiment's CONTROL profile (a function of latitude alone: 27 °C at the equator, 0 °C poleward of 60°) instead of running the ocean. See below |

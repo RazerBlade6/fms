@@ -116,15 +116,17 @@ a visual check.
   - [x] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
     kernel time goes (O-54); first timing at 20,252 cells
   - [x] 15.3. Thread scheduling: fewer and larger parallel regions, small ones
-    serial (O-8, O-12)
+    serial; the run sizes its thread pool to the grid and keeps idle threads
+    spinning on large grids (O-12, O-54)
   - [x] 15.4. Allocation: scratch buffers reused, per-cell vectors on the
     stack, no allocation in a step (O-29)
-  - [ ] 15.5. Operator fusion in the dynamics and transport (O-12)
-  - [ ] 15.6. Helmholtz solver: fewer iterations a step (O-13)
-  - [ ] 15.7. Column physics and radiation
-  - [ ] 15.8. Ocean, sea ice and the run's own sampling
-  - [ ] 15.9. Close-out: final timings at 2,562 and 20,252 cells; the target at
-    20,252 cells decided
+  - [x] 15.5. Operator fusion in the dynamics and transport (O-12)
+  - [x] 15.6. Helmholtz solver: cheaper iterations (O-13)
+  - [x] 15.7. Column physics and radiation
+  - [x] 15.8. Ocean, sea ice and the run's own sampling; the step's
+    single-threaded loops on the pool at large grids
+  - [ ] 15.9. Close-out: final timings at 2,562 and 20,252 cells on a cold
+    machine; the target at 20,252 cells decided
 - [ ] 16. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
   winds and temperatures aloft, with a tuning pass: cloud brightness and
   albedo (O-42), trade winds and jets, the tropical rain belt and its
