@@ -185,7 +185,7 @@ cover, each with its own temperature, albedo, roughness and fluxes.
 
 ## Ocean (`fms-ocean`)
 
-`fms-climate climate --fixed-sea-temperature` does without it on an all-ocean world:
+`fms-climate run --fixed-sea-temperature` does without it on an all-ocean world:
 `ColumnPhysics::with_prescribed_surface()` holds the sea temperatures at the
 Aqua-Planet Experiment's CONTROL profile (27 °C at the equator, 0 °C poleward of
 60°, a function of latitude alone), with no currents, sea ice or jumps. The sea is
@@ -298,12 +298,12 @@ the freezing point (271.35 K) at the base.
   strongest westerly above their surroundings, refined by a parabola.
 - **Belts of westerlies**: the same in the lowest layer, with 1 m/s in place of
   2 m/s. Each belt lies under an eddy-driven jet.
-- **Rain belt** (`climate` only): the centroid Σ φ P cos φ / Σ P cos φ of
+- **Rain belt** (`run` only): the centroid Σ φ P cos φ / Σ P cos φ of
   zonal-mean rain over the latitude bands whose centre is within 20° of the
   equator. It is computed for each month from that month's zonal-mean rain. The
   annual mean is the centroid of the mean of the final 12 months' profiles; the
   swing is the furthest-north monthly value minus the furthest-south.
-- **Seasonal range** (`climate` only): over the run's last 12 completed months, for
+- **Seasonal range** (`run` only): over the run's last 12 completed months, for
   each latitude band whose centre is within 60° of the equator, the warmest month's
   zonal-mean surface temperature minus the coldest's. The largest of these and its
   latitude are reported; not measured if fewer than 12 months completed.
@@ -342,7 +342,7 @@ the freezing point (271.35 K) at the base.
 - **Caveats**: a strong shared pattern without the symmetry lowers `locked`.
   The reconstruction's own error at the pentagons (O-1) shows in the wind fields
   as marks on the pentagons' neighbours.
-- **In `climate`**: on request (`--imprint-block`) the same check runs over the
+- **In `run`**: on request (`--imprint-block`) the same check runs over the
   run, with precipitation, evaporation and surface temperature as extra fields.
   With land the residuals hold the land's pattern as well as the grid's. With a
   prescribed sea the surface temperature's `locked` value is only the zonal fit's
@@ -397,7 +397,7 @@ beside the target and renames it.
 
 ## Climate run and spin-up (`fms-cli`)
 
-`fms-climate climate` starts at rest from a radiative–convective equilibrium in
+`fms-climate run` starts at rest from a radiative–convective equilibrium in
 hydrostatic balance with the terrain. The ocean starts shaped by the year's
 sunlight. By default the ocean is **jumped** ahead. With currents the deep layer alone
 jumps, at the ends of years 4 and 7: each repeats that year's change for twenty

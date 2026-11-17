@@ -1,4 +1,4 @@
-//! `fms-climate climate --save-restart` and `--restart`: the run's final
+//! `fms-climate run --save-restart` and `--restart`: the run's final
 //! state saved to a file, and a run started from one.
 //!
 //! A restarted run is built from its command line exactly as a fresh one,

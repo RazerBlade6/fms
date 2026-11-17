@@ -1,5 +1,5 @@
 //! The grid-imprint outputs of `fms-climate held-suarez` and of
-//! `fms-climate climate --imprint-block`: `imprint.csv`, a
+//! `fms-climate run --imprint-block`: `imprint.csv`, a
 //! map of each field's time mean minus its zonal mean (`imprint.<field>.png`)
 //! and of the part of it with the grid's symmetry
 //! (`imprint.<field>.locked.png`), and the summary's lines on what the two

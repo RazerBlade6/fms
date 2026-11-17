@@ -111,7 +111,7 @@ before and 98.4% after the baseline (`top -l 2`).
 Not a formal benchmark: this is what the model costs on a laptop in ordinary
 use, to set against the quiet, plugged-in figures above. Same 8 threads and
 `bench_layers` command as the performance pass, then the full climate run:
-`RAYON_NUM_THREADS=8 fms-climate climate --climate-frequency 16 --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif`
+`RAYON_NUM_THREADS=8 fms-climate run --climate-frequency 16 --heightmap data/ETOPO_2022_v1_60s_N90W180_surface.tif`
 (Earth, 2,562 cells, six accelerated years, dt 2057 s, 92,030 steps).
 
 **Conditions** (2026-11-10, 18:52 to 19:48 IST): Apple M5 Pro, 15 cores, 24 GB,

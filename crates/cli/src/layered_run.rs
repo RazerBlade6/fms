@@ -1,5 +1,5 @@
 //! Shared machinery for commands that run the layered core (`fms-climate
-//! baroclinic`, `fms-climate held-suarez`, `fms-climate climate`): model setup from the
+//! baroclinic`, `fms-climate held-suarez`, `fms-climate run`): model setup from the
 //! command line, the checked time loop, the diagnostics log, the blow-up
 //! dump, and the maps and GIF of the dynamics fields. "Upper" means the layer
 //! holding 250 hPa (the jets), "lower" the lowest layer.
@@ -45,7 +45,7 @@ pub fn steps_per_day(day: f64, dt_max: f64) -> u64 {
 pub struct DynamicsArgs {
     /// Interior layer interfaces in σ = p/p_s, top down, comma-separated
     /// (e.g. `0.4,0.85` for three layers with a thin bottom one). Default:
-    /// `0.5` (two layers), or the climate's four layers for `fms-climate climate`.
+    /// `0.5` (two layers), or the climate's four layers for `fms-climate run`.
     #[arg(long, value_delimiter = ',', num_args = 1..)]
     pub levels: Option<Vec<f64>>,
     /// Design maximum wind for the time step (m s⁻¹). The run stops if a

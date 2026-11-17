@@ -1,4 +1,4 @@
-//! The reference aquaplanet: `fms-climate climate` on a blank world (all
+//! The reference aquaplanet: `fms-climate run` on a blank world (all
 //! ocean, with the coupled ocean), run as shipped as the real binary at 642
 //! cells for nine years, has an Earth-like general circulation and a rain
 //! belt that follows the sun. Without tilt, on a circular orbit, it has no
@@ -60,7 +60,7 @@ enum Grid {
     Cells2562,
 }
 
-/// Runs `fms-climate climate` as shipped at 642 cells, with 24 latitude
+/// Runs `fms-climate run` as shipped at 642 cells, with 24 latitude
 /// bands and small images, and `extra` options, into a fresh directory
 /// named after `name`; prints every measure of `circulation.csv` and
 /// returns the directory and the measures.
@@ -83,7 +83,7 @@ fn run_on(grid: Grid, name: &str, extra: &[&str]) -> (TempDir, HashMap<String, O
         Grid::Cells2562 => &["--terrain-frequency", "32", "--climate-frequency", "16"],
     };
     let output = Command::new(env!("CARGO_BIN_EXE_fms-climate"))
-        .arg("climate")
+        .arg("run")
         .args(grid)
         .args(extra)
         .args([
@@ -100,7 +100,7 @@ fn run_on(grid: Grid, name: &str, extra: &[&str]) -> (TempDir, HashMap<String, O
         .expect("the binary runs");
     assert!(
         output.status.success(),
-        "fms-climate climate failed:\n{}",
+        "fms-climate run failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
     let path = dir.0.join("climate/circulation.csv");

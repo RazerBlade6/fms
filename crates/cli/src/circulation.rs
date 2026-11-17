@@ -1,7 +1,7 @@
 //! The circulation outputs shared by `fms-climate held-suarez` and
-//! `fms-climate climate`: the overturning streamfunction as `overturning.csv`
+//! `fms-climate run`: the overturning streamfunction as `overturning.csv`
 //! and `overturning.png`, the summary's lines on the cells, trades and jets
-//! (and, for `climate`, the rain belt), and the same measures as
+//! (and, for `run`, the rain belt), and the same measures as
 //! `circulation.csv`.
 
 use std::fmt::Write as _;

@@ -1,4 +1,4 @@
-//! `fms-climate climate --save-restart` and `--restart`, run as the real
+//! `fms-climate run --save-restart` and `--restart`, run as the real
 //! binary on the smallest world (162 cells, a 20-day year): a run resumed
 //! from a restart ends where the straight run does, byte for byte, across
 //! an ocean jump too; runs with other settings start warm and say so; files
@@ -51,12 +51,12 @@ const SMALL: [&str; 10] = [
     "2",
 ];
 
-/// `fms-climate climate` with the small world on a climate grid of
+/// `fms-climate run` with the small world on a climate grid of
 /// `frequency` (162 cells at 4), `args` and its output in `out`: whether it
 /// succeeded, and its standard error.
 fn climate(frequency: &str, out: &Path, args: &[&str]) -> (bool, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_fms-climate"))
-        .arg("climate")
+        .arg("run")
         .args(SMALL)
         .args(["--climate-frequency", frequency])
         .args(args)
@@ -71,7 +71,7 @@ fn climate(frequency: &str, out: &Path, args: &[&str]) -> (bool, String) {
 /// As [`climate`], which must succeed; returns its standard error.
 fn run(out: &Path, args: &[&str]) -> String {
     let (ok, stderr) = climate("4", out, args);
-    assert!(ok, "fms-climate climate {args:?} failed:\n{stderr}");
+    assert!(ok, "fms-climate run {args:?} failed:\n{stderr}");
     stderr
 }
 

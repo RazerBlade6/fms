@@ -1,7 +1,7 @@
 """Compare an Earth climate run against the reference in reference/earth.
 From the repository root (plain Python, no packages needed):
     python3 scripts/compare_earth.py output/<run>
-where <run> is the --out-dir of `fms-climate climate` (or its climate/ folder).
+where <run> is the --out-dir of `fms-climate run` (or its climate/ folder).
 
 The model's final year is compared with observations: ERA5 temperature,
 terrain height and wind, GPCP rain and NSIDC sea ice for 1991–2020, and CERES

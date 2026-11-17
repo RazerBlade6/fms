@@ -14,7 +14,7 @@
 //! fms-climate williamson --case 5                     # shallow-water flow over a mountain
 //! fms-climate baroclinic                              # two-layer core: storms on a sheared jet
 //! fms-climate held-suarez --climate-frequency 32      # dynamical-core benchmark, 1200 days
-//! fms-climate climate --climate-frequency 16 --co2 840  # radiative climate, final-year means
+//! fms-climate run --climate-frequency 16 --co2 840      # radiative climate, final-year means
 //! fms-climate basins --heightmap earth.tif             # sea mask and ocean basins
 //! ```
 
@@ -88,11 +88,11 @@ enum Command {
     /// idealized heating and friction, then average the zonal-mean climate;
     /// write profiles, a summary, maps and a GIF to `output/held_suarez/`.
     HeldSuarez(held_suarez::HeldSuarezArgs),
-    /// Run the two-layer model driven by radiation over a slab aquaplanet
-    /// on the world's planet; average the final year and write zonal means,
-    /// a summary with the energy budget, and annual-mean maps to
-    /// `output/climate/`.
-    Climate(climate::ClimateArgs),
+    /// Run the climate model on the world's planet: the layered atmosphere
+    /// driven by radiation and moisture over ocean, sea ice and land; average
+    /// the final year and write zonal means, a summary with the energy and
+    /// water budgets, and annual-mean maps to `output/climate/`.
+    Run(climate::ClimateArgs),
     /// Write the world's sea mask, land fraction and ocean basins (the
     /// gyres' domains) as maps, with tables of the bodies below sea level
     /// and of the basins, without running anything.
@@ -268,7 +268,7 @@ fn main() -> ExitCode {
         Command::Williamson(args) => williamson::run(args),
         Command::Baroclinic(args) => baroclinic::run(args),
         Command::HeldSuarez(args) => held_suarez::run(args),
-        Command::Climate(args) => climate::run(args),
+        Command::Run(args) => climate::run(args),
         Command::Basins(args) => basins::run(args),
     };
     match result {

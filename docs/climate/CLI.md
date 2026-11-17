@@ -23,7 +23,7 @@ cargo build --release -p fms-climate
 | `fms-climate williamson --case N` | Run Williamson shallow-water test case 2, 5 or 6 on the climate grid; write a GIF of the surface height and final-state PNGs to `output/williamsonN/` |
 | `fms-climate baroclinic` | Run the two-layer dry core on a sheared jet seeded with small waves; write a GIF of surface pressure and final-state PNGs to `output/baroclinic/` |
 | `fms-climate held-suarez` | Run the Held–Suarez dynamical-core benchmark; write zonal-mean profiles (CSV and chart), a summary, maps and a GIF to `output/held_suarez/` |
-| `fms-climate climate` | Run the model driven by radiation and moisture over slab ocean and land tiles on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
+| `fms-climate run` | Run the model driven by radiation and moisture over slab ocean and land tiles on the world's planet; write final-year zonal means, a summary with the energy and water budgets, annual-mean maps and a GIF to `output/climate/` |
 
 ### Cell, edge and vertex fields
 
@@ -228,7 +228,7 @@ with two layers the lower gets friction at 0.3/day and the upper none.
 | `--frames N`, `--fps N` | 121, 12 | GIF frames and speed |
 | `--max-wind U` | 80 | Design maximum wind for the time step (m/s) |
 | `--diffusion-order N`, `--e-folding H`, `--inviscid` | 4, auto, off | Hyperdiffusion, as for `fms-climate baroclinic` |
-| `--levels S,…` | 0.5 (`fms-climate climate`: 0.25,0.5,0.85) | Interior layer interfaces in σ, top down: `0.25,0.5,0.85` is four layers with a thin bottom one (the climate's boundary layer), `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
+| `--levels S,…` | 0.5 (`fms-climate run`: 0.25,0.5,0.85) | Interior layer interfaces in σ, top down: `0.25,0.5,0.85` is four layers with a thin bottom one (the climate's boundary layer), `0.2,0.4,0.6,0.8` five equal ones (at most 16 layers) |
 
 With more than two layers, "upper" in the maps, tables and charts means the
 layer holding 250 hPa (the jets) and "lower" the lowest layer.
@@ -267,11 +267,11 @@ leaves a small upward drift in the energy budget. Outputs in
 
 The `--max-wind`, `--diffusion-order`, `--e-folding`, `--inviscid` and
 `--levels` options also apply to `fms-climate baroclinic` (two layers only; its
-design wind defaults to 120 m/s) and `fms-climate climate`.
+design wind defaults to 120 m/s) and `fms-climate run`.
 
 ### Climate
 
-`fms-climate climate` runs the layered model (four layers, the bottom one a
+`fms-climate run` runs the layered model (four layers, the bottom one a
 boundary layer with surface drag, bulk fluxes and entrainment; its physics
 assumes a thin bottom layer, see `--levels`) driven by sunlight, radiation and
 moisture (evaporation, convection, condensation, rain and snow, clouds)
@@ -330,7 +330,7 @@ first line of `summary.txt` records the schedule.
 | `--imprint-block D` | off | Run the grid-imprint check of `fms-climate held-suarez` over this run, in blocks of `D` days |
 | `--imprint-spinup D` | 200 | Days after the run's start left out of the imprint check; ignored without `--imprint-block` |
 
-In the layered runs (`climate`, `held-suarez`, `baroclinic`) a day is the planet's
+In the layered runs (`run`, `held-suarez`, `baroclinic`) a day is the planet's
 solar day. The step divides it, with at least 24 steps a day, and radiation runs every
 whole number of steps within 3 h and an eighth of the day. Rates in mm/day are per
 86,400 s on every planet. The first line of the description printed at the start
@@ -494,7 +494,7 @@ fms-climate probe --lat 60 --lon -150 -f planet.daily_insolation --days 365.2422
 fms-climate williamson --case 5 --terrain-frequency 90             # flow over a mountain, 15 days
 fms-climate baroclinic --terrain-frequency 90                      # a storm life cycle on a jet, 30 days
 fms-climate held-suarez --terrain-frequency 64 --climate-frequency 32  # the dynamical-core benchmark, 1200 days
-fms-climate climate --terrain-frequency 32 --climate-frequency 16 --co2 840  # a doubled-CO₂ climate, 4 years
-fms-climate climate --terrain-frequency 32 --climate-frequency 16 --save-restart output/spun.fmsrst  # a run that saves its state
-fms-climate climate --terrain-frequency 32 --climate-frequency 16 --restart output/spun.fmsrst --years 1  # one more year from it
+fms-climate run --terrain-frequency 32 --climate-frequency 16 --co2 840  # a doubled-CO₂ climate, 4 years
+fms-climate run --terrain-frequency 32 --climate-frequency 16 --save-restart output/spun.fmsrst  # a run that saves its state
+fms-climate run --terrain-frequency 32 --climate-frequency 16 --restart output/spun.fmsrst --years 1  # one more year from it
 ```

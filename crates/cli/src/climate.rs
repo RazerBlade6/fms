@@ -1,4 +1,4 @@
-//! `fms-climate climate`: the layered model (four layers by default, the bottom one
+//! `fms-climate run`: the layered model (four layers by default, the bottom one
 //! the boundary layer) driven by radiation and moist physics over slab
 //! ocean and land tiles and the world's terrain, on the world's planet
 //! (orbit, CO₂, surface pressure). Spins up, then averages the final year: zonal means, a global
@@ -832,7 +832,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         .saturating_sub((args.movie_days * setup.steps_per_day as f64).round() as u64)
         .max(start_step);
     let out = Output {
-        command: "climate",
+        command: "run",
         dir: args.image.out_dir.join("climate"),
         image: &args.image,
         fps: args.fps,
@@ -1217,7 +1217,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             .sum::<f64>()
             / area
     };
-    let mut summary = format!("fms-climate climate: {description}\n\n");
+    let mut summary = format!("fms-climate run: {description}\n\n");
     let g =
         |name: &str| global(&means[names.iter().position(|n| *n == name).expect("known field")]);
     let (asr, olr) = (g("rad.absorbed_shortwave"), g("rad.outgoing_longwave"));
@@ -1598,7 +1598,7 @@ mod tests {
             #[command(flatten)]
             climate: ClimateArgs,
         }
-        let argv = std::iter::once("climate").chain(options.iter().copied());
+        let argv = std::iter::once("run").chain(options.iter().copied());
         Cli::try_parse_from(argv).map(|cli| cli.climate)
     }
 

@@ -89,13 +89,13 @@ a visual check.
   (a plain state dump; the versioned format is M4.2).
   - [x] 13.5.1. Restart file reader and writer; save and load for the dynamics, resuming bit for bit
   - [x] 13.5.2. Save and load for the physics, ocean and sea ice, resuming bit for bit
-  - [x] 13.5.3. `climate --save-restart` and `--restart`; warm start with changed settings
+  - [x] 13.5.3. `run --save-restart` and `--restart`; warm start with changed settings
   - [x] 13.5.4. Close-out
 - [x] 14. **Idealized planets**: aquaplanet, no tilt, fast and slow rotation,
   with assertions on zonal-mean wind and temperature; grid-imprinting check in
   long-run Held–Suarez, with a fix if visible (O-1).
   - [x] 14.1. Circulation diagnostics: overturning streamfunction, Hadley-cell
-    edge, jets and cell counts in the `held-suarez` and `climate` outputs
+    edge, jets and cell counts in the `held-suarez` and `run` outputs
   - [x] 14.2. Grid-imprinting check in a long Held–Suarez run (O-1)
   - [x] 14.3. Imprinting fix: not needed for the dry dynamics (O-1)
   - [x] 14.4. Reference aquaplanet with Earth's tilt: trades, jets, Hadley
@@ -108,10 +108,10 @@ a visual check.
     larger contrast (O-53)
   - [x] 14.8. Close-out
 - [ ] 15. **Performance pass**: speed 2 (one model week a second, 294 steps/s)
-  for the full `climate` run at 2,562 cells. The default 20,252 cells is timed
-  at the start and at the end, and gets a target at the close-out if one is in
-  reach (O-8, O-12, O-13, O-29, O-54).
-  - [ ] 15.1. Timing report in `climate`: time per phase and solver
+  for the full climate run (`fms-climate run`) at 2,562 cells. The default
+  20,252 cells is timed at the start and at the end, and gets a target at the
+  close-out if one is in reach (O-8, O-12, O-13, O-29, O-54).
+  - [ ] 15.1. Timing report in `run`: time per phase and solver
     iterations; a fixed benchmark run from a restart file
   - [ ] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
     kernel time goes (O-54); first timing at 20,252 cells
