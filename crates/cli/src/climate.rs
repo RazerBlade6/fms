@@ -19,14 +19,17 @@ use fms_atmos::column_physics::{
 };
 use fms_atmos::moisture::{CloudParams, MoistureParams};
 use fms_atmos::{
-    ColumnPhysics, Forcing, GridImprint, LayeredSemiImplicit, PhysicsParams, ZonalClimatology,
+    CellField, ColumnPhysics, Forcing, GridImprint, LayeredSemiImplicit, PhysicsParams,
+    ZonalClimatology,
 };
 use fms_fields::{ColorScale, FieldId, FieldSpec, Location};
 use fms_grid::LatitudeBands;
+use fms_grid::operators::{for_each_mut, for_each_mut2, splits};
 use fms_ocean::{
     EddyParams, EkmanParams, GyreParams, IceParams, JumpLayers, OceanParams, WET_OCEAN_FRACTION,
 };
 use glam::DVec3;
+use rayon::prelude::*;
 
 use crate::basins::write_gyre_map;
 use crate::chart::{self, Series, TimeAxis};
@@ -958,16 +961,14 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         let fields = forcing.cell_fields();
         {
             let (cover, thickness) = (&fields[ice_index[0]].values, &fields[ice_index[1]].values);
-            for (i, land) in land.iter().enumerate() {
-                let c = cover[i] * (1.0 - land);
-                month_sums[0][i] += c;
-                month_sums[1][i] += c * thickness[i];
-            }
-            for (sum, &f) in month_sums[2..].iter_mut().zip(&monthly_index) {
-                for (s, v) in sum.iter_mut().zip(&fields[f].values) {
-                    *s += v;
-                }
-            }
+            let (ice, monthly_sums) = month_sums.split_at_mut(2);
+            let (area, volume) = ice.split_at_mut(1);
+            for_each_mut2(&mut area[0], &mut volume[0], |i, area, volume| {
+                let c = cover[i] * (1.0 - land[i]);
+                *area += c;
+                *volume += c * thickness[i];
+            });
+            add_fields(monthly_sums, &fields, &monthly_index);
             month_samples += 1.0;
             if let Some(imprint) = &mut imprint
                 && si.steps() > imprint_from
@@ -1037,11 +1038,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         }
         if si.steps() > stats_from {
             climate.sample(si.model(), si.state());
-            for (sum, &i) in sums.iter_mut().zip(&index) {
-                for (s, v) in sum.iter_mut().zip(&fields[i].values) {
-                    *s += v;
-                }
-            }
+            add_fields(&mut sums, &fields, &index);
             samples += 1.0;
         }
     })?;
@@ -1555,6 +1552,22 @@ fn currents(ocean: &OceanParams) -> String {
         None => "without currents".into(),
         Some((last, [])) => format!("with {last}"),
         Some((last, rest)) => format!("with {} and {last}", rest.join(", ")),
+    }
+}
+
+/// `sums[j][i] += fields[index[j]].values[i]` for every cell `i`: on a grid
+/// whose loops are split, the sums side by side in one region (on the main
+/// thread every region is a hand-off to the pool), otherwise in order on
+/// this thread.
+fn add_fields(sums: &mut [Vec<f64>], fields: &[CellField], index: &[usize]) {
+    let add = |(sum, &f): (&mut Vec<f64>, &usize)| {
+        let values = &fields[f].values;
+        for_each_mut(sum, |i, s| *s += values[i]);
+    };
+    if sums.first().is_some_and(|sum| splits(sum.len())) {
+        sums.par_iter_mut().zip(index).for_each(add);
+    } else {
+        sums.iter_mut().zip(index).for_each(add);
     }
 }
 

@@ -4,7 +4,9 @@
 
 use fms_grid::LatitudeBands;
 use fms_grid::mesh::CellId;
+use fms_grid::operators::{SPLIT_CHUNK, for_each_mut2, splits};
 use fms_grid::zonal::east_north;
+use rayon::prelude::*;
 
 use crate::circulation::Overturning;
 use crate::layered::{LayeredModel, LayeredState};
@@ -68,9 +70,12 @@ pub struct ZonalClimatology {
     /// Summed northward mass flux (kg s⁻¹) per layer, top first, and band
     /// boundary, south pole to north pole.
     flux: Vec<Vec<f64>>,
-    /// Scratch: a sample's eastward wind and temperature per cell, per layer.
+    /// Scratch: a sample's eastward wind and temperature per cell, per layer,
+    /// and (on a grid whose loops are split) its layer Exner functions, `N`
+    /// per cell.
     east: Vec<Vec<f64>>,
     temperature: Vec<Vec<f64>>,
+    exner: Vec<f64>,
 }
 
 impl ZonalClimatology {
@@ -124,11 +129,24 @@ impl ZonalClimatology {
             flux: vec![vec![0.0; n + 1]; model.layers()],
             east: vec![vec![0.0; ops.mesh().n_cells()]; model.layers()],
             temperature: vec![vec![0.0; ops.mesh().n_cells()]; model.layers()],
+            exner: vec![0.0; ops.mesh().n_cells() * model.layers()],
         }
     }
 
     /// Add one sample.
     pub fn sample(&mut self, model: &LayeredModel, state: &LayeredState) {
+        // On a grid whose loops are split, in one piece of work on the pool:
+        // its parallel loops then start without a hand-off from the
+        // caller's thread each.
+        if splits(state.ps.len()) && rayon::current_thread_index().is_none() {
+            rayon::scope(|_| self.sample_here(model, state));
+        } else {
+            self.sample_here(model, state);
+        }
+    }
+
+    /// [`sample`](Self::sample) on this thread.
+    fn sample_here(&mut self, model: &LayeredModel, state: &LayeredState) {
         let ops = model.operators();
         let (mesh, geometry) = (ops.mesh(), ops.geometry());
         let centers = mesh.cell_centers();
@@ -138,13 +156,40 @@ impl ZonalClimatology {
             }
         };
         let (levels, gas, layers) = (model.levels(), model.gas(), model.layers());
-        for (i, (&p, &ps)) in centers.iter().zip(&state.ps).enumerate() {
-            let mut exner = [0.0; MAX_LAYERS];
-            levels.layer_exner_into(gas, ps, &mut exner[..layers]);
-            for (k, &exner) in exner[..layers].iter().enumerate() {
-                let v = geometry.reconstruct_vector(mesh, i as CellId, |e| state.u[k][e as usize]);
-                self.east[k][i] = east_north(p, v).0;
-                self.temperature[k][i] = state.theta_ps[k][i] / ps * exner;
+        if splits(centers.len()) {
+            // The same per cell and layer, side by side: the Exner
+            // functions first, then each layer.
+            let exner_of = |(exner, &ps): (&mut [f64], &f64)| {
+                levels.layer_exner_into(gas, ps, exner);
+            };
+            self.exner
+                .par_chunks_mut(layers)
+                .zip(&state.ps)
+                .with_min_len(SPLIT_CHUNK)
+                .for_each(exner_of);
+            let exner = &self.exner;
+            self.east
+                .par_iter_mut()
+                .zip(self.temperature.par_iter_mut())
+                .enumerate()
+                .for_each(|(k, (east, temperature))| {
+                    for_each_mut2(east, temperature, |i, east, temperature| {
+                        let v = geometry
+                            .reconstruct_vector(mesh, i as CellId, |e| state.u[k][e as usize]);
+                        *east = east_north(centers[i], v).0;
+                        *temperature = state.theta_ps[k][i] / state.ps[i] * exner[i * layers + k];
+                    });
+                });
+        } else {
+            for (i, (&p, &ps)) in centers.iter().zip(&state.ps).enumerate() {
+                let mut exner = [0.0; MAX_LAYERS];
+                levels.layer_exner_into(gas, ps, &mut exner[..layers]);
+                for (k, &exner) in exner[..layers].iter().enumerate() {
+                    let v =
+                        geometry.reconstruct_vector(mesh, i as CellId, |e| state.u[k][e as usize]);
+                    self.east[k][i] = east_north(p, v).0;
+                    self.temperature[k][i] = state.theta_ps[k][i] / ps * exner;
+                }
             }
         }
         for k in 0..layers {

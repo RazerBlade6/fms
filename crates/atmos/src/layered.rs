@@ -66,7 +66,9 @@
 use std::time::{Duration, Instant};
 
 use fms_grid::Operators;
-use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS, for_each_mut, for_each_mut2};
+use fms_grid::operators::{
+    MIN_CHUNK, MIN_COLUMNS, SPLIT_CHUNK, for_each_mut, for_each_mut2, splits,
+};
 use rayon::prelude::*;
 
 use crate::diffusion::{Hyperdiffusion, HyperdiffusionOptions};
@@ -968,23 +970,51 @@ impl<'a> LayeredModel<'a> {
 
     /// Mass, θ, kinetic and total energy of `state`.
     pub fn diagnostics(&self, state: &LayeredState) -> LayeredDiagnostics {
+        // On a grid whose loops are split, in one piece of work on the pool:
+        // its parallel loops then start without a hand-off from the
+        // caller's thread each.
+        if splits(state.ps.len()) && rayon::current_thread_index().is_none() {
+            rayon::scope(|_| self.diagnostics_here(state))
+        } else {
+            self.diagnostics_here(state)
+        }
+    }
+
+    /// [`diagnostics`](Self::diagnostics) on this thread.
+    fn diagnostics_here(&self, state: &LayeredState) -> LayeredDiagnostics {
         let ops = &self.ops;
         let (m, g) = (ops.mesh(), ops.geometry());
         let r2 = ops.radius() * ops.radius();
         let ds = self.dsigma();
         let n = self.layers();
-        let theta: Vec<Vec<f64>> = (0..n).map(|k| state.theta(k)).collect();
-        let mut kinetic = vec![vec![0.0; m.n_cells()]; n];
-        for (u, ke) in state.u.iter().zip(&mut kinetic) {
-            ops.kinetic_energy(u, ke);
+        let cells = m.n_cells();
+        // Per cell and layer, side by side; then the sums, in order.
+        let mut theta = vec![vec![0.0; cells]; n];
+        let mut kinetic = vec![vec![0.0; cells]; n];
+        for (k, (theta, ke)) in theta.iter_mut().zip(&mut kinetic).enumerate() {
+            let (theta_ps, ps) = (&state.theta_ps[k], &state.ps);
+            for_each_mut(theta, |i, t| *t = theta_ps[i] / ps[i]);
+            ops.kinetic_energy(&state.u[k], ke);
+        }
+        let mut exners = vec![0.0; n * cells];
+        let exner_of = |(exner, &ps): (&mut [f64], &f64)| {
+            self.levels.layer_exner_into(self.gas, ps, exner);
+        };
+        if splits(cells) {
+            exners
+                .par_chunks_mut(n)
+                .zip(&state.ps)
+                .with_min_len(SPLIT_CHUNK)
+                .for_each(exner_of);
+        } else {
+            exners.chunks_mut(n).zip(&state.ps).for_each(exner_of);
         }
         let (mut mass, mut th, mut ke, mut energy) = (0.0, 0.0, 0.0, 0.0);
         let water = self.water(state);
-        let mut exner = [0.0; MAX_LAYERS];
-        for i in 0..m.n_cells() {
+        for i in 0..cells {
             let a = g.cell_areas[i] * r2 / self.gravity;
             let ps = state.ps[i];
-            self.levels.layer_exner_into(self.gas, ps, &mut exner[..n]);
+            let exner = &exners[i * n..(i + 1) * n];
             mass += a * ps;
             energy += a * ps * self.surface_geopotential[i];
             for k in 0..n {
