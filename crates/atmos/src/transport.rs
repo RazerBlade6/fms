@@ -92,6 +92,10 @@ pub struct Transport {
     q_low: Vec<Vec<f64>>,
     q_max: Vec<Vec<f64>>,
     q_min: Vec<Vec<f64>>,
+    /// Per cell and layer, the range of q at n−1, n and in the low-order
+    /// solution.
+    local_min: Vec<Vec<f64>>,
+    local_max: Vec<Vec<f64>>,
     r_plus: Vec<Vec<f64>>,
     r_minus: Vec<Vec<f64>>,
     edge_amount: Vec<Vec<f64>>,
@@ -117,6 +121,8 @@ impl Transport {
             q_low: cells(layers),
             q_max: cells(layers),
             q_min: cells(layers),
+            local_min: cells(layers),
+            local_max: cells(layers),
             r_plus: cells(layers),
             r_minus: cells(layers),
             edge_amount: edges(),
@@ -132,6 +138,22 @@ impl Transport {
         ops: &Operators,
         input: &TransportStep,
         out: &mut [Vec<f64>],
+    ) -> TransportReport {
+        let mut nothing = [(); MAX_LAYERS];
+        let n = input.dsigma.len();
+        self.step_then(ops, input, out, &mut nothing[..n], |_, _, _| {})
+    }
+
+    /// [`step`](Self::step), then `then(k, Qₖ, &mut payload[k])` for each
+    /// layer as soon as its `Qₖ` is written, in the same task: per-layer
+    /// work that would otherwise need a parallel region of its own.
+    pub fn step_then<T: Send>(
+        &mut self,
+        ops: &Operators,
+        input: &TransportStep,
+        out: &mut [Vec<f64>],
+        payload: &mut [T],
+        then: impl Fn(usize, &mut [f64], &mut T) + Sync + Send,
     ) -> TransportReport {
         let mesh = ops.mesh();
         let g = ops.geometry();
@@ -249,9 +271,9 @@ impl Transport {
             }
         }
 
-        // Per layer: the low-order solution, and the antidiffusive fluxes
-        // (centred at n minus upwind) along the edges and across the
-        // interface below.
+        // Per layer: the low-order solution, the range of q at n−1, n and in
+        // it, and the antidiffusive fluxes (centred at n minus upwind) along
+        // the edges and across the interface below.
         {
             let (content_all, low_flux_all, low_interface) =
                 (&self.content, &self.low_flux, &self.low_interface);
@@ -261,45 +283,52 @@ impl Transport {
             };
             self.q_low
                 .par_iter_mut()
+                .zip(self.local_min.par_iter_mut())
+                .zip(self.local_max.par_iter_mut())
                 .zip(self.anti.par_iter_mut())
                 .zip(anti_below[..n].par_iter_mut())
                 .enumerate()
-                .for_each(|(k, ((q_low, anti), anti_below))| {
-                    let content = &content_all[k];
-                    for_each_mut(q_low, |i, q| *q = content[i] / (ds[k] * input.ps_new[i]));
-                    let (q, flux, low) = (&input.q_mid[k], &input.flux[k], &low_flux_all[k]);
-                    for_each_mut(anti, |e, a| {
-                        let [i, j] = edges[e].cells;
-                        let centred = 0.5 * (q[i as usize] + q[j as usize]);
-                        *a = t * flux[e] * centred - low[e];
-                    });
-                    if let Some(anti_below) = anti_below.as_deref_mut() {
-                        let j = k;
-                        let (q, w, ratio) = (input.q_mid, &w[j], &ratio[j]);
-                        let low = &low_interface[j];
-                        for_each_mut(anti_below, |i, a| {
-                            let centred = 0.5 * (ratio[0][i] * q[j][i] + ratio[1][i] * q[j + 1][i]);
-                            *a = t * w[i] * centred - low[i];
+                .for_each(
+                    |(k, ((((q_low, local_min), local_max), anti), anti_below))| {
+                        let content = &content_all[k];
+                        for_each_mut(q_low, |i, q| *q = content[i] / (ds[k] * input.ps_new[i]));
+                        let q_low = &*q_low;
+                        for_each_mut2(local_min, local_max, |i, lo, hi| {
+                            let values = [
+                                input.q_old[k][i] / input.ps_old[i],
+                                input.q_mid[k][i],
+                                q_low[i],
+                            ];
+                            (*lo, *hi) = values
+                                .iter()
+                                .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
                         });
-                    }
-                });
+                        let (q, flux, low) = (&input.q_mid[k], &input.flux[k], &low_flux_all[k]);
+                        for_each_mut(anti, |e, a| {
+                            let [i, j] = edges[e].cells;
+                            let centred = 0.5 * (q[i as usize] + q[j as usize]);
+                            *a = t * flux[e] * centred - low[e];
+                        });
+                        if let Some(anti_below) = anti_below.as_deref_mut() {
+                            let j = k;
+                            let (q, w, ratio) = (input.q_mid, &w[j], &ratio[j]);
+                            let low = &low_interface[j];
+                            for_each_mut(anti_below, |i, a| {
+                                let centred =
+                                    0.5 * (ratio[0][i] * q[j][i] + ratio[1][i] * q[j + 1][i]);
+                                *a = t * w[i] * centred - low[i];
+                            });
+                        }
+                    },
+                );
         }
 
         // Per layer: the bounds (q at n−1, n and in the low-order solution,
         // over the cell, its neighbours and the adjacent layers), then
         // Zalesak's ratios: the share of the incoming (outgoing)
         // antidiffusive water each cell can take (give) within them.
-        let q_low_all = &self.q_low;
-        let local = |k: usize, i: usize| -> (f64, f64) {
-            let values = [
-                input.q_old[k][i] / input.ps_old[i],
-                input.q_mid[k][i],
-                q_low_all[k][i],
-            ];
-            values
-                .iter()
-                .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
-        };
+        let (local_min, local_max) = (&self.local_min, &self.local_max);
+        let local = |k: usize, i: usize| (local_min[k][i], local_max[k][i]);
         let (anti_all, anti_v) = (&self.anti, &self.anti_interface);
         let content_all = &self.content;
         self.q_min
@@ -376,8 +405,9 @@ impl Transport {
         out.par_iter_mut()
             .zip(self.edge_amount.par_iter_mut())
             .zip(self.divergence.par_iter_mut())
+            .zip(payload.par_iter_mut())
             .enumerate()
-            .for_each(|(k, ((out, edge_amount), divergence))| {
+            .for_each(|(k, (((out, edge_amount), divergence), payload))| {
                 let (anti, rp, rm) = (&anti_all[k], &r_plus[k], &r_minus[k]);
                 for_each_mut(edge_amount, |e, x| {
                     let [a, b] = edges[e].cells;
@@ -411,6 +441,7 @@ impl Transport {
                     }
                     *q = (content[i] - div[i] + vertical) / ds[k];
                 });
+                then(k, out, payload);
             });
         TransportReport { substeps }
     }

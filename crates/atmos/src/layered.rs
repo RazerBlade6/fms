@@ -338,18 +338,9 @@ struct LayerWork {
     divergence: Vec<f64>,
     theta: Vec<f64>,
     theta_edge: Vec<f64>,
-    exner: Vec<f64>,
-    geopotential: Vec<f64>,
-    kinetic: Vec<f64>,
     bernoulli: Vec<f64>,
-    vorticity: Vec<f64>,
-    dp_vertex: Vec<f64>,
     q_vertex: Vec<f64>,
     q_edge: Vec<f64>,
-    pv_flux: Vec<f64>,
-    gradient: Vec<f64>,
-    exner_gradient: Vec<f64>,
-    theta_flux_divergence: Vec<f64>,
     cell_scratch: Vec<f64>,
     edge_scratch: Vec<f64>,
 }
@@ -418,18 +409,9 @@ impl<'a> LayeredModel<'a> {
             divergence: vec![0.0; nc],
             theta: vec![0.0; nc],
             theta_edge: vec![0.0; ne],
-            exner: vec![0.0; nc],
-            geopotential: vec![0.0; nc],
-            kinetic: vec![0.0; nc],
             bernoulli: vec![0.0; nc],
-            vorticity: vec![0.0; nv],
-            dp_vertex: vec![0.0; nv],
             q_vertex: vec![0.0; nv],
             q_edge: vec![0.0; ne],
-            pv_flux: vec![0.0; ne],
-            gradient: vec![0.0; ne],
-            exner_gradient: vec![0.0; ne],
-            theta_flux_divergence: vec![0.0; nc],
             cell_scratch: vec![0.0; nc],
             edge_scratch: vec![0.0; ne],
         };
@@ -841,35 +823,38 @@ impl<'a> LayeredModel<'a> {
         }
         let old_exner = &self.old_exner;
         // The forcing beside the dynamics and the hyperdiffusion, which run
-        // beside each other.
-        let ((forcing_rate, physics), (dynamics, (diffusion_rate, hyperdiffusion))) = rayon::join(
-            || {
+        // beside each other. This thread takes the forcing; the dynamics'
+        // branch is the first job it pushes, so the first thief takes it
+        // before any of the forcing's column tasks (measured: the other way
+        // round, the dynamics take 4% longer).
+        let physics_branch = || {
+            let t = Instant::now();
+            let rate = forcer.as_mut().map(|f| {
+                forcing.for_each_part_mut(|x| x.fill(0.0));
+                f.add_tendency(old, forcing);
+                energy_rate(&params, old, old_exner, forcing)
+            });
+            (rate, rate.map(|_| t.elapsed()))
+        };
+        let dynamics_branch = || {
+            let mut dynamics = || {
                 let t = Instant::now();
-                let rate = forcer.as_mut().map(|f| {
-                    forcing.for_each_part_mut(|x| x.fill(0.0));
-                    f.add_tendency(old, forcing);
-                    energy_rate(&params, old, old_exner, forcing)
-                });
-                (rate, rate.map(|_| t.elapsed()))
-            },
-            || {
-                let mut dynamics = || {
+                compute_tendency(params, work, now, out);
+                t.elapsed()
+            };
+            match diffuser.as_mut() {
+                None => (dynamics(), (None, None)),
+                Some(d) => rayon::join(dynamics, || {
                     let t = Instant::now();
-                    compute_tendency(params, work, now, out);
-                    t.elapsed()
-                };
-                match diffuser.as_mut() {
-                    None => (dynamics(), (None, None)),
-                    Some(d) => rayon::join(dynamics, || {
-                        let t = Instant::now();
-                        diffusion.for_each_part_mut(|x| x.fill(0.0));
-                        d.add_tendency_with_exner(params.ops, old, old_exner, diffusion);
-                        let rate = energy_rate(&params, old, old_exner, diffusion);
-                        (Some(rate), Some(t.elapsed()))
-                    }),
-                }
-            },
-        );
+                    diffusion.for_each_part_mut(|x| x.fill(0.0));
+                    d.add_tendency_with_exner(params.ops, old, old_exner, diffusion);
+                    let rate = energy_rate(&params, old, old_exner, diffusion);
+                    (Some(rate), Some(t.elapsed()))
+                }),
+            }
+        };
+        let ((forcing_rate, physics), (dynamics, (diffusion_rate, hyperdiffusion))) =
+            rayon::join(physics_branch, dynamics_branch);
         let times = TendencyTimes {
             physics,
             dynamics,
@@ -1243,9 +1228,10 @@ fn compute_tendency(
         rayon::join(
             || {
                 layers.par_iter_mut().enumerate().for_each(|(k, l)| {
-                    for_each_mut(&mut l.dp_edge, |e, d| *d = ds[k] * ps_edge[e]);
-                    let dp_edge = &l.dp_edge;
-                    for_each_mut(&mut l.flux, |e, f| *f = dp_edge[e] * state.u[k][e]);
+                    for_each_mut2(&mut l.dp_edge, &mut l.flux, |e, d, f| {
+                        *d = ds[k] * ps_edge[e];
+                        *f = *d * state.u[k][e];
+                    });
                     ops.divergence(&l.flux, &mut l.divergence);
                     for_each_mut(&mut l.theta, |i, t| {
                         *t = state.theta_ps[k][i] / state.ps[i];
@@ -1348,20 +1334,20 @@ fn compute_tendency(
         .zip(out_q[..n].par_iter_mut())
         .enumerate()
         .for_each(|(k, (((l, out_theta), out_u), out_q))| {
-            for_each_mut2(&mut l.exner, &mut l.geopotential, |i, e, g| {
-                *e = column[2 * n * i + k];
-                *g = column[2 * n * i + n + k];
-            });
+            // Each column's Exner function and geopotential in this layer.
+            let exner = |i: usize| column[2 * n * i + k];
             // Thermodynamics: δσₖ ∂Θₖ/∂t = −∇·(Fₖ θₖ,ₑ) + W_{k−1} θ̂_{k−1} − Wₖ θ̂ₖ.
-            ops.cell_to_edge(&l.theta, &mut l.theta_edge);
             {
-                let (flux, theta_edge) = (&l.flux, &l.theta_edge);
-                for_each_mut(&mut l.edge_scratch, |e, f| *f = flux[e] * theta_edge[e]);
+                let (theta, flux) = (&l.theta, &l.flux);
+                for_each_mut2(&mut l.theta_edge, &mut l.edge_scratch, |e, t, f| {
+                    *t = ops.cell_to_edge_at(e, |c| theta[c]);
+                    *f = flux[e] * *t;
+                });
             }
-            ops.divergence(&l.edge_scratch, &mut l.theta_flux_divergence);
             {
-                let divergence = &l.theta_flux_divergence;
+                let theta_flux = &l.edge_scratch;
                 for_each_mut(out_theta, |i, d| {
+                    let divergence = ops.divergence_at(i, |e| theta_flux[e]);
                     let mut vertical = 0.0;
                     if k > 0 {
                         vertical += w[k - 1][i] * theta_interface[k - 1][i];
@@ -1369,30 +1355,26 @@ fn compute_tendency(
                     if k + 1 < n {
                         vertical -= w[k][i] * theta_interface[k][i];
                     }
-                    *d = (-divergence[i] + vertical) / ds[k];
+                    *d = (-divergence + vertical) / ds[k];
                 });
             }
 
-            // Momentum: PV flux, Bernoulli gradient, Exner-gradient term.
-            ops.kinetic_energy(&state.u[k], &mut l.kinetic);
+            // Momentum: the Bernoulli function, and the potential vorticity at
+            // vertices and edges (the rest at the end).
+            for_each_mut(&mut l.bernoulli, |i, b| {
+                *b = ops.kinetic_energy_at(i, &state.u[k]) + column[2 * n * i + n + k];
+            });
+            for_each_mut(&mut l.q_vertex, |v, q| {
+                let vorticity = ops.curl_at(v, |e| state.u[k][e]);
+                let dp_vertex = ops.cell_to_vertex_at(v, |c| ds[k] * state.ps[c]);
+                *q = (vorticity + coriolis[v]) / dp_vertex;
+            });
             {
-                let (kinetic, geopotential) = (&l.kinetic, &l.geopotential);
-                for_each_mut(&mut l.bernoulli, |i, b| *b = kinetic[i] + geopotential[i]);
-            }
-            ops.gradient(&l.bernoulli, &mut l.gradient);
-            ops.gradient(&l.exner, &mut l.exner_gradient);
-
-            ops.curl(&state.u[k], &mut l.vorticity);
-            for_each_mut(&mut l.cell_scratch, |i, d| *d = ds[k] * state.ps[i]);
-            ops.cell_to_vertex(&l.cell_scratch, &mut l.dp_vertex);
-            {
-                let (vorticity, dp_vertex) = (&l.vorticity, &l.dp_vertex);
-                for_each_mut(&mut l.q_vertex, |v, q| {
-                    *q = (vorticity[v] + coriolis[v]) / dp_vertex[v];
+                let q_vertex = &l.q_vertex;
+                for_each_mut(&mut l.q_edge, |e, q| {
+                    *q = ops.vertex_to_edge_at(e, |v| q_vertex[v])
                 });
             }
-            ops.vertex_to_edge(&l.q_vertex, &mut l.q_edge);
-            ops.pv_flux(&l.q_edge, &l.flux, &mut l.pv_flux);
 
             // Humidity, centred like θ:
             // δσₖ ∂Qₖ/∂t = −∇·(Fₖ qₖ,ₑ) + W_{k−1} q̂_{k−1} − Wₖ q̂ₖ.
@@ -1414,7 +1396,8 @@ fn compute_tendency(
                 });
             }
 
-            // The wind tendency, including vertical advection.
+            // The wind tendency: PV flux, Bernoulli gradient, Exner-gradient
+            // term and vertical advection.
             let l = &*l;
             let u = &state.u;
             for_each_mut(out_u, |e, d| {
@@ -1425,9 +1408,12 @@ fn compute_tendency(
                 if k > 0 {
                     vertical += w_edge[k - 1][e] * (u[k][e] - u[k - 1][e]);
                 }
-                *d = l.pv_flux[e]
-                    - l.gradient[e]
-                    - cp * l.theta_edge[e] * l.exner_gradient[e]
+                let pv_flux = ops.pv_flux_at(e, &l.q_edge, &l.flux);
+                let gradient = ops.gradient_at(e, |c| l.bernoulli[c]);
+                let exner_gradient = ops.gradient_at(e, exner);
+                *d = pv_flux
+                    - gradient
+                    - cp * l.theta_edge[e] * exner_gradient
                     - vertical / (2.0 * l.dp_edge[e]);
             });
         });

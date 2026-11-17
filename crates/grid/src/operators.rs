@@ -188,13 +188,16 @@ impl<'a> Operators<'a> {
     /// `(h[cells[1]] − h[cells[0]]) / dₑ`.
     pub fn gradient(&self, h: &[f64], out: &mut [f64]) {
         self.check(h.len(), self.mesh.n_cells(), out.len(), self.mesh.n_edges());
-        let edges = self.mesh.edges();
-        let d = &self.geometry.dual_edge_lengths;
-        let r = self.radius;
-        for_each_mut(out, |e, out| {
-            let [a, b] = edges[e].cells;
-            *out = (h[b as usize] - h[a as usize]) / (d[e] * r);
-        });
+        for_each_mut(out, |e, out| *out = self.gradient_at(e, |c| h[c]));
+    }
+
+    /// [`gradient`](Self::gradient) at edge `e` of the cell scalar `h(c)`.
+    /// The operators compute each element with these `…_at` functions, so a
+    /// loop that fuses them with other work gets the same values bit for bit.
+    #[inline]
+    pub fn gradient_at(&self, e: usize, h: impl Fn(usize) -> f64) -> f64 {
+        let [a, b] = self.mesh.edges()[e].cells;
+        (h(b as usize) - h(a as usize)) / (self.geometry.dual_edge_lengths[e] * self.radius)
     }
 
     /// Divergence of an edge flux (normal component per edge), per cell:
@@ -206,19 +209,22 @@ impl<'a> Operators<'a> {
             out.len(),
             self.mesh.n_cells(),
         );
+        for_each_mut(out, |c, out| *out = self.divergence_at(c, |e| flux[e]));
+    }
+
+    /// [`divergence`](Self::divergence) at cell `c` of the edge flux `flux(e)`.
+    #[inline]
+    pub fn divergence_at(&self, c: usize, flux: impl Fn(usize) -> f64) -> f64 {
         let g = self.geometry;
-        let r = self.radius;
-        for_each_mut(out, |c, out| {
-            let c = c as CellId;
-            let sum: f64 = self
-                .mesh
-                .cell_edges(c)
-                .iter()
-                .zip(g.cell_edge_signs(c))
-                .map(|(&e, &s)| s * g.edge_lengths[e as usize] * flux[e as usize])
-                .sum();
-            *out = sum / (g.cell_areas[c as usize] * r);
-        });
+        let id = c as CellId;
+        let sum: f64 = self
+            .mesh
+            .cell_edges(id)
+            .iter()
+            .zip(g.cell_edge_signs(id))
+            .map(|(&e, &s)| s * g.edge_lengths[e as usize] * flux(e as usize))
+            .sum();
+        sum / (g.cell_areas[c] * self.radius)
     }
 
     /// Relative vorticity of an edge velocity, per vertex:
@@ -231,19 +237,22 @@ impl<'a> Operators<'a> {
             out.len(),
             self.mesh.n_vertices(),
         );
+        for_each_mut(out, |v, out| *out = self.curl_at(v, |e| u[e]));
+    }
+
+    /// [`curl`](Self::curl) at vertex `v` of the edge velocity `u(e)`.
+    #[inline]
+    pub fn curl_at(&self, v: usize, u: impl Fn(usize) -> f64) -> f64 {
         let g = self.geometry;
-        let r = self.radius;
-        for_each_mut(out, |v, out| {
-            let v = v as VertexId;
-            let sum: f64 = self
-                .mesh
-                .vertex_edges(v)
-                .iter()
-                .zip(g.vertex_edge_signs(v))
-                .map(|(&e, s)| s * g.dual_edge_lengths[e as usize] * u[e as usize])
-                .sum();
-            *out = sum / (g.vertex_areas[v as usize] * r);
-        });
+        let id = v as VertexId;
+        let sum: f64 = self
+            .mesh
+            .vertex_edges(id)
+            .iter()
+            .zip(g.vertex_edge_signs(id))
+            .map(|(&e, s)| s * g.dual_edge_lengths[e as usize] * u(e as usize))
+            .sum();
+        sum / (g.vertex_areas[v] * self.radius)
     }
 
     /// Derivative of a vertex scalar along each edge tangent `tₑ`:
@@ -261,13 +270,17 @@ impl<'a> Operators<'a> {
             out.len(),
             self.mesh.n_edges(),
         );
-        let edges = self.mesh.edges();
-        let l = &self.geometry.edge_lengths;
-        let r = self.radius;
         for_each_mut(out, |e, out| {
-            let [a, b] = edges[e].vertices;
-            *out = (psi[b as usize] - psi[a as usize]) / (l[e] * r);
+            *out = self.tangential_gradient_at(e, |v| psi[v])
         });
+    }
+
+    /// [`tangential_gradient`](Self::tangential_gradient) at edge `e` of the
+    /// vertex scalar `psi(v)`.
+    #[inline]
+    pub fn tangential_gradient_at(&self, e: usize, psi: impl Fn(usize) -> f64) -> f64 {
+        let [a, b] = self.mesh.edges()[e].vertices;
+        (psi(b as usize) - psi(a as usize)) / (self.geometry.edge_lengths[e] * self.radius)
     }
 
     /// Tangential component (along `tₑ`) of the velocity at each edge, from
@@ -301,49 +314,59 @@ impl<'a> Operators<'a> {
         let n = self.mesh.n_edges();
         self.check(flux.len(), n, out.len(), n);
         assert_eq!(q.len(), n, "q has the wrong length");
+        for_each_mut(out, |e, out| *out = self.pv_flux_at(e, q, flux));
+    }
+
+    /// [`pv_flux`](Self::pv_flux) at edge `e`.
+    #[inline]
+    pub fn pv_flux_at(&self, e: usize, q: &[f64], flux: &[f64]) -> f64 {
         let g = self.geometry;
-        for_each_mut(out, |e, out| {
-            let (stencil, weights) = g.trisk_stencil(e as u32);
-            let sum: f64 = stencil
-                .iter()
-                .zip(weights)
-                .map(|(&f, &w)| {
-                    let f = f as usize;
-                    w * g.edge_lengths[f] * flux[f] * 0.5 * (q[e] + q[f])
-                })
-                .sum();
-            *out = sum / g.dual_edge_lengths[e];
-        });
+        let (stencil, weights) = g.trisk_stencil(e as u32);
+        let sum: f64 = stencil
+            .iter()
+            .zip(weights)
+            .map(|(&f, &w)| {
+                let f = f as usize;
+                w * g.edge_lengths[f] * flux[f] * 0.5 * (q[e] + q[f])
+            })
+            .sum();
+        sum / g.dual_edge_lengths[e]
     }
 
     /// Kinetic energy per unit mass at each cell (Ringler et al. 2010):
     /// `Kᵢ = (1/Aᵢ) Σₑ (Aₑ/2) uₑ²`, with `Aₑ = lₑdₑ/2`.
     pub fn kinetic_energy(&self, u: &[f64], out: &mut [f64]) {
         self.check(u.len(), self.mesh.n_edges(), out.len(), self.mesh.n_cells());
+        for_each_mut(out, |c, out| *out = self.kinetic_energy_at(c, u));
+    }
+
+    /// [`kinetic_energy`](Self::kinetic_energy) at cell `c`.
+    #[inline]
+    pub fn kinetic_energy_at(&self, c: usize, u: &[f64]) -> f64 {
         let g = self.geometry;
-        for_each_mut(out, |c, out| {
-            let c = c as CellId;
-            let sum: f64 = self
-                .mesh
-                .cell_edges(c)
-                .iter()
-                .map(|&e| {
-                    let e = e as usize;
-                    0.25 * g.edge_lengths[e] * g.dual_edge_lengths[e] * u[e] * u[e]
-                })
-                .sum();
-            *out = sum / g.cell_areas[c as usize];
-        });
+        let sum: f64 = self
+            .mesh
+            .cell_edges(c as CellId)
+            .iter()
+            .map(|&e| {
+                let e = e as usize;
+                0.25 * g.edge_lengths[e] * g.dual_edge_lengths[e] * u[e] * u[e]
+            })
+            .sum();
+        sum / g.cell_areas[c]
     }
 
     /// Cell scalar at edges: the mean of the two cells either side.
     pub fn cell_to_edge(&self, h: &[f64], out: &mut [f64]) {
         self.check(h.len(), self.mesh.n_cells(), out.len(), self.mesh.n_edges());
-        let edges = self.mesh.edges();
-        for_each_mut(out, |e, out| {
-            let [a, b] = edges[e].cells;
-            *out = 0.5 * (h[a as usize] + h[b as usize]);
-        });
+        for_each_mut(out, |e, out| *out = self.cell_to_edge_at(e, |c| h[c]));
+    }
+
+    /// [`cell_to_edge`](Self::cell_to_edge) at edge `e` of the cell scalar `h(c)`.
+    #[inline]
+    pub fn cell_to_edge_at(&self, e: usize, h: impl Fn(usize) -> f64) -> f64 {
+        let [a, b] = self.mesh.edges()[e].cells;
+        0.5 * (h(a as usize) + h(b as usize))
     }
 
     /// Cell scalar at vertices: the mean of the three cells around each,
@@ -355,17 +378,21 @@ impl<'a> Operators<'a> {
             out.len(),
             self.mesh.n_vertices(),
         );
+        for_each_mut(out, |v, out| *out = self.cell_to_vertex_at(v, |c| h[c]));
+    }
+
+    /// [`cell_to_vertex`](Self::cell_to_vertex) at vertex `v` of the cell
+    /// scalar `h(c)`.
+    #[inline]
+    pub fn cell_to_vertex_at(&self, v: usize, h: impl Fn(usize) -> f64) -> f64 {
         let g = self.geometry;
-        let triangles = self.mesh.triangles();
-        for_each_mut(out, |v, out| {
-            let kites = g.vertex_kites(v as VertexId);
-            let sum: f64 = triangles[v]
-                .iter()
-                .zip(kites)
-                .map(|(&c, k)| k * h[c as usize])
-                .sum();
-            *out = sum / g.vertex_areas[v];
-        });
+        let kites = g.vertex_kites(v as VertexId);
+        let sum: f64 = self.mesh.triangles()[v]
+            .iter()
+            .zip(kites)
+            .map(|(&c, k)| k * h(c as usize))
+            .sum();
+        sum / g.vertex_areas[v]
     }
 
     /// Vertex scalar at edges: the mean of the edge's two end vertices.
@@ -376,11 +403,15 @@ impl<'a> Operators<'a> {
             out.len(),
             self.mesh.n_edges(),
         );
-        let edges = self.mesh.edges();
-        for_each_mut(out, |e, out| {
-            let [a, b] = edges[e].vertices;
-            *out = 0.5 * (q[a as usize] + q[b as usize]);
-        });
+        for_each_mut(out, |e, out| *out = self.vertex_to_edge_at(e, |v| q[v]));
+    }
+
+    /// [`vertex_to_edge`](Self::vertex_to_edge) at edge `e` of the vertex
+    /// scalar `q(v)`.
+    #[inline]
+    pub fn vertex_to_edge_at(&self, e: usize, q: impl Fn(usize) -> f64) -> f64 {
+        let [a, b] = self.mesh.edges()[e].vertices;
+        0.5 * (q(a as usize) + q(b as usize))
     }
 
     fn check(&self, input: usize, expected_in: usize, output: usize, expected_out: usize) {

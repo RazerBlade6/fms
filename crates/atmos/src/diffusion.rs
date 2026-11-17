@@ -45,7 +45,7 @@
 //! [`crate::LayeredModel::energy_tendency`] for the budget.
 
 use fms_grid::Operators;
-use fms_grid::operators::for_each_mut;
+use fms_grid::operators::{for_each_mut, for_each_mut2};
 use rayon::prelude::*;
 
 use crate::dissipation::KineticHeating;
@@ -251,24 +251,23 @@ impl Hyperdiffusion {
                     edges2,
                     ..
                 } = work;
-                // Wind: divergent part into `edges`, rotational part into `edges2`.
+                // Wind: the divergent and rotational parts, then their difference.
                 ops.divergence(&state.u[k], cells);
                 for _ in 1..n {
                     cell_laplacian(ops, cells, edges);
                 }
-                ops.gradient(cells, edges);
                 ops.curl(&state.u[k], vertices);
                 for _ in 1..n {
                     vertex_laplacian(ops, vertices, edges2);
                 }
-                ops.tangential_gradient(vertices, edges2);
                 {
-                    let edges2 = &*edges2;
-                    for_each_mut(edges, |e, d| *d = sign * nu * (*d - edges2[e]));
-                }
-                {
-                    let edges = &*edges;
-                    for_each_mut(out_u, |e, o| *o += edges[e]);
+                    let (cells, vertices) = (&*cells, &*vertices);
+                    for_each_mut2(edges, out_u, |e, d, o| {
+                        let divergent = ops.gradient_at(e, |c| cells[c]);
+                        let rotational = ops.tangential_gradient_at(e, |v| vertices[v]);
+                        *d = sign * nu * (divergent - rotational);
+                        *o += *d;
+                    });
                 }
                 if let Some(h) = heating {
                     match exner {
@@ -291,12 +290,17 @@ impl Hyperdiffusion {
                 for _ in 1..n {
                     cell_laplacian(ops, cells, edges);
                 }
-                ops.gradient(cells, edges);
-                for_each_mut(edges, |e, f| *f *= ps_edge[e]);
-                ops.divergence(edges, cells);
                 {
                     let cells = &*cells;
-                    for_each_mut(out_theta, |i, o| *o += sign * nu * cells[i]);
+                    for_each_mut(edges, |e, f| {
+                        *f = ops.gradient_at(e, |c| cells[c]) * ps_edge[e]
+                    });
+                }
+                {
+                    let edges = &*edges;
+                    for_each_mut(out_theta, |i, o| {
+                        *o += sign * nu * ops.divergence_at(i, |e| edges[e]);
+                    });
                 }
             });
     }
@@ -317,8 +321,8 @@ fn cell_laplacian(ops: &Operators, x: &mut [f64], edges: &mut [f64]) {
 /// `x ← L_v x = −curl(tangential_gradient(x))`, using `edges` as scratch.
 fn vertex_laplacian(ops: &Operators, x: &mut [f64], edges: &mut [f64]) {
     ops.tangential_gradient(x, edges);
-    ops.curl(edges, x);
-    for_each_mut(x, |_, v| *v = -*v);
+    let edges = &*edges;
+    for_each_mut(x, |v, x| *x = -ops.curl_at(v, |e| edges[e]));
 }
 
 /// Largest eigenvalue of `−L` on cells or vertices, by power iteration with

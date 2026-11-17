@@ -219,6 +219,8 @@ pub struct LayeredSemiImplicit<'a> {
     grad: Vec<Vec<f64>>,
     cells: Vec<Vec<f64>>,
     mass_flux: Vec<Vec<f64>>,
+    /// Surface pressure at edges.
+    ps_edge: Vec<f64>,
     /// The θᴸ rows of `y` at the old and middle levels (their first row is
     /// `p_s` itself).
     y_prev: Vec<Vec<f64>>,
@@ -353,6 +355,7 @@ impl<'a> LayeredSemiImplicit<'a> {
             grad: edges(),
             cells: cells(),
             mass_flux: edges(),
+            ps_edge: vec![0.0; ne],
             y_prev: cells(),
             y_now: cells(),
             big_y: vec![vec![0.0; nc]; n + 1],
@@ -924,22 +927,43 @@ impl<'a> LayeredSemiImplicit<'a> {
         }
 
         // Per layer: Mₖⁿ⁺¹ from the modes, uₖⁿ⁺¹ = Uₖ − Δt ∇Mₖⁿ⁺¹ and its
-        // divergence.
+        // divergence; and (moist) the humidity transport's mass fluxes,
+        // F̄ₖ = Fₖⁿ + p̄ δσₖ (uₖⁿ⁻¹ + uₖⁿ⁺¹ − 2uₖⁿ)/2, their divergence and q
+        // at n, which need only this layer's new winds (timed here, not
+        // under "mass fluxes": one region instead of two).
         let next = &mut self.next;
+        let moist = self.transport.is_some();
+        let ds = self.model.dsigma();
+        if moist {
+            ops.cell_to_edge(&current.ps, &mut self.ps_edge);
+        }
         {
             let (v, modal, big_u) = (&self.modes.v, &self.modal, &self.big_u);
+            let (ps_e, previous, current) = (&self.ps_edge, &self.previous, &current);
             next.u
                 .par_iter_mut()
                 .zip(self.m.par_iter_mut())
-                .zip(self.grad.par_iter_mut())
                 .zip(self.div.par_iter_mut())
+                .zip(self.mass_flux.par_iter_mut())
+                .zip(self.flux_div.par_iter_mut())
+                .zip(self.q_mid.par_iter_mut())
                 .enumerate()
-                .for_each(|(k, (((u, m), grad), div))| {
+                .for_each(|(k, (((((u, m), div), flux), flux_div), q_mid))| {
                     combine_into(&v[k], modal, m);
-                    ops.gradient(m, grad);
-                    let (big_u, grad) = (&big_u[k], &*grad);
-                    for_each_mut(u, |e, u| *u = big_u[e] - dt * grad[e]);
+                    let (big_u, m) = (&big_u[k], &*m);
+                    for_each_mut(u, |e, u| *u = big_u[e] - dt * ops.gradient_at(e, |c| m[c]));
                     ops.divergence(u, div);
+                    if moist {
+                        let (now, old, new) = (&current.u[k], &previous.u[k], &*u);
+                        for_each_mut(flux, |e, f| {
+                            *f = ds[k]
+                                * (ps_e[e] * now[e]
+                                    + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
+                        });
+                        ops.divergence(flux, flux_div);
+                        let (q, ps) = (&current.q_ps[k], &current.ps);
+                        for_each_mut(q_mid, |i, x| *x = q[i] / ps[i]);
+                    }
                 });
         }
         // yⁿ⁺¹ = Y + Δt B ∇·uⁿ⁺¹: cheap, and across the layers, so on this
@@ -962,33 +986,12 @@ impl<'a> LayeredSemiImplicit<'a> {
         }
         self.timings.add(Phase::BackSubstitution, clock.lap());
 
-        // Humidity: flux-corrected transport with the step's mass fluxes,
-        // F̄ₖ = Fₖⁿ + p̄ δσₖ (uₖⁿ⁻¹ + uₖⁿ⁺¹ − 2uₖⁿ)/2.
+        // Humidity: flux-corrected transport with the step's mass fluxes.
+        let (nu, alpha) = (self.options.filter_strength, self.options.filter_alpha);
+        let mut water = [[0.0; 4]; MAX_LAYERS];
         if let Some(transport) = &mut self.transport {
-            let ds = self.model.dsigma();
-            ops.cell_to_edge(&current.ps, &mut self.grad[0]);
-            let (flux_div, q_mid) = (&mut self.flux_div, &mut self.q_mid);
-            {
-                let (ps_e, previous, next, current) =
-                    (&self.grad[0], &self.previous, &*next, &current);
-                self.mass_flux
-                    .par_iter_mut()
-                    .zip(flux_div.par_iter_mut())
-                    .zip(q_mid.par_iter_mut())
-                    .enumerate()
-                    .for_each(|(k, ((flux, div), q_mid))| {
-                        let (now, old, new) = (&current.u[k], &previous.u[k], &next.u[k]);
-                        for_each_mut(flux, |e, f| {
-                            *f = ds[k]
-                                * (ps_e[e] * now[e]
-                                    + 0.5 * p_bar * (old[e] + new[e] - 2.0 * now[e]));
-                        });
-                        ops.divergence(flux, div);
-                        let (q, ps) = (&current.q_ps[k], &current.ps);
-                        for_each_mut(q_mid, |i, x| *x = q[i] / ps[i]);
-                    });
-            }
-            // The interface fluxes they imply (as in the dynamics): cheap,
+            let flux_div = &self.flux_div;
+            // The interface fluxes the mass fluxes imply (as in the dynamics): cheap,
             // and across the layers, so on this thread.
             let interface = &mut self.interface;
             for (j, (&s, out)) in self
@@ -999,7 +1002,6 @@ impl<'a> LayeredSemiImplicit<'a> {
                 .zip(interface.iter_mut())
                 .enumerate()
             {
-                let flux_div = &*flux_div;
                 for_each_mut(out, |i, x| {
                     let mut above = flux_div[0][i];
                     for d in &flux_div[1..=j] {
@@ -1012,33 +1014,61 @@ impl<'a> LayeredSemiImplicit<'a> {
                     *x = s * below - (1.0 - s) * above;
                 });
             }
+            // The RAW filter's work per layer (see below) is done in the
+            // transport's last region, as each layer's humidity at n+1 is
+            // ready: one region instead of two (timed under
+            // "flux-corrected transport").
+            let previous = &self.previous;
+            let model = &self.model;
+            let LayeredState {
+                ps: now_ps,
+                u: now_u,
+                theta_ps: now_theta,
+                q_ps: now_q,
+            } = &mut current;
+            let LayeredState {
+                ps: next_ps,
+                u: next_u,
+                theta_ps: next_theta,
+                q_ps: next_q,
+            } = &mut *next;
+            let (now_ps, next_ps) = (&*now_ps, &*next_ps);
             let input = TransportStep {
                 dsigma: ds,
                 interval: 2.0 * dt,
-                ps_old: &self.previous.ps,
-                ps_new: &next.ps,
+                ps_old: &previous.ps,
+                ps_new: next_ps,
                 flux: &self.mass_flux,
                 interface: &self.interface,
-                q_old: &self.previous.q_ps,
+                q_old: &previous.q_ps,
                 q_mid: &self.q_mid,
                 source: diffuse.then_some(&d.q_ps[..]),
                 interface_ratio: &self.ratio,
             };
-            let fluxes = clock.lap();
-            let report = transport.step(&ops, &input, &mut next.q_ps);
-            self.water.max_substeps = self.water.max_substeps.max(report.substeps);
-            let fct = clock.lap();
-            self.timings.add(Phase::MassFluxes, fluxes);
-            self.timings.add(Phase::FluxCorrectedTransport, fct);
-            self.timings.add(Phase::HumidityTransport, fluxes + fct);
-        }
-
-        // RAW filter on xⁿ and xⁿ⁺¹, then rotate the three levels (the old
-        // xⁿ⁻¹ buffer becomes scratch for the next step).
-        let (nu, alpha) = (self.options.filter_strength, self.options.filter_alpha);
-        let moist = self.transport.is_some();
-        let mut filtered = None;
-        if moist {
+            let mut layers: [Option<FilterLayer>; MAX_LAYERS] = {
+                let mut layers = now_u
+                    .iter_mut()
+                    .zip(now_theta.iter_mut())
+                    .zip(now_q.iter_mut())
+                    .zip(next_u.iter_mut())
+                    .zip(next_theta.iter_mut())
+                    .zip(self.bounds.iter_mut())
+                    .zip(water.iter_mut())
+                    .map(
+                        |((((((now_u, now_theta), now_q), next_u), next_theta), bounds), water)| {
+                            FilterLayer {
+                                now_u,
+                                now_theta,
+                                now_q,
+                                next_u,
+                                next_theta,
+                                bounds,
+                                water,
+                            }
+                        },
+                    );
+                std::array::from_fn(|_| layers.next())
+            };
             // Per layer: humidity's range over the three levels, the water of
             // the two levels the filter changes, the filter, and the filtered
             // humidity kept within that range (the filter is linear, so this
@@ -1050,76 +1080,57 @@ impl<'a> LayeredSemiImplicit<'a> {
                 let d = 0.5 * nu * (old - 2.0 * now + next);
                 (now + alpha * d, next - (1.0 - alpha) * d)
             };
-            let bounds = &mut self.bounds;
-            let mut water = [[0.0; 4]; MAX_LAYERS];
-            {
-                let previous = &self.previous;
-                let model = &self.model;
-                let LayeredState {
-                    ps: now_ps,
-                    u: now_u,
-                    theta_ps: now_theta,
-                    q_ps: now_q,
-                } = &mut current;
-                let LayeredState {
-                    ps: next_ps,
-                    u: next_u,
-                    theta_ps: next_theta,
-                    q_ps: next_q,
-                } = &mut *next;
-                let (now_ps, next_ps) = (&*now_ps, &*next_ps);
-                now_u
-                    .par_iter_mut()
-                    .zip(now_theta.par_iter_mut())
-                    .zip(now_q.par_iter_mut())
-                    .zip(next_u.par_iter_mut())
-                    .zip(next_theta.par_iter_mut())
-                    .zip(next_q.par_iter_mut())
-                    .zip(bounds.par_iter_mut())
-                    .zip(water[..n].par_iter_mut())
-                    .enumerate()
-                    .for_each(
-                        |(
-                            k,
-                            (
-                                ((((((now_u, now_theta), now_q), next_u), next_theta), next_q), b),
-                                water,
-                            ),
-                        )| {
-                            let old_q = &previous.q_ps[k];
-                            {
-                                let (now_q, next_q) = (&*now_q, &*next_q);
-                                for_each_mut(b, |i, b| {
-                                    let q = [
-                                        old_q[i] / previous.ps[i],
-                                        now_q[i] / now_ps[i],
-                                        next_q[i] / next_ps[i],
-                                    ];
-                                    *b = (q[0].min(q[1]).min(q[2]), q[0].max(q[1]).max(q[2]));
-                                });
-                            }
-                            water[0] = model.layer_water(k, now_q);
-                            water[1] = model.layer_water(k, next_q);
-                            raw_filter_part(&previous.u[k], now_u, next_u, nu, alpha);
-                            raw_filter_part(
-                                &previous.theta_ps[k],
-                                now_theta,
-                                next_theta,
-                                nu,
-                                alpha,
-                            );
-                            raw_filter_part(old_q, now_q, next_q, nu, alpha);
-                            let (b, old_ps) = (&*b, &previous.ps);
-                            for_each_mut2(now_q, next_q, |i, now, next| {
-                                let (p_now, p_next) = raw(old_ps[i], now_ps[i], next_ps[i]);
-                                *now = now.clamp(p_now * b[i].0, p_now * b[i].1);
-                                *next = next.clamp(p_next * b[i].0, p_next * b[i].1);
-                            });
-                            water[2] = model.layer_water(k, now_q);
-                            water[3] = model.layer_water(k, next_q);
-                        },
-                    );
-            }
+            let filter_layer = |k: usize, next_q: &mut [f64], layer: &mut Option<FilterLayer>| {
+                let FilterLayer {
+                    now_u,
+                    now_theta,
+                    now_q,
+                    next_u,
+                    next_theta,
+                    bounds,
+                    water,
+                } = layer.as_mut().expect("one filter share per layer");
+                let old_q = &previous.q_ps[k];
+                {
+                    let (now_q, next_q) = (&**now_q, &*next_q);
+                    for_each_mut(bounds, |i, b| {
+                        let q = [
+                            old_q[i] / previous.ps[i],
+                            now_q[i] / now_ps[i],
+                            next_q[i] / next_ps[i],
+                        ];
+                        *b = (q[0].min(q[1]).min(q[2]), q[0].max(q[1]).max(q[2]));
+                    });
+                }
+                water[0] = model.layer_water(k, now_q);
+                water[1] = model.layer_water(k, next_q);
+                raw_filter_part(&previous.u[k], now_u, next_u, nu, alpha);
+                raw_filter_part(&previous.theta_ps[k], now_theta, next_theta, nu, alpha);
+                raw_filter_part(old_q, now_q, next_q, nu, alpha);
+                let (b, old_ps) = (&**bounds, &previous.ps);
+                for_each_mut2(now_q, next_q, |i, now, next| {
+                    let (p_now, p_next) = raw(old_ps[i], now_ps[i], next_ps[i]);
+                    *now = now.clamp(p_now * b[i].0, p_now * b[i].1);
+                    *next = next.clamp(p_next * b[i].0, p_next * b[i].1);
+                });
+                water[2] = model.layer_water(k, now_q);
+                water[3] = model.layer_water(k, next_q);
+            };
+            let fluxes = clock.lap();
+            let report = transport.step_then(&ops, &input, next_q, &mut layers[..n], filter_layer);
+            self.water.max_substeps = self.water.max_substeps.max(report.substeps);
+            let fct = clock.lap();
+            self.timings.add(Phase::MassFluxes, fluxes);
+            self.timings.add(Phase::FluxCorrectedTransport, fct);
+            self.timings.add(Phase::HumidityTransport, fluxes + fct);
+        }
+
+        // RAW filter on xⁿ and xⁿ⁺¹, then rotate the three levels (the old
+        // xⁿ⁻¹ buffer becomes scratch for the next step).
+        let mut filtered = None;
+        if moist {
+            // The layers were filtered beside the transport: surface
+            // pressure, and the water the filter changed.
             raw_filter_part(&self.previous.ps, &mut current.ps, &mut next.ps, nu, alpha);
             let total = |level: usize| water[..n].iter().map(|w| w[level]).sum::<f64>();
             let before = total(0) + total(1);
@@ -1228,6 +1239,20 @@ fn rows<'r>(ps: &'r [f64], theta_l: &'r [Vec<f64>]) -> [&'r [f64]; MAX_LAYERS + 
         *row = t;
     }
     rows
+}
+
+/// One layer's share of the RAW filter on a moist state: its fields at n
+/// and n+1 (but humidity at n+1, which the transport writes), humidity's
+/// range over the three levels, and the layer's water at n and n+1 before
+/// and after.
+struct FilterLayer<'s> {
+    now_u: &'s mut Vec<f64>,
+    now_theta: &'s mut Vec<f64>,
+    now_q: &'s mut Vec<f64>,
+    next_u: &'s mut Vec<f64>,
+    next_theta: &'s mut Vec<f64>,
+    bounds: &'s mut Vec<(f64, f64)>,
+    water: &'s mut [f64; 4],
 }
 
 /// The layers next to `k` of `n`.

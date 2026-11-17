@@ -10,7 +10,7 @@
 //! and the iteration count are identical on any thread count.
 
 use fms_grid::Operators;
-use fms_grid::operators::{for_each_mut, for_each_mut2, splits};
+use fms_grid::operators::{for_each_mut, splits};
 use rayon::prelude::*;
 
 /// Convergence report of one solve.
@@ -81,14 +81,13 @@ impl<'a> Helmholtz<'a> {
         self.c
     }
 
-    /// `out = A (I − c∇²) x`, the symmetric form of the operator.
-    fn apply(ops: &Operators, c: f64, areas: &[f64], edge: &mut [f64], x: &[f64], out: &mut [f64]) {
-        ops.gradient(x, edge);
-        ops.divergence(edge, out);
-        for_each_mut(out, |i, o| *o = areas[i] * (x[i] - c * *o));
-    }
-
     /// Solve `(I − c∇²) x = b`, starting from the guess already in `x`.
+    ///
+    /// Each pass over the cells does all of an iteration's work that needs
+    /// no global sum first, and accumulates the sums it feeds, each in
+    /// [`dot`]'s order: so it gives what separate passes and dots give.
+    // The fused loops index several arrays by one cell index.
+    #[allow(clippy::needless_range_loop)]
     pub fn solve(&mut self, b: &[f64], x: &mut [f64]) -> SolveReport {
         let Self {
             ops,
@@ -103,15 +102,29 @@ impl<'a> Helmholtz<'a> {
             ap,
             edge,
         } = self;
-        // Residual of the symmetric system A(I − c∇²)x = A b.
-        Self::apply(ops, *c, areas, edge, x, ap);
-        for_each_mut(r, |i, r| *r = areas[i] * b[i] - ap[i]);
-        // |A b|, as dot(A b, A b) without storing A b.
-        let b_norm = sum_of(b.len(), |i| {
-            let ab = areas[i] * b[i];
-            ab * ab
-        })
-        .sqrt();
+        let (ops, c, areas, inverse_diagonal) = (*ops, *c, &*areas, &*inverse_diagonal);
+        // Residual of the symmetric system A(I − c∇²)x = A b, preconditioned,
+        // the first search direction, and |A b|², r·z and r·r.
+        ops.gradient(x, edge);
+        let [bb, mut rz, rr] = {
+            let (x, edge) = (&*x, &*edge);
+            fused3(r, z, p, |o, r, z, p| {
+                let mut s = [neutral(); 3];
+                for j in 0..r.len() {
+                    let i = o + j;
+                    let ax = areas[i] * (x[i] - c * ops.divergence_at(i, |e| edge[e]));
+                    let ab = areas[i] * b[i];
+                    r[j] = ab - ax;
+                    z[j] = inverse_diagonal[i] * r[j];
+                    p[j] = z[j];
+                    s[0] += ab * ab;
+                    s[1] += r[j] * z[j];
+                    s[2] += r[j] * r[j];
+                }
+                s
+            })
+        };
+        let b_norm = bb.sqrt();
         if b_norm == 0.0 {
             x.fill(0.0);
             return SolveReport {
@@ -119,24 +132,45 @@ impl<'a> Helmholtz<'a> {
                 relative_residual: 0.0,
             };
         }
-        precondition(inverse_diagonal, r, z);
-        p.copy_from_slice(z);
-        let mut rz = dot(r, z);
-        let mut residual = dot(r, r).sqrt() / b_norm;
+        let mut residual = rr.sqrt() / b_norm;
         let mut iterations = 0;
         while residual > *tolerance && iterations < *max_iterations {
-            Self::apply(ops, *c, areas, edge, p, ap);
-            let alpha = rz / dot(p, ap);
-            for_each_mut2(x, r, |i, x, r| {
-                *x += alpha * p[i];
-                *r -= alpha * ap[i];
-            });
-            precondition(inverse_diagonal, r, z);
-            let rz_next = dot(r, z);
+            // ap = A(I − c∇²) p, and p·ap.
+            ops.gradient(p, edge);
+            let [pap] = {
+                let (p, edge) = (&*p, &*edge);
+                fused1(ap, |o, ap| {
+                    let mut s = [neutral()];
+                    for j in 0..ap.len() {
+                        let i = o + j;
+                        ap[j] = areas[i] * (p[i] - c * ops.divergence_at(i, |e| edge[e]));
+                        s[0] += p[i] * ap[j];
+                    }
+                    s
+                })
+            };
+            let alpha = rz / pap;
+            // The step, the new residual preconditioned, r·z and r·r.
+            let [rz_next, rr] = {
+                let (p, ap) = (&*p, &*ap);
+                fused3(x, r, z, |o, x, r, z| {
+                    let mut s = [neutral(); 2];
+                    for j in 0..x.len() {
+                        let i = o + j;
+                        x[j] += alpha * p[i];
+                        r[j] -= alpha * ap[i];
+                        z[j] = inverse_diagonal[i] * r[j];
+                        s[0] += r[j] * z[j];
+                        s[1] += r[j] * r[j];
+                    }
+                    s
+                })
+            };
             let beta = rz_next / rz;
             rz = rz_next;
+            let z = &*z;
             for_each_mut(p, |i, p| *p = z[i] + beta * *p);
-            residual = dot(r, r).sqrt() / b_norm;
+            residual = rr.sqrt() / b_norm;
             iterations += 1;
         }
         SolveReport {
@@ -146,8 +180,98 @@ impl<'a> Helmholtz<'a> {
     }
 }
 
-fn precondition(inverse_diagonal: &[f64], r: &[f64], z: &mut [f64]) {
-    for_each_mut(z, |i, z| *z = inverse_diagonal[i] * r[i]);
+/// What a sum of no terms is: where [`dot`]'s sums (`Iterator::sum`) start.
+#[inline]
+fn neutral() -> f64 {
+    std::iter::empty::<f64>().sum()
+}
+
+/// Over `a`'s consecutive [`DOT_CHUNK`]-element chunks (side by side when
+/// its length [`splits`]), `body(offset, chunk)`, which returns the chunk's
+/// `K` partial sums; returns each summed over the chunks in order. With
+/// partial sums taken left to right from [`neutral`], each total is summed
+/// exactly as [`dot`] sums.
+fn fused1<const K: usize>(
+    a: &mut [f64],
+    body: impl Fn(usize, &mut [f64]) -> [f64; K] + Sync + Send,
+) -> [f64; K] {
+    let chunks = a.len().div_ceil(DOT_CHUNK);
+    let mut totals = [neutral(); K];
+    let mut add = |s: [f64; K]| {
+        for (t, s) in totals.iter_mut().zip(s) {
+            *t += s;
+        }
+    };
+    if !splits(a.len()) {
+        for (c, a) in a.chunks_mut(DOT_CHUNK).enumerate() {
+            add(body(c * DOT_CHUNK, a));
+        }
+    } else if chunks <= STACK_CHUNKS {
+        let mut sums = [[0.0; K]; STACK_CHUNKS];
+        sums[..chunks]
+            .par_iter_mut()
+            .zip(a.par_chunks_mut(DOT_CHUNK))
+            .enumerate()
+            .for_each(|(c, (s, a))| *s = body(c * DOT_CHUNK, a));
+        sums[..chunks].iter().for_each(|&s| add(s));
+    } else {
+        let sums: Vec<[f64; K]> = a
+            .par_chunks_mut(DOT_CHUNK)
+            .enumerate()
+            .map(|(c, a)| body(c * DOT_CHUNK, a))
+            .collect();
+        sums.into_iter().for_each(add);
+    }
+    totals
+}
+
+/// [`fused1`] over three slices of the same length at once.
+fn fused3<const K: usize>(
+    a: &mut [f64],
+    b: &mut [f64],
+    c: &mut [f64],
+    body: impl Fn(usize, &mut [f64], &mut [f64], &mut [f64]) -> [f64; K] + Sync + Send,
+) -> [f64; K] {
+    assert!(a.len() == b.len() && a.len() == c.len());
+    let chunks = a.len().div_ceil(DOT_CHUNK);
+    let mut totals = [neutral(); K];
+    let mut add = |s: [f64; K]| {
+        for (t, s) in totals.iter_mut().zip(s) {
+            *t += s;
+        }
+    };
+    if !splits(a.len()) {
+        for (i, ((a, b), c)) in a
+            .chunks_mut(DOT_CHUNK)
+            .zip(b.chunks_mut(DOT_CHUNK))
+            .zip(c.chunks_mut(DOT_CHUNK))
+            .enumerate()
+        {
+            add(body(i * DOT_CHUNK, a, b, c));
+        }
+    } else if chunks <= STACK_CHUNKS {
+        let mut sums = [[0.0; K]; STACK_CHUNKS];
+        sums[..chunks]
+            .par_iter_mut()
+            .zip(
+                a.par_chunks_mut(DOT_CHUNK)
+                    .zip(b.par_chunks_mut(DOT_CHUNK))
+                    .zip(c.par_chunks_mut(DOT_CHUNK)),
+            )
+            .enumerate()
+            .for_each(|(i, (s, ((a, b), c)))| *s = body(i * DOT_CHUNK, a, b, c));
+        sums[..chunks].iter().for_each(|&s| add(s));
+    } else {
+        let sums: Vec<[f64; K]> = a
+            .par_chunks_mut(DOT_CHUNK)
+            .zip(b.par_chunks_mut(DOT_CHUNK))
+            .zip(c.par_chunks_mut(DOT_CHUNK))
+            .enumerate()
+            .map(|(i, ((a, b), c))| body(i * DOT_CHUNK, a, b, c))
+            .collect();
+        sums.into_iter().for_each(add);
+    }
+    totals
 }
 
 /// Elements per partial sum of [`dot`]. Results depend on it: changing it
