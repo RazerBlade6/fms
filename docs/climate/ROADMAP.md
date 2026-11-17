@@ -107,10 +107,24 @@ a visual check.
   - [x] 14.7. Fast rotation: narrower Hadley cell, a second belt of westerlies,
     larger contrast (O-53)
   - [x] 14.8. Close-out
-- [ ] 15. **Performance pass**: speed 2 (one model week a second) for the full
-  `climate` run at the default resolution (20,252 cells), from a fresh
-  baseline there. Kernel time, scheduler overhead, solver, operator fusion,
-  physics and ocean (O-8, O-12, O-13, O-29, O-54).
+- [ ] 15. **Performance pass**: speed 2 (one model week a second, 294 steps/s)
+  for the full `climate` run at 2,562 cells. The default 20,252 cells is timed
+  at the start and at the end, and gets a target at the close-out if one is in
+  reach (O-8, O-12, O-13, O-29, O-54).
+  - [ ] 15.1. Timing report in `climate`: time per phase and solver
+    iterations; a fixed benchmark run from a restart file
+  - [ ] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
+    kernel time goes (O-54); first timing at 20,252 cells
+  - [ ] 15.3. Thread scheduling: fewer and larger parallel regions, small ones
+    serial (O-8, O-12)
+  - [ ] 15.4. Allocation: scratch buffers reused, per-cell vectors on the
+    stack, no allocation in a step (O-29)
+  - [ ] 15.5. Operator fusion in the dynamics and transport (O-12)
+  - [ ] 15.6. Helmholtz solver: fewer iterations a step (O-13)
+  - [ ] 15.7. Column physics and radiation
+  - [ ] 15.8. Ocean, sea ice and the run's own sampling
+  - [ ] 15.9. Close-out: final timings at 2,562 and 20,252 cells; the target at
+    20,252 cells decided
 - [ ] 16. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
   winds and temperatures aloft, with a tuning pass: cloud brightness and
   albedo (O-42), trade winds and jets, the tropical rain belt and its

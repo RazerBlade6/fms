@@ -131,8 +131,8 @@ then stack arrays of `MAX_LAYERS` and reuse buffers.
 coupled, a second run alongside: 3,972 s user and 3,201 s system in 1,090 s of wall
 time, about 127 steps/s. 10,242 cells, prescribed sea, six years, alone: 19,641 s and
 13,606 s in 3,027 s, about 63 steps/s. Not profiled; thread scheduling (O-8, O-12) is
-the suspect. Nothing is timed at the default 20,252 cells, where the target is set; the
-timings in BENCHMARKS.md are at 2,562 cells and date from M2.11.
+the suspect. Nothing is timed at the default 20,252 cells; the timings in BENCHMARKS.md are at
+2,562 cells and date from M2.11.
 
 ## Dynamics
 
