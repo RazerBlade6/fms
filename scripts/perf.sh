@@ -12,6 +12,8 @@
 #   scripts/perf.sh results                      # the table of timings so far
 #   scripts/perf.sh phases  <label>              # a run's time loop by phase (its timing.csv)
 #   scripts/perf.sh compare <before> <after>     # two runs' phases side by side, in ms a step
+#   scripts/perf.sh same    <run> <reference>    # whether two runs' results are identical, file by file
+#   scripts/perf.sh top     <label> [rows]       # a saved profile as text: CPU time by function
 #
 # <cells> is 642, 2562, 10242 or 20252. Options to `fms-climate run` follow `--`.
 #
@@ -32,7 +34,7 @@ BIN=target/release/fms-climate
 HEIGHTMAP=data/ETOPO_2022_v1_60s_N90W180_surface.tif
 
 die() { echo "perf.sh: $*" >&2; exit 1; }
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The climate grid frequency for a number of cells (10·f² + 2).
 frequency() {
@@ -227,6 +229,21 @@ compare() {
         }' "$a" "$b"
 }
 
+# Whether two runs gave the same results: their CSVs and summary, byte for
+# byte (the timing report and the images aside).
+same() {
+    local f a b differ=0
+    for f in diagnostics.csv annual_cells.csv monthly_zonal.csv zonal_mean.csv \
+        circulation.csv overturning.csv rain_belt.csv ocean_heat_transport.csv summary.txt; do
+        a=$OUT/$1/climate/$f
+        b=$OUT/$2/climate/$f
+        [ -f "$a" ] && [ -f "$b" ] || { echo "missing: $f"; differ=1; continue; }
+        cmp -s "$a" "$b" || { echo "differs: $f"; differ=1; }
+    done
+    [ "$differ" = 0 ] && echo "$1 and $2: identical results"
+    return "$differ"
+}
+
 [ $# -ge 1 ] || usage 1
 [ "$WORLD" = earth ] || [ "$WORLD" = aqua ] || die "WORLD must be earth or aqua, not '$WORLD'"
 action=$1
@@ -255,6 +272,14 @@ case "$action" in
     compare)
         [ $# -eq 2 ] || usage 1
         compare "$1" "$2"
+        ;;
+    same)
+        [ $# -eq 2 ] || usage 1
+        same "$1" "$2"
+        ;;
+    top)
+        [ $# -ge 1 ] && [ $# -le 2 ] || usage 1
+        python3 scripts/profile_summary.py "$OUT/$1" ${2:+"$2"}
         ;;
     view)
         [ $# -eq 1 ] || usage 1
