@@ -34,6 +34,7 @@ pub mod safety;
 pub mod semi_implicit;
 pub mod shallow_water;
 pub mod surface_layer;
+pub mod timing;
 pub mod transport;
 pub mod williamson;
 
@@ -51,7 +52,9 @@ pub use forcing::{CellField, EnergyTerms, Forcing, ForcingBudget};
 pub use held_suarez::{HeldSuarez, HeldSuarezParams};
 pub use helmholtz::{Helmholtz, SolveReport};
 pub use imprint::{GridImprint, Imprint, ImprintAnalysis};
-pub use layered::{Gas, LayeredDiagnostics, LayeredModel, LayeredState, Linearization};
+pub use layered::{
+    Gas, LayeredDiagnostics, LayeredModel, LayeredState, Linearization, TendencyTimes,
+};
 pub use layered_si::{
     EnergyBudget, LayeredSemiImplicit, LayeredSemiImplicitOptions, REFERENCE_TEMPERATURE,
     WaterBudget,
@@ -62,3 +65,4 @@ pub use radiation::{Cloud, Column, Fluxes, Humidity, RadiationParams};
 pub use safety::{BlowUp, Fault, Health, Limits, Variable};
 pub use semi_implicit::{SemiImplicit, SemiImplicitOptions, SolverStats};
 pub use shallow_water::{Diagnostics, ShallowWater, State};
+pub use timing::{Phase, Stopwatch, Timings};

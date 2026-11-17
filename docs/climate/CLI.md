@@ -191,7 +191,17 @@ Outputs in `output/baroclinic/`:
   and total energy, the energy removed by diffusion so far, the relative
   drifts, the energy-budget residual (energy change not explained by
   diffusion, i.e. time-stepping error), max wind, and the surface-pressure
-  and θ ranges.
+  and θ ranges;
+- `timing.csv` and `solver.csv`, the timing report below.
+
+After the time loop, `baroclinic`, `held-suarez` and `run` print a timing
+report to stderr: the loop's wall time by phase (ms a step, share, calls),
+then the Helmholtz solver's iterations by vertical mode, for this run's steps
+only. Phases marked `∥` run side by side, so their times overlap.
+`timing.csv` has the phases as `phase,level,side_by_side,seconds,calls`, the
+first row the whole loop with the steps as its calls; `solver.csv` has a row
+per mode. `run` ends with a line splitting the whole run into setup, time
+loop and output.
 
 The state is checked after every step. The run stops if any value isn't
 finite, a wind passes the step's Courant limit (`--max-wind` / 0.6, about

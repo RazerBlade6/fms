@@ -111,7 +111,7 @@ a visual check.
   for the full climate run (`fms-climate run`) at 2,562 cells. The default
   20,252 cells is timed at the start and at the end, and gets a target at the
   close-out if one is in reach (O-8, O-12, O-13, O-29, O-54).
-  - [ ] 15.1. Timing report in `run`: time per phase and solver
+  - [x] 15.1. Timing report in `run`: time per phase and solver
     iterations; a fixed benchmark run from a restart file
   - [ ] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
     kernel time goes (O-54); first timing at 20,252 cells

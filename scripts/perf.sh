@@ -10,6 +10,8 @@
 #   scripts/perf.sh profile <cells> [label]      # the bench run under samply
 #   scripts/perf.sh view    <label>              # open a saved profile in the browser
 #   scripts/perf.sh results                      # the table of timings so far
+#   scripts/perf.sh phases  <label>              # a run's time loop by phase (its timing.csv)
+#   scripts/perf.sh compare <before> <after>     # two runs' phases side by side, in ms a step
 #
 # <cells> is 642, 2562, 10242 or 20252. Options to `fms-climate run` follow `--`.
 #
@@ -30,7 +32,7 @@ BIN=target/release/fms-climate
 HEIGHTMAP=data/ETOPO_2022_v1_60s_N90W180_surface.tif
 
 die() { echo "perf.sh: $*" >&2; exit 1; }
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The climate grid frequency for a number of cells (10·f² + 2).
 frequency() {
@@ -165,6 +167,66 @@ results() {
     column -t -s "$(printf '\t')" "$OUT/results.tsv"
 }
 
+# The timing report a run wrote: phase,level,side_by_side,seconds,calls, the
+# first row the whole loop (its calls the steps).
+timing_csv() {
+    local f=$OUT/$1/climate/timing.csv
+    [ -f "$f" ] || die "$f is missing (a run from before the timing report?)"
+    echo "$f"
+}
+
+# A run's phases: ms a step, share of the loop, calls. Indented by nesting;
+# || marks phases that run side by side (their times overlap).
+phases() {
+    local f
+    f=$(timing_csv "$1")
+    awk -F, -v label="$1" '
+        FNR == 1 { next }
+        $1 == "loop" {
+            loop = $4; steps = $5
+            printf "%s: %d steps in %.2f s, %.3f ms a step, %.1f steps/s\n", label, steps, loop,
+                1e3 * loop / steps, steps / loop
+            printf "  %-44s %9s %7s %8s\n", "phase", "ms/step", "share", "calls"
+            next
+        }
+        $5 == 0 { next }
+        {
+            name = ($3 == "true") ? "|| " $1 : $1
+            for (i = 1; i < $2; i++) name = "  " name
+            printf "  %-44s %9.3f %6.1f%% %8d\n", name, 1e3 * $4 / steps, 100 * $4 / loop, $5
+        }' "$f"
+}
+
+# Two runs' phases side by side: ms a step in each and the change.
+compare() {
+    local a b
+    a=$(timing_csv "$1")
+    b=$(timing_csv "$2")
+    awk -F, -v A="$1" -v B="$2" '
+        FNR == 1 { file++; next }
+        $1 == "loop" { loop[file] = $4; steps[file] = $5; next }
+        {
+            if (!($1 in level)) { order[++n] = $1; level[$1] = $2; side[$1] = $3 }
+            ms[file, $1] = 1e3 * $4; calls[file, $1] = $5
+        }
+        function change(x, y) { return x > 0 ? sprintf("%+.1f%%", 100 * (y - x) / x) : "-" }
+        END {
+            printf "  %-44s %14s %14s %8s\n", "", A, B, "change"
+            x = steps[1] / loop[1]; y = steps[2] / loop[2]
+            printf "  %-44s %14.1f %14.1f %8s\n", "steps/s", x, y, change(x, y)
+            x = 1e3 * loop[1] / steps[1]; y = 1e3 * loop[2] / steps[2]
+            printf "  %-44s %14.3f %14.3f %8s\n", "loop (ms a step)", x, y, change(x, y)
+            for (i = 1; i <= n; i++) {
+                p = order[i]
+                if (!calls[1, p] && !calls[2, p]) continue
+                name = (side[p] == "true") ? "|| " p : p
+                for (j = 1; j < level[p]; j++) name = "  " name
+                x = ms[1, p] / steps[1]; y = ms[2, p] / steps[2]
+                printf "  %-44s %14.3f %14.3f %8s\n", name, x, y, change(x, y)
+            }
+        }' "$a" "$b"
+}
+
 [ $# -ge 1 ] || usage 1
 [ "$WORLD" = earth ] || [ "$WORLD" = aqua ] || die "WORLD must be earth or aqua, not '$WORLD'"
 action=$1
@@ -186,6 +248,14 @@ set -- ${ours[@]+"${ours[@]}"}
 case "$action" in
     conditions) conditions ;;
     results) results ;;
+    phases)
+        [ $# -eq 1 ] || usage 1
+        phases "$1"
+        ;;
+    compare)
+        [ $# -eq 2 ] || usage 1
+        compare "$1" "$2"
+        ;;
     view)
         [ $# -eq 1 ] || usage 1
         samply load "$OUT/$1/profile.json.gz"

@@ -4,6 +4,7 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use fms_atmos::{EnergyBudget, Health, LayeredDiagnostics};
 
@@ -18,10 +19,15 @@ pub struct Record {
     pub health: Health,
 }
 
-/// All samples of a run, with the first as the reference for changes.
+/// All samples of a run, with the first as the reference for changes, and
+/// when its time loop ran.
 #[derive(Default)]
 pub struct RunLog {
     records: Vec<Record>,
+    /// When the time loop started, once it has.
+    pub loop_started: Option<Instant>,
+    /// How long the time loop took.
+    pub loop_time: Duration,
 }
 
 impl RunLog {

@@ -83,6 +83,8 @@
 //! [`LayeredSemiImplicit::load_restart`] loads both over a freshly built
 //! stepper's; with the same settings the run continues bit for bit.
 
+use std::time::{Duration, Instant};
+
 use fms_grid::Operators;
 use fms_grid::operators::MIN_CHUNK;
 use fms_restart::{Restart, RestartError, count};
@@ -94,6 +96,7 @@ use crate::layered::{LayeredModel, LayeredState, Linearization};
 use crate::levels::Eigen;
 use crate::safety::{self, BlowUp, Health, Limits};
 use crate::semi_implicit::SolverStats;
+use crate::timing::{Phase, Stopwatch, Timings};
 use crate::transport::{Transport, TransportStep};
 
 /// Lowest temperature (K) of the default isothermal reference state (see
@@ -197,6 +200,10 @@ pub struct LayeredSemiImplicit<'a> {
     budget: EnergyBudget,
     water: WaterBudget,
     transport: Option<Transport>,
+    /// Time spent in the step's phases, and in each vertical mode's solves
+    /// (not saved in restarts).
+    timings: Timings,
+    solve_time: Vec<Duration>,
     // Scratch.
     tendency: LayeredState,
     /// Lagged tendencies: diffusion plus forcing.
@@ -317,6 +324,8 @@ impl<'a> LayeredSemiImplicit<'a> {
             budget,
             water: WaterBudget::default(),
             transport: moist.then(|| Transport::new(n, nc, ne)),
+            timings: Timings::default(),
+            solve_time: vec![Duration::ZERO; n],
             tendency: state.dry(),
             physics,
             forcing,
@@ -424,6 +433,26 @@ impl<'a> LayeredSemiImplicit<'a> {
     /// Helmholtz solver totals (all modes).
     pub fn solver_stats(&self) -> SolverStats {
         self.stats
+    }
+
+    /// Time spent in each phase of the steps since this stepper was built
+    /// (not the steps before a restart), the forcing's own phases included
+    /// ([`Forcing::timings`](crate::Forcing::timings)), which count from
+    /// the forcing's construction and include the RK4 start: take
+    /// differences ([`Timings::since`]).
+    pub fn timings(&self) -> Timings {
+        let mut t = self.timings;
+        if let Some(f) = self.model.forcing() {
+            t.merge(&f.timings());
+        }
+        t
+    }
+
+    /// Time spent in each vertical mode's Helmholtz solves since this
+    /// stepper was built, external first. The modes are solved side by
+    /// side, so these overlap.
+    pub fn solve_times(&self) -> &[Duration] {
+        &self.solve_time
     }
 
     /// A restart holding everything the stepper carries between steps,
@@ -670,7 +699,10 @@ impl<'a> LayeredSemiImplicit<'a> {
     pub fn step(&mut self) -> Vec<SolveReport> {
         // On a pool thread, so the step's many small parallel loops start
         // without a hand-off from the caller's thread each time.
-        rayon::scope(|_| self.step_in_pool())
+        let start = Instant::now();
+        let reports = rayon::scope(|_| self.step_in_pool());
+        self.timings.add(Phase::Step, start.elapsed());
+        reports
     }
 
     // Loops over the layers index several per-layer arrays together.
@@ -688,13 +720,24 @@ impl<'a> LayeredSemiImplicit<'a> {
         // Hyperdiffusion and forcing are lagged to the old level.
         let diffuse = self.model.hyperdiffusion().is_some();
         let forced = self.model.has_forcing();
-        let (diffusion_rate, forcing_rate) = self.model.step_tendencies(
+        // Laps partition the phases below; one that doesn't run leaves its
+        // moment to the next.
+        let mut clock = Stopwatch::start();
+        let (diffusion_rate, forcing_rate, times) = self.model.step_tendencies(
             &current,
             &self.previous,
             &mut self.tendency,
             &mut self.physics,
             &mut self.forcing,
         );
+        self.timings.add(Phase::Tendencies, clock.lap());
+        if let Some(time) = times.physics {
+            self.timings.add(Phase::Physics, time);
+        }
+        self.timings.add(Phase::Dynamics, times.dynamics);
+        if let Some(time) = times.hyperdiffusion {
+            self.timings.add(Phase::Hyperdiffusion, time);
+        }
         if let Some(rate) = diffusion_rate {
             self.budget.diffusion.add_scaled(dt, rate);
         }
@@ -722,6 +765,7 @@ impl<'a> LayeredSemiImplicit<'a> {
         let diffuse = diffuse || forced;
         let t = &self.tendency;
         let d = &self.physics;
+        self.timings.add(Phase::BudgetsAndLagged, clock.lap());
 
         // Divergences of uⁿ and uⁿ⁻¹.
         {
@@ -816,9 +860,11 @@ impl<'a> LayeredSemiImplicit<'a> {
 
         // N scalar Helmholtz problems in the vertical modes.
         let rhs_modal = self.to_modes(&self.rhs);
+        self.timings.add(Phase::ImplicitRhs, clock.lap());
         // Beside them, the humidity's interface ratios for the transport
         // below (they need only the middle level).
         let (helmholtz, modal, model) = (&mut self.helmholtz, &mut self.modal, &self.model);
+        let solve_time = &mut self.solve_time;
         let moist = self.transport.is_some();
         let (reports, ratio): (Vec<SolveReport>, _) = rayon::join(
             || {
@@ -826,11 +872,27 @@ impl<'a> LayeredSemiImplicit<'a> {
                     .par_iter_mut()
                     .zip(modal.par_iter_mut())
                     .zip(rhs_modal.par_iter())
-                    .map(|((solver, x), b)| solver.solve(b, x))
+                    .zip(solve_time.par_iter_mut())
+                    .map(|(((solver, x), b), time)| {
+                        let start = Instant::now();
+                        let report = solver.solve(b, x);
+                        *time += start.elapsed();
+                        report
+                    })
                     .collect()
             },
-            || moist.then(|| model.interface_ratios(&current)),
+            || {
+                moist.then(|| {
+                    let start = Instant::now();
+                    (model.interface_ratios(&current), start.elapsed())
+                })
+            },
         );
+        self.timings.add(Phase::HelmholtzSolves, clock.lap());
+        let ratio = ratio.map(|(ratio, time)| {
+            self.timings.add(Phase::InterfaceRatios, time);
+            ratio
+        });
         {
             let (v, modal) = (&self.modes.v, &self.modal);
             self.m
@@ -885,6 +947,7 @@ impl<'a> LayeredSemiImplicit<'a> {
                 .enumerate()
                 .for_each(|(i, t)| *t = p_bar * yk[i] + th * ps[i]);
         }
+        self.timings.add(Phase::BackSubstitution, clock.lap());
 
         // Humidity: flux-corrected transport with the step's mass fluxes,
         // F̄ₖ = Fₖⁿ + p̄ δσₖ (uₖⁿ⁻¹ + uₖⁿ⁺¹ − 2uₖⁿ)/2.
@@ -960,8 +1023,13 @@ impl<'a> LayeredSemiImplicit<'a> {
                     .collect(),
             };
             let outs: Vec<&mut [f64]> = next.q_ps.iter_mut().map(Vec::as_mut_slice).collect();
+            let fluxes = clock.lap();
             let report = transport.step(&ops, &input, outs);
             self.water.max_substeps = self.water.max_substeps.max(report.substeps);
+            let fct = clock.lap();
+            self.timings.add(Phase::MassFluxes, fluxes);
+            self.timings.add(Phase::FluxCorrectedTransport, fct);
+            self.timings.add(Phase::HumidityTransport, fluxes + fct);
         }
 
         // RAW filter on xⁿ and xⁿ⁺¹, then rotate the three levels (the old
@@ -994,6 +1062,7 @@ impl<'a> LayeredSemiImplicit<'a> {
             (None, 0.0)
         };
         raw_filter(&self.previous, &mut current, next, nu, alpha);
+        let mut filtered = None;
         if let Some(bounds) = bounds {
             // Keep the filtered humidity within the range of the three levels
             // (the filter is linear, so this never acts on a uniform q), and
@@ -1010,6 +1079,7 @@ impl<'a> LayeredSemiImplicit<'a> {
             }
             let after = self.model.water(&current) + self.model.water(next);
             self.water.filter += 0.5 * (after - water_before);
+            filtered = Some(clock.lap());
             let g = self.model.gravity();
             let ds = self.model.dsigma();
             for level in [&mut current, &mut *next] {
@@ -1020,7 +1090,23 @@ impl<'a> LayeredSemiImplicit<'a> {
         }
         let old_previous = std::mem::replace(&mut self.previous, current);
         self.current = std::mem::replace(&mut self.next, old_previous);
+        let last = clock.lap();
+        let fixers = match filtered {
+            Some(filter) => {
+                self.timings.add(Phase::Filter, filter);
+                self.timings.add(Phase::NegativeHumidityFill, last);
+                filter + last
+            }
+            None => {
+                self.timings.add(Phase::Filter, last);
+                last
+            }
+        };
+        self.timings.add(Phase::TimeFilterAndFixers, fixers);
         self.model.advance_forcing(&self.current, dt);
+        if forced {
+            self.timings.add(Phase::PhysicsAdvance, clock.lap());
+        }
 
         self.steps += 1;
         for r in &reports {

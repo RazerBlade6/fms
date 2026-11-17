@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use clap::{Args, ValueEnum};
 use fms_atmos::column_physics::{
@@ -380,6 +381,7 @@ const OCEAN_MAPS: [&str; 3] = [
 ];
 
 pub fn run(args: ClimateArgs) -> Result<(), String> {
+    let run_started = Instant::now();
     let ocean = args.ocean();
     let fixed = args.fixed_sea_temperature;
     let (mut spin_up, years) = args.spin_up(ocean.has_currents());
@@ -919,7 +921,7 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         month_done += 1;
     }
     let first_month = month_done;
-    integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
+    let log = integrate(&world, &fields, &mut si, &plan, &out, &description, |si| {
         if si.steps() == total
             && let Some(path) = &args.save_restart
         {
@@ -1377,6 +1379,20 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
     let path = out.dir.join("summary.txt");
     std::fs::write(&path, &summary).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     print!("{summary}");
+    // Setup runs to the loop's start; output is everything after its end,
+    // the time loop's own maps and GIF included.
+    let whole = run_started.elapsed();
+    let setup = log
+        .loop_started
+        .map_or(whole, |started| started.duration_since(run_started));
+    let output = whole.saturating_sub(setup + log.loop_time);
+    eprintln!(
+        "timing: whole run {:.1} s: setup {:.1} s, time loop {:.1} s, output {:.1} s",
+        whole.as_secs_f64(),
+        setup.as_secs_f64(),
+        log.loop_time.as_secs_f64(),
+        output.as_secs_f64()
+    );
     Ok(())
 }
 

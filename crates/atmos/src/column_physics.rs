@@ -124,6 +124,7 @@ use crate::radiation::{
 use crate::surface_layer::{
     Surface, SurfaceAir, SurfaceLayerParams, convective_velocity, entrainment_velocity, exchange,
 };
+use crate::timing::{Phase, Stopwatch, Timings};
 
 pub use crate::moisture::LATENT_HEAT;
 
@@ -1170,6 +1171,8 @@ pub struct ColumnPhysics<'a> {
     precipitated: f64,
     runoff: f64,
     ocean_exchange: f64,
+    /// Time spent in each phase ([`Forcing::timings`]).
+    timings: Timings,
 }
 
 impl<'a> ColumnPhysics<'a> {
@@ -1275,6 +1278,7 @@ impl<'a> ColumnPhysics<'a> {
             precipitated: 0.0,
             runoff: 0.0,
             ocean_exchange: 0.0,
+            timings: Timings::default(),
         };
         if physics.ice_sheet_age.is_finite() {
             let land = params.land;
@@ -1851,7 +1855,9 @@ impl Forcing for ColumnPhysics<'_> {
             state.is_moist() && out.is_moist(),
             "column physics needs a moist state"
         );
+        let mut clock = Stopwatch::start();
         self.update_moisture(state);
+        self.timings.add(Phase::Moisture, clock.lap());
         let (gas, gravity) = (self.gas, self.gravity);
         let levels = &self.levels;
         let n = levels.count();
@@ -1976,9 +1982,14 @@ impl Forcing for ColumnPhysics<'_> {
                 .zip(du.par_iter())
                 .for_each(|(o, &d)| *o += d);
         }
+        self.timings.add(Phase::ColumnTendencies, clock.lap());
     }
 
     fn advance(&mut self, state: &LayeredState, dt: f64) {
+        // Laps partition the call: a phase that doesn't run leaves its
+        // moment to the next.
+        let mut clock = Stopwatch::start();
+        let mut surface_timed = false;
         // The surface and the budgets use the same stored fluxes and
         // precipitation the atmosphere was given.
         let areas = &self.ops.geometry().cell_areas;
@@ -2027,9 +2038,15 @@ impl Forcing for ColumnPhysics<'_> {
             self.since_transport += 1;
             let every = (self.params.transport_interval / dt).round().max(1.0) as u32;
             if self.since_transport >= every {
+                self.timings.add(Phase::OceanSurface, clock.lap());
+                surface_timed = true;
                 self.ocean.transport(f64::from(self.since_transport) * dt);
                 self.since_transport = 0;
+                self.timings.add(Phase::OceanTransport, clock.lap());
             }
+        }
+        if !surface_timed {
+            self.timings.add(Phase::OceanSurface, clock.lap());
         }
         let (mut absorbed, mut outgoing, mut evaporated, mut precipitated) = (0.0, 0.0, 0.0, 0.0);
         let (mut runoff, mut ocean_exchange) = (0.0, 0.0);
@@ -2086,12 +2103,14 @@ impl Forcing for ColumnPhysics<'_> {
         self.ocean_exchange += dt * r2 * ocean_exchange;
         self.dissipated += dt * self.dissipation;
         self.time += dt;
+        self.timings.add(Phase::LandAndBudgets, clock.lap());
         if self.jumps_done < self.params.spin_up.jumps
             && !self.prescribed
             && self.time >= self.next_year - YEAR_TOLERANCE
         {
             self.next_year += self.planet.year_seconds();
             self.end_spin_up_year();
+            self.timings.add(Phase::SpinUpJump, clock.lap());
         }
         // Counted in steps: model time summed over a long run drifts by
         // more than any fixed tolerance.
@@ -2102,11 +2121,14 @@ impl Forcing for ColumnPhysics<'_> {
             // Before the fluxes, so they and the next sunlight see the same
             // ice.
             self.ocean.rearrange_ice();
+            self.timings.add(Phase::SeaIceRearrangement, clock.lap());
         }
         let solve = (!self.prescribed).then_some(dt);
         self.update_surface_fluxes(state, solve);
+        self.timings.add(Phase::SurfaceFluxes, clock.lap());
         if radiating {
             self.radiate(state);
+            self.timings.add(Phase::Radiation, clock.lap());
         }
     }
 
@@ -2126,6 +2148,8 @@ impl Forcing for ColumnPhysics<'_> {
             prescribed: _,
             // Scratch: its Exner functions are refilled before every use.
             heating: _,
+            // This process's own timings.
+            timings: _,
             // A setting, saved to check: state from other land doesn't fit.
             land_fraction,
             time,
@@ -2338,6 +2362,10 @@ impl Forcing for ColumnPhysics<'_> {
         notes.extend(self.reconcile_spin_up());
         notes.extend(ocean_notes);
         Ok(notes)
+    }
+
+    fn timings(&self) -> Timings {
+        self.timings
     }
 
     fn budget(&self) -> Option<ForcingBudget> {

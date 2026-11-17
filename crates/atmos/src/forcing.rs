@@ -5,6 +5,7 @@
 use fms_restart::{Restart, RestartError};
 
 use crate::layered::LayeredState;
+use crate::timing::Timings;
 
 /// A source of tendencies for the winds, `Θ` and humidity.
 ///
@@ -49,6 +50,12 @@ pub trait Forcing: Send + Sync {
     /// the saved one's; none means it continues exactly. Default: nothing.
     fn load_restart(&mut self, _from: &Restart) -> Result<Vec<String>, RestartError> {
         Ok(Vec::new())
+    }
+
+    /// Time spent in the forcing's own phases since it was built (see
+    /// [`crate::timing`]). Default: none timed.
+    fn timings(&self) -> Timings {
+        Timings::default()
     }
 }
 

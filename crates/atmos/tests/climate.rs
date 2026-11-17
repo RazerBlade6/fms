@@ -1296,3 +1296,114 @@ fn radiation_and_ocean_transport_run_every_whole_number_of_steps_on_any_day_leng
         assert_eq!(physics.ocean_transports(), expected.len() as u64);
     }
 }
+
+#[test]
+fn the_timings_count_every_phase_of_a_step_and_add_up_within_the_wall_time() {
+    use fms_atmos::{Phase, Timings};
+    use std::time::{Duration, Instant};
+    // Two radiation intervals from the third step: each interval-bound
+    // phase runs exactly twice, wherever the window starts.
+    let (from, mut checked) = (3, false);
+    let mut snapshot: Option<(Timings, Instant)> = None;
+    run_with(
+        8,
+        2.0,
+        Levels::new(&CLIMATE_LEVELS),
+        |_| 0.0,
+        FLAT,
+        |si, _, dt| {
+            let every = u64::from(fms_atmos::radiation_steps(dt, DAY));
+            let n = 2 * every;
+            if si.steps() == from {
+                snapshot = Some((si.timings(), Instant::now()));
+            }
+            if si.steps() != from + n {
+                return;
+            }
+            let (before, start) = snapshot.expect("the window has started");
+            let wall = start.elapsed();
+            let t = si.timings().since(&before);
+            let every_step = [
+                Phase::Step,
+                Phase::Tendencies,
+                Phase::Physics,
+                Phase::Moisture,
+                Phase::ColumnTendencies,
+                Phase::Dynamics,
+                Phase::Hyperdiffusion,
+                Phase::BudgetsAndLagged,
+                Phase::ImplicitRhs,
+                Phase::HelmholtzSolves,
+                Phase::InterfaceRatios,
+                Phase::BackSubstitution,
+                Phase::HumidityTransport,
+                Phase::MassFluxes,
+                Phase::FluxCorrectedTransport,
+                Phase::TimeFilterAndFixers,
+                Phase::Filter,
+                Phase::NegativeHumidityFill,
+                Phase::PhysicsAdvance,
+                Phase::OceanSurface,
+                Phase::LandAndBudgets,
+                Phase::SurfaceFluxes,
+            ];
+            for p in every_step {
+                assert_eq!(t.calls(p), n, "{p:?}");
+            }
+            for p in [
+                Phase::Radiation,
+                Phase::OceanTransport,
+                Phase::SeaIceRearrangement,
+            ] {
+                assert_eq!(t.calls(p), 2, "{p:?}");
+            }
+            // No year ends; the loop's own phases belong to the runner.
+            for p in [
+                Phase::SpinUpJump,
+                Phase::KeepLastGood,
+                Phase::HealthCheck,
+                Phase::Sampling,
+                Phase::GifFrames,
+            ] {
+                assert_eq!(t.calls(p), 0, "{p:?}");
+            }
+            // The step's direct children partition its time; nested
+            // phases partition theirs.
+            let sum = |phases: &[Phase]| phases.iter().map(|&p| t.time(p)).sum::<Duration>();
+            let children = sum(&[
+                Phase::Tendencies,
+                Phase::BudgetsAndLagged,
+                Phase::ImplicitRhs,
+                Phase::HelmholtzSolves,
+                Phase::BackSubstitution,
+                Phase::HumidityTransport,
+                Phase::TimeFilterAndFixers,
+                Phase::PhysicsAdvance,
+            ]);
+            assert!(children <= t.time(Phase::Step));
+            assert!(t.time(Phase::Step) <= wall);
+            assert!(
+                sum(&[Phase::Moisture, Phase::ColumnTendencies]) <= t.time(Phase::Physics),
+                "the column physics within its branch"
+            );
+            assert!(t.time(Phase::Physics) <= t.time(Phase::Tendencies));
+            assert!(
+                sum(&[Phase::Dynamics, Phase::Hyperdiffusion]) <= t.time(Phase::Tendencies),
+                "one branch runs the dynamics, then the hyperdiffusion"
+            );
+            let advance = sum(&[
+                Phase::OceanSurface,
+                Phase::OceanTransport,
+                Phase::LandAndBudgets,
+                Phase::SeaIceRearrangement,
+                Phase::SurfaceFluxes,
+                Phase::Radiation,
+            ]);
+            assert!(advance <= t.time(Phase::PhysicsAdvance));
+            // Each vertical mode is solved once a step, beside the others.
+            assert_eq!(si.solve_times().len(), CLIMATE_LEVELS.len() + 1);
+            checked = true;
+        },
+    );
+    assert!(checked, "the run ended before the window did");
+}

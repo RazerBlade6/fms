@@ -11,7 +11,7 @@ use std::time::Instant;
 use clap::Args;
 use fms_atmos::{
     BlowUp, Gas, HyperdiffusionOptions, LayeredModel, LayeredSemiImplicit,
-    LayeredSemiImplicitOptions, LayeredState, Levels,
+    LayeredSemiImplicitOptions, LayeredState, Levels, Phase, Stopwatch, Timings,
 };
 use fms_fields::{ColorScale, FieldId, FieldKey, FieldSpec, Location, Quantity};
 use fms_grid::Operators;
@@ -20,6 +20,7 @@ use fms_sim::World;
 
 use crate::render::{format_value, write_gif, write_png};
 use crate::run_log::{Record, RunLog};
+use crate::timing::{LoopTiming, ModeSolves};
 use crate::{Frame, ImageArgs, capture, coord_label, ensure_dir, paint};
 
 /// Diagnostics samples per solar day.
@@ -317,8 +318,9 @@ pub struct Plan {
 /// Run `si` to `plan.total`, checking every step. Samples the diagnostics
 /// [`SAMPLES_PER_DAY`] times a solar day (calling `on_sample` each time), records
 /// the GIF frames, and at the end writes the GIF, `diagnostics.csv` and maps
-/// of the final state to `out.dir`. On a blow-up, writes the dump to
-/// `out.dir/blowup` and returns an error.
+/// of the final state to `out.dir`, with the timing report
+/// ([`crate::timing`]): to stderr, and as `timing.csv` and `solver.csv`. On
+/// a blow-up, writes the dump to `out.dir/blowup` and returns an error.
 pub fn integrate(
     world: &World,
     fields: &Fields,
@@ -363,11 +365,27 @@ pub fn integrate(
         health,
     });
     capture_due(si, &mut frames, &mut next_frame);
-    let t = Instant::now();
+    // This run's share of what the stepper counts from its start (or, after
+    // a restart, from the start of the run that saved it).
+    let (timings_before, stats_before) = (si.timings(), si.solver_stats());
+    let solve_before = si.solve_times().to_vec();
+    let mut modes = vec![ModeSolves::default(); solve_before.len()];
+    let mut timings = Timings::default();
+    let start_step = si.steps();
+    let loop_started = Instant::now();
+    // Laps partition the loop; those not counted (the step, which the
+    // stepper times itself, and frames not due) are its overhead.
+    let mut clock = Stopwatch::start();
     let mut last_good = si.state().clone();
     while si.steps() < plan.total {
+        clock.lap();
         last_good.clone_from(si.state());
-        si.step();
+        timings.add(Phase::KeepLastGood, clock.lap());
+        let reports = si.step();
+        for (m, r) in modes.iter_mut().zip(&reports) {
+            m.add(r);
+        }
+        clock.lap();
         let day = si.steps() as f64 * dt / day_seconds;
         let health = match si.check() {
             Ok(h) => h,
@@ -383,6 +401,7 @@ pub fn integrate(
                 ));
             }
         };
+        timings.add(Phase::HealthCheck, clock.lap());
         if si.steps() % sample_every == 0 || si.steps() == plan.total {
             log.push(Record {
                 step: si.steps(),
@@ -391,15 +410,30 @@ pub fn integrate(
                 budget: si.energy_budget(),
                 health,
             });
+            let diagnostics = clock.lap();
             on_sample(si);
+            let own = clock.lap();
             if std::env::var("FMS_VERBOSE").is_ok() {
                 eprintln!("day {day:6.2}: max |u| {:.1} m/s", health.max_wind);
             }
+            timings.add(Phase::Diagnostics, diagnostics);
+            timings.add(Phase::RunsOwn, own);
+            timings.add(Phase::Sampling, diagnostics + own + clock.lap());
         }
+        let captured = frames.len();
         capture_due(si, &mut frames, &mut next_frame);
+        if frames.len() > captured {
+            timings.add(Phase::GifFrames, clock.lap());
+        }
     }
-    let elapsed = t.elapsed();
+    let elapsed = loop_started.elapsed();
+    log.loop_started = Some(loop_started);
+    log.loop_time = elapsed;
     let stats = si.solver_stats();
+    let (solves, iterations) = (
+        stats.solves - stats_before.solves,
+        stats.iterations - stats_before.iterations,
+    );
     let (first, last) = (log.first().copied(), log.last().copied());
     if let (Some(first), Some(last)) = (first, last) {
         let (dm, _, de) = log.drift(&last);
@@ -407,14 +441,32 @@ pub fn integrate(
             "ran in {elapsed:.1?} ({:.0} steps/s, {:.1} CG iterations per solve); mass change {dm:+.1e}, \
              energy {:+.1e} (budget residual {de:+.1e})",
             (plan.total - first.step) as f64 / elapsed.as_secs_f64(),
-            stats.iterations as f64 / stats.solves.max(1) as f64,
+            iterations as f64 / solves.max(1) as f64,
             last.diagnostics.energy / first.diagnostics.energy - 1.0,
         );
     }
+    timings.merge(&si.timings().since(&timings_before));
+    let report = LoopTiming {
+        steps: si.steps() - start_step,
+        elapsed,
+        timings,
+        threads: rayon::current_num_threads(),
+        cells: si.state().ps.len(),
+        wave_speeds: si.wave_speeds(),
+        modes,
+        solve_time: si
+            .solve_times()
+            .iter()
+            .zip(&solve_before)
+            .map(|(now, before)| now.saturating_sub(*before))
+            .collect(),
+    };
+    eprint!("{}", report.report());
     write_animation(world, key, overlay, &frames, out)?;
     let csv = out.dir.join("diagnostics.csv");
     log.write_csv(&csv)?;
     println!("diagnostics -> {}", csv.display());
+    report.write_csv(&out.dir)?;
     fields.publish(world, si.state(), si.model());
     write_maps(
         world,

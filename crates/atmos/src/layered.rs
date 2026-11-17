@@ -63,6 +63,8 @@
 //! ([`crate::radiation::interface_humidity_ratios`]): the mean of the two
 //! here, the upwind one in the semi-implicit stepper's positive scheme.
 
+use std::time::{Duration, Instant};
+
 use fms_grid::Operators;
 use fms_grid::operators::{MIN_CHUNK, MIN_COLUMNS};
 use rayon::prelude::*;
@@ -74,6 +76,7 @@ use crate::helmholtz::dot;
 pub use crate::levels::Levels;
 use crate::levels::{Eigen, MAX_LAYERS};
 use crate::radiation::{RadiationParams, interface_humidity_ratios};
+use crate::timing::Stopwatch;
 
 /// Reference pressure for potential temperature (Pa).
 pub const REFERENCE_PRESSURE: f64 = 1.0e5;
@@ -263,6 +266,19 @@ pub struct Linearization {
     pub j: Vec<Vec<f64>>,
     /// `B` (`(N+1) × N`): rows `(p_s', θ₀', …)`, columns `(δ₀, …)`.
     pub b: Vec<Vec<f64>>,
+}
+
+/// How long each part of [`LayeredModel::step_tendencies`] took. The
+/// forcing ran beside the dynamics and then the hyperdiffusion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TendencyTimes {
+    /// The forcing's tendency and energy rate; `None` without forcing.
+    pub physics: Option<Duration>,
+    /// The adiabatic dynamics' tendency.
+    pub dynamics: Duration,
+    /// The hyperdiffusion's tendency and energy rate; `None` without
+    /// hyperdiffusion.
+    pub hyperdiffusion: Option<Duration>,
 }
 
 /// Global integrals for checking conservation.
@@ -732,7 +748,9 @@ impl<'a> LayeredModel<'a> {
     /// `diffusion` and `forcing` (as
     /// [`diffusion_tendency`](Self::diffusion_tendency) and
     /// [`forcing_tendency`](Self::forcing_tendency); otherwise untouched),
-    /// each with its [`energy_tendency`](Self::energy_tendency).
+    /// each with its [`energy_tendency`](Self::energy_tendency). Returns the
+    /// diffusion's and the forcing's energy rates, and how long each part
+    /// took.
     pub fn step_tendencies(
         &mut self,
         now: &LayeredState,
@@ -740,7 +758,7 @@ impl<'a> LayeredModel<'a> {
         out: &mut LayeredState,
         diffusion: &mut LayeredState,
         forcing: &mut LayeredState,
-    ) -> (Option<EnergyTerms>, Option<EnergyTerms>) {
+    ) -> (Option<EnergyTerms>, Option<EnergyTerms>, TendencyTimes) {
         let params = Parameters {
             ops: &self.ops,
             gas: self.gas,
@@ -751,28 +769,38 @@ impl<'a> LayeredModel<'a> {
             humidity_profile: &self.humidity_profile,
         };
         let (work, diffuser, forcer) = (&mut self.work, &mut self.diffusion, &mut self.forcing);
-        let (forcing_rate, diffusion_rate) = rayon::join(
+        let ((forcing_rate, physics), (diffusion_rate, dynamics, hyperdiffusion)) = rayon::join(
             || {
-                forcer.as_mut().map(|f| {
+                let t = Instant::now();
+                let rate = forcer.as_mut().map(|f| {
                     for x in forcing.parts_mut() {
                         x.fill(0.0);
                     }
                     f.add_tendency(old, forcing);
                     energy_rate(&params, old, forcing)
-                })
+                });
+                (rate, rate.map(|_| t.elapsed()))
             },
             || {
+                let mut t = Stopwatch::start();
                 compute_tendency(params, work, now, out);
-                diffuser.as_mut().map(|d| {
+                let dynamics = t.lap();
+                let rate = diffuser.as_mut().map(|d| {
                     for x in diffusion.parts_mut() {
                         x.fill(0.0);
                     }
                     d.add_tendency(params.ops, old, diffusion);
                     energy_rate(&params, old, diffusion)
-                })
+                });
+                (rate, dynamics, rate.map(|_| t.lap()))
             },
         );
-        (diffusion_rate, forcing_rate)
+        let times = TendencyTimes {
+            physics,
+            dynamics,
+            hyperdiffusion,
+        };
+        (diffusion_rate, forcing_rate, times)
     }
 
     /// Advance `state` by `dt` seconds with classic fourth-order Runge–Kutta,
