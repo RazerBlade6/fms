@@ -86,9 +86,12 @@
 //! rotation, so they are built once, with an incomplete LU factorisation
 //! (ILU(0), on the matrix's own pattern) as a preconditioner. Each solve is
 //! preconditioned BiCGSTAB from the last solution, to a relative residual
-//! `‖b − AΨ‖/‖b‖` of [`TOLERANCE`]. Everything runs in serial, in index
-//! order: the same input bits give the same output bits.
+//! `‖b − AΨ‖/‖b‖` of [`TOLERANCE`]. The preconditioner and every sum run in
+//! serial, in index order, and only work per unknown is shared between
+//! threads: the same input bits give the same output bits on any number of
+//! threads.
 
+use fms_grid::operators::{for_each_mut, splits};
 use fms_grid::zonal::east_north;
 use fms_grid::{EdgeId, Operators, VertexId};
 use fms_restart::{Restart, RestartError, count, flag};
@@ -254,22 +257,21 @@ impl Csr {
         self.offsets[i] as usize..self.offsets[i + 1] as usize
     }
 
+    /// Row `i` of `A x`.
+    fn apply_row(&self, x: &[f64], i: usize) -> f64 {
+        self.row(i)
+            .map(|k| self.values[k] * x[self.columns[k] as usize])
+            .sum()
+    }
+
     /// `out = A x`.
     fn apply(&self, x: &[f64], out: &mut [f64]) {
-        for (i, out) in out.iter_mut().enumerate() {
-            *out = self
-                .row(i)
-                .map(|k| self.values[k] * x[self.columns[k] as usize])
-                .sum();
-        }
+        for_each_mut(out, |i, out| *out = self.apply_row(x, i));
     }
 
     /// `out = b − A x`.
     fn residual(&self, b: &[f64], x: &[f64], out: &mut [f64]) {
-        self.apply(x, out);
-        for (out, b) in out.iter_mut().zip(b) {
-            *out = b - *out;
-        }
+        for_each_mut(out, |i, out| *out = b[i] - self.apply_row(x, i));
     }
 
     /// The incomplete LU factorisation on the matrix's own pattern: `L` (unit
@@ -299,11 +301,12 @@ impl Csr {
         lu
     }
 
-    /// `out = (LU)⁻¹ r` for the factors `lu` from [`ilu0`](Self::ilu0).
-    fn precondition(&self, lu: &[f64], r: &[f64], out: &mut [f64]) {
+    /// `out = (LU)⁻¹ r` for the factors `lu` from [`ilu0`](Self::ilu0),
+    /// with `r[i]` given by `r(i)`, called once for each row in order.
+    fn precondition(&self, lu: &[f64], mut r: impl FnMut(usize) -> f64, out: &mut [f64]) {
         for i in 0..self.rows() {
             let below = self.offsets[i] as usize..self.diagonal[i] as usize;
-            out[i] = r[i]
+            out[i] = r(i)
                 - below
                     .map(|k| lu[k] * out[self.columns[k] as usize])
                     .sum::<f64>();
@@ -447,25 +450,34 @@ impl System {
     /// starting from and writing to `psi` (kg s⁻¹, per vertex) and
     /// `group_psi` (kg s⁻¹, per group). The groups' vertices are left for the
     /// caller.
-    fn solve(&self, stress: &[f64], psi: &mut [f64], group_psi: &mut [f64]) -> SolveStats {
-        let b: Vec<f64> = self
-            .stencil_offsets
-            .windows(2)
-            .map(|w| {
-                self.stencil[w[0] as usize..w[1] as usize]
-                    .iter()
-                    .map(|&(e, weight)| weight * stress[e as usize])
-                    .sum()
-            })
-            .collect();
-        let mut x: Vec<f64> = self
-            .vertices
-            .iter()
-            .map(|&v| psi[v as usize])
-            .chain(self.groups.iter().map(|&g| group_psi[g]))
-            .collect();
-        let stats = bicgstab(&self.matrix, &self.factors, &b, &mut x);
-        let (at_vertices, at_groups) = x.split_at(self.vertices.len());
+    fn solve(
+        &self,
+        stress: &[f64],
+        psi: &mut [f64],
+        group_psi: &mut [f64],
+        work: &mut Krylov,
+    ) -> SolveStats {
+        let n = self.vertices.len() + self.groups.len();
+        let (b, x) = (&mut work.b[..n], &mut work.x[..n]);
+        for_each_mut(b, |i, b| {
+            let terms = &self.stencil
+                [self.stencil_offsets[i] as usize..self.stencil_offsets[i + 1] as usize];
+            *b = terms
+                .iter()
+                .map(|&(e, weight)| weight * stress[e as usize])
+                .sum();
+        });
+        {
+            let (psi, vertices) = (&*psi, &self.vertices);
+            for_each_mut(x, |i, x| {
+                *x = match vertices.get(i) {
+                    Some(&v) => psi[v as usize],
+                    None => group_psi[self.groups[i - vertices.len()]],
+                };
+            });
+        }
+        let stats = bicgstab(&self.matrix, &self.factors, n, work);
+        let (at_vertices, at_groups) = work.x[..n].split_at(self.vertices.len());
         for (&v, &x) in self.vertices.iter().zip(at_vertices) {
             psi[v as usize] = x;
         }
@@ -473,6 +485,40 @@ impl System {
             group_psi[g] = x;
         }
         stats
+    }
+}
+
+/// BiCGSTAB's vectors (and a solve's right-hand side and solution), each as
+/// long as the largest system's unknowns, kept from solve to solve.
+#[derive(Clone, Debug, Default)]
+struct Krylov {
+    b: Vec<f64>,
+    x: Vec<f64>,
+    r: Vec<f64>,
+    shadow: Vec<f64>,
+    p: Vec<f64>,
+    v: Vec<f64>,
+    s: Vec<f64>,
+    t: Vec<f64>,
+    p_hat: Vec<f64>,
+    s_hat: Vec<f64>,
+}
+
+impl Krylov {
+    fn new(n: usize) -> Self {
+        let zeros = || vec![0.0; n];
+        Self {
+            b: zeros(),
+            x: zeros(),
+            r: zeros(),
+            shadow: zeros(),
+            p: zeros(),
+            v: zeros(),
+            s: zeros(),
+            t: zeros(),
+            p_hat: zeros(),
+            s_hat: zeros(),
+        }
     }
 }
 
@@ -484,12 +530,39 @@ fn norm(a: &[f64]) -> f64 {
     dot(a, a).sqrt()
 }
 
+/// What a sum of no terms is: where [`dot`]'s sum (`Iterator::sum`) starts.
+fn neutral() -> f64 {
+    std::iter::empty::<f64>().sum()
+}
+
 /// Solve `A x = b` by BiCGSTAB (van der Vorst 1992) with the ILU(0) factors
-/// `lu` as a right preconditioner, so the residual it tracks is the true one.
-/// Starts from `x`; restarts from the current `x` if the recurrence breaks
-/// down or its residual drifts from the true one.
-fn bicgstab(a: &Csr, lu: &[f64], b: &[f64], x: &mut [f64]) -> SolveStats {
-    let n = b.len();
+/// `lu` as a right preconditioner, so the residual it tracks is the true one,
+/// for the `n` unknowns of `work.b` and `work.x`. Starts from `x`; restarts
+/// from the current `x` if the recurrence breaks down or its residual drifts
+/// from the true one.
+///
+/// The products with `A` and the update of `x` are work per unknown, side
+/// by side on a large system; the preconditioner and the dot products are
+/// serial, the latter summed left to right. The other updates are done in
+/// the serial pass that follows them anyway: `p`'s in the preconditioner's
+/// forward sweep, `s`'s and `r`'s with their dot products (and `r`'s with
+/// the next iteration's `shadow · r`), `r`'s beside `x`'s.
+fn bicgstab(a: &Csr, lu: &[f64], n: usize, work: &mut Krylov) -> SolveStats {
+    let Krylov {
+        b,
+        x,
+        r,
+        shadow,
+        p,
+        v,
+        s,
+        t,
+        p_hat,
+        s_hat,
+    } = work;
+    let (b, x, r, shadow) = (&b[..n], &mut x[..n], &mut r[..n], &mut shadow[..n]);
+    let (p, v, s, t) = (&mut p[..n], &mut v[..n], &mut s[..n], &mut t[..n]);
+    let (p_hat, s_hat) = (&mut p_hat[..n], &mut s_hat[..n]);
     let norm_b = norm(b);
     if norm_b == 0.0 {
         x.fill(0.0);
@@ -500,57 +573,85 @@ fn bicgstab(a: &Csr, lu: &[f64], b: &[f64], x: &mut [f64]) -> SolveStats {
         };
     }
     let target = TOLERANCE * norm_b;
-    let mut r = vec![0.0; n];
-    a.residual(b, x, &mut r);
-    let mut residual = norm(&r);
-    let [mut p, mut v, mut s, mut t, mut p_hat, mut s_hat] = std::array::from_fn(|_| vec![0.0; n]);
+    a.residual(b, x, r);
+    let mut residual = norm(r);
     let mut iterations = 0;
     while residual > target && iterations < MAX_ITERATIONS {
-        let shadow = r.clone();
+        shadow.copy_from_slice(r);
         let (mut rho_old, mut alpha, mut omega) = (1.0, 1.0, 1.0);
         p.fill(0.0);
         v.fill(0.0);
+        // `shadow · r`, when the pass that updated `r` already took it.
+        let mut known_rho = None;
         while iterations < MAX_ITERATIONS {
             iterations += 1;
-            let rho = dot(&shadow, &r);
+            let rho = known_rho.take().unwrap_or_else(|| dot(shadow, r));
             if rho == 0.0 || !rho.is_finite() {
                 break;
             }
             let beta = (rho / rho_old) * (alpha / omega);
-            for k in 0..n {
-                p[k] = r[k] + beta * (p[k] - omega * v[k]);
-            }
-            a.precondition(lu, &p, &mut p_hat);
-            a.apply(&p_hat, &mut v);
-            let shadow_v = dot(&shadow, &v);
+            // p = r + β (p − ω v), row by row as the forward sweep takes it.
+            a.precondition(
+                lu,
+                |k| {
+                    p[k] = r[k] + beta * (p[k] - omega * v[k]);
+                    p[k]
+                },
+                p_hat,
+            );
+            a.apply(p_hat, v);
+            let shadow_v = dot(shadow, v);
             if shadow_v == 0.0 {
                 break;
             }
             alpha = rho / shadow_v;
+            // s = r − α v and ‖s‖.
+            let mut ss = neutral();
             for k in 0..n {
                 s[k] = r[k] - alpha * v[k];
+                ss += s[k] * s[k];
             }
-            if norm(&s) <= target {
-                for k in 0..n {
-                    x[k] += alpha * p_hat[k];
-                }
+            if ss.sqrt() <= target {
+                let p_hat = &*p_hat;
+                for_each_mut(x, |k, x| *x += alpha * p_hat[k]);
                 break;
             }
-            a.precondition(lu, &s, &mut s_hat);
-            a.apply(&s_hat, &mut t);
-            let tt = dot(&t, &t);
-            omega = if tt > 0.0 { dot(&t, &s) / tt } else { 0.0 };
+            a.precondition(lu, |k| s[k], s_hat);
+            a.apply(s_hat, t);
+            // t·t and t·s.
+            let (mut tt, mut ts) = (neutral(), neutral());
             for k in 0..n {
-                x[k] += alpha * p_hat[k] + omega * s_hat[k];
-                r[k] = s[k] - omega * t[k];
+                tt += t[k] * t[k];
+                ts += t[k] * s[k];
             }
+            omega = if tt > 0.0 { ts / tt } else { 0.0 };
+            // x += α p̂ + ω ŝ beside r = s − ω t with ‖r‖ and the next
+            // shadow · r, on this thread.
+            let (p_hat, s_hat, s, t, shadow) = (&*p_hat, &*s_hat, &*s, &*t, &*shadow);
+            let mut update_x = || for_each_mut(x, |k, x| *x += alpha * p_hat[k] + omega * s_hat[k]);
+            let mut update_r = || {
+                let (mut rr, mut shadow_r) = (neutral(), neutral());
+                for k in 0..n {
+                    r[k] = s[k] - omega * t[k];
+                    rr += r[k] * r[k];
+                    shadow_r += shadow[k] * r[k];
+                }
+                (rr, shadow_r)
+            };
+            let (rr, shadow_r) = if splits(n) {
+                rayon::join(update_r, update_x).0
+            } else {
+                update_x();
+                update_r()
+            };
+            known_rho = Some(shadow_r);
             rho_old = rho;
-            if omega == 0.0 || norm(&r) <= target {
+            if omega == 0.0 || rr.sqrt() <= target {
                 break;
             }
         }
-        a.residual(b, x, &mut r);
-        residual = norm(&r);
+        a.residual(b, x, r);
+        residual = norm(r);
     }
     SolveStats {
         iterations,
@@ -644,6 +745,8 @@ pub struct Gyres {
     group_component: Vec<usize>,
     /// Each mesh edge's two vertices.
     ends: Vec<[VertexId; 2]>,
+    /// The solver's vectors.
+    work: Krylov,
 }
 
 impl Gyres {
@@ -680,6 +783,12 @@ impl Gyres {
                 })
             })
             .collect();
+        let unknowns = systems
+            .iter()
+            .flatten()
+            .map(|s| s.matrix.rows())
+            .max()
+            .unwrap_or(0);
         let mut group_component = vec![0; basins.groups().len()];
         for (k, c) in components.iter().enumerate() {
             for &g in &c.groups {
@@ -696,6 +805,7 @@ impl Gyres {
             group_vertices: basins.groups().iter().map(|g| g.vertices.clone()).collect(),
             group_component,
             ends: mesh.edges().iter().map(|e| e.vertices).collect(),
+            work: Krylov::new(unknowns),
         }
     }
 
@@ -722,7 +832,8 @@ impl Gyres {
         assert_eq!(stress.len(), self.ends.len(), "one stress per edge");
         for (system, stats) in self.systems.iter().zip(&mut self.stats) {
             if let Some(system) = system {
-                *stats = Some(system.solve(stress, &mut self.psi, &mut self.group_psi));
+                *stats =
+                    Some(system.solve(stress, &mut self.psi, &mut self.group_psi, &mut self.work));
                 for &g in &system.groups {
                     for &v in &self.group_vertices[g] {
                         self.psi[v as usize] = self.group_psi[g];
@@ -783,6 +894,8 @@ impl Gyres {
             group_vertices: _,
             group_component: _,
             ends: _,
+            // Scratch.
+            work: _,
             stats,
             psi,
             group_psi,

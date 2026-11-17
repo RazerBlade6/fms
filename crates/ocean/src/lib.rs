@@ -68,7 +68,7 @@ mod ice;
 
 pub use basins::{Basin, Basins, CoastGroup, MIN_BASIN_VERTICES, WET_OCEAN_FRACTION};
 use fms_grid::Operators;
-use fms_grid::operators::MIN_CHUNK;
+use fms_grid::operators::{MIN_CHUNK, SPLIT_CHUNK, for_each_mut, for_each_mut2, splits};
 use fms_restart::{Restart, RestartError, count, flag};
 use glam::DVec3;
 pub use gyres::{Component, GyreParams, Gyres, SolveStats, edge_stress};
@@ -588,8 +588,8 @@ impl GyreFlow {
     /// another [`GyreParams::interval`] has passed, solve for the
     /// streamfunction and write the depth-integrated flow across each link
     /// to `flux` (kg s⁻¹, from `cells[0]` to `cells[1]`). Work per cell and
-    /// per edge, then a serial solve, so the result doesn't depend on the
-    /// thread count.
+    /// per edge, then a solve whose sums are serial, so the result doesn't
+    /// depend on the thread count.
     fn step(&mut self, dt: f64, wind: &Wind, links: &[Link], flux: &mut [f64]) {
         let weight = (dt / self.params.averaging).min(1.0);
         self.mean
@@ -625,9 +625,8 @@ impl GyreFlow {
                 *along = (0.5 * (vector(cells[0]) + vector(cells[1]))).dot(normal);
             });
         self.solver.solve(&self.along);
-        for (flux, link) in flux.iter_mut().zip(links) {
-            *flux = self.solver.edge_flux(link.edge);
-        }
+        let solver = &self.solver;
+        for_each_mut(flux, |l, flux| *flux = solver.edge_flux(links[l].edge));
         if cfg!(debug_assertions) {
             // No divergence in any cell: the flow moves nothing between the
             // layers.
@@ -659,6 +658,46 @@ const EKMAN: usize = 0;
 const EDDY: usize = 1;
 const GYRE: usize = 2;
 
+/// Each cell's links, in link order, for sums over a cell's links done cell
+/// by cell (side by side) in the order a pass over the links adds them up.
+#[derive(Clone, Debug)]
+struct Incidence {
+    /// Cell `i`'s entries are `entries[offsets[i]..offsets[i + 1]]`.
+    offsets: Vec<u32>,
+    /// `(link, side)`: the cell is the link's `cells[side]`.
+    entries: Vec<(u32, u8)>,
+}
+
+impl Incidence {
+    fn new(n: usize, links: &[Link]) -> Self {
+        let mut offsets = vec![0u32; n + 1];
+        for link in links {
+            for c in link.cells {
+                offsets[c as usize + 1] += 1;
+            }
+        }
+        for i in 0..n {
+            offsets[i + 1] += offsets[i];
+        }
+        let mut next = offsets.clone();
+        let mut entries = vec![(0, 0); offsets[n] as usize];
+        for (l, link) in links.iter().enumerate() {
+            for (side, c) in link.cells.into_iter().enumerate() {
+                entries[next[c as usize] as usize] = (l as u32, side as u8);
+                next[c as usize] += 1;
+            }
+        }
+        Self { offsets, entries }
+    }
+
+    /// Cell `i`'s links and its side of each, in link order.
+    fn of(&self, i: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.entries[self.offsets[i] as usize..self.offsets[i + 1] as usize]
+            .iter()
+            .map(|&(l, side)| (l as usize, usize::from(side)))
+    }
+}
+
 /// Two-layer advection by mass fluxes across links. Ekman and eddy fluxes run
 /// in the mixed layer and the deep layer carries them back, and what the
 /// mixed layer's flow leaves a cell short of is made up from below; the
@@ -674,9 +713,9 @@ struct Overturning {
     rise: [Vec<f64>; 2],
     /// Mass leaving each cell's mixed and deep layer (kg s⁻¹).
     leaving: [Vec<f64>; 2],
-    /// Heat convergence by each flux in each layer in the current sub-step,
-    /// per unit of specific heat (kg K s⁻¹).
-    convergence: [[Vec<f64>; 2]; 3],
+    /// Heat convergence in each cell by each flux in each layer in the
+    /// current sub-step, per unit of specific heat (kg K s⁻¹).
+    convergence: Vec<[[f64; 2]; 3]>,
     /// Mean heating by each flux of each layer over the latest call (W per
     /// m² of ocean).
     heating: [[Vec<f64>; 2]; 3],
@@ -690,7 +729,7 @@ impl Overturning {
         Self {
             rise: pair(),
             leaving: pair(),
-            convergence: [pair(), pair(), pair()],
+            convergence: vec![[[0.0; 2]; 3]; n],
             heating: [pair(), pair(), pair()],
             steps: 0,
         }
@@ -706,20 +745,25 @@ impl Overturning {
     /// more than [`MAX_ADVECTION_NUMBER`] of either layer's mass in one
     /// sub-step, which keeps every new temperature a mean of old ones. Every
     /// flux moves heat between two stores, so `Σ area (H_m T_m + H_d T_d)` is
-    /// conserved to round-off, by each flux on its own. Serial over links, so
-    /// the result doesn't depend on the thread count.
+    /// conserved to round-off, by each flux on its own. Each cell's sums over
+    /// its links are taken in link order, by a pass over the links or, on a
+    /// grid whose loops are split between threads, cell by cell side by side
+    /// (`incidence`), so the result doesn't depend on the thread count.
     #[allow(clippy::too_many_arguments)] // Each is one of the ocean's fields.
     fn advect(
         &mut self,
         mixed: &mut [f64],
         deep: &mut [f64],
         links: &[Link],
+        incidence: &Incidence,
         fluxes: &[Vec<f64>; 3],
         shares: [f64; 2],
         area: &[f64],
         params: &OceanParams,
         dt: f64,
     ) {
+        let n = area.len();
+        let split = splits(n);
         // What each flux's mixed and deep layer carry, per kg s⁻¹ of it.
         let layers = [[1.0, -1.0], [1.0, -1.0], shares];
         // Each layer's net flux across link `l`. The deep layer's upstream
@@ -728,78 +772,203 @@ impl Overturning {
         let net = |l: usize| -> [f64; 2] {
             std::array::from_fn(|k| (0..3).map(|c| layers[c][k] * fluxes[c][l]).sum())
         };
-        for field in self.rise.iter_mut().chain(&mut self.leaving) {
-            field.fill(0.0);
-        }
-        for (l, link) in links.iter().enumerate() {
-            let [a, b] = link.cells.map(|c| c as usize);
-            for (rise, flux) in self.rise.iter_mut().zip(&fluxes[..2]) {
-                rise[a] += flux[l];
-                rise[b] -= flux[l];
+        // Whether each layer's net flux across link `l` leaves its
+        // `cells[0]`.
+        let leaves_first = |[fm, fd]: [f64; 2]| [fm > 0.0, fd >= 0.0];
+        if split {
+            let [rise_ekman, rise_eddy] = &mut self.rise;
+            let [leaving_mixed, leaving_deep] = &mut self.leaving;
+            (
+                rise_ekman.par_iter_mut(),
+                rise_eddy.par_iter_mut(),
+                leaving_mixed.par_iter_mut(),
+                leaving_deep.par_iter_mut(),
+            )
+                .into_par_iter()
+                .with_min_len(SPLIT_CHUNK)
+                .enumerate()
+                .for_each(
+                    |(i, (rise_ekman, rise_eddy, leaving_mixed, leaving_deep))| {
+                        let mut rise = [0.0; 2];
+                        let mut leaving = [0.0; 2];
+                        for (l, side) in incidence.of(i) {
+                            for (rise, flux) in rise.iter_mut().zip(&fluxes[..2]) {
+                                if side == 0 {
+                                    *rise += flux[l];
+                                } else {
+                                    *rise -= flux[l];
+                                }
+                            }
+                            // Each layer leaves the cell its net flux leaves.
+                            let f = net(l);
+                            for ((leaving, f), first) in
+                                leaving.iter_mut().zip(f).zip(leaves_first(f))
+                            {
+                                if first == (side == 0) {
+                                    *leaving += f.abs();
+                                }
+                            }
+                        }
+                        [*rise_ekman, *rise_eddy] = rise;
+                        [*leaving_mixed, *leaving_deep] = leaving;
+                    },
+                );
+        } else {
+            for field in self.rise.iter_mut().chain(&mut self.leaving) {
+                field.fill(0.0);
             }
-            // Each layer leaves the cell its net flux leaves.
-            let [fm, fd] = net(l);
-            self.leaving[0][if fm > 0.0 { a } else { b }] += fm.abs();
-            self.leaving[1][if fd >= 0.0 { a } else { b }] += fd.abs();
+            for (l, link) in links.iter().enumerate() {
+                let [a, b] = link.cells.map(|c| c as usize);
+                for (rise, flux) in self.rise.iter_mut().zip(&fluxes[..2]) {
+                    rise[a] += flux[l];
+                    rise[b] -= flux[l];
+                }
+                // Each layer leaves the cell its net flux leaves.
+                let f = net(l);
+                for ((leaving, f), first) in self.leaving.iter_mut().zip(f).zip(leaves_first(f)) {
+                    leaving[if first { a } else { b }] += f.abs();
+                }
+            }
         }
         // Mass per m² of ocean (kg m⁻²).
         let mass = [
             params.density * params.mixed_depth,
             params.density * params.deep_depth,
         ];
-        let mut largest = 0.0f64;
-        for (i, &a) in area.iter().enumerate() {
+        // The largest share of a layer's mass a cell loses in `dt` (a
+        // maximum is exact in any order).
+        let (rise, leaving) = (&self.rise, &self.leaving);
+        let loss = |i: usize| {
+            let a = area[i];
+            let mut largest = 0.0f64;
             if a > 0.0 {
                 // Upwelling leaves the deep layer; downwelling the mixed one.
-                let w = self.rise[EKMAN][i] + self.rise[EDDY][i];
-                let mixed_out = self.leaving[0][i] + (-w).max(0.0);
-                let deep_out = self.leaving[1][i] + w.max(0.0);
+                let w = rise[EKMAN][i] + rise[EDDY][i];
+                let mixed_out = leaving[0][i] + (-w).max(0.0);
+                let deep_out = leaving[1][i] + w.max(0.0);
                 largest = largest.max(dt * mixed_out / (mass[0] * a));
                 if mass[1] > 0.0 {
                     largest = largest.max(dt * deep_out / (mass[1] * a));
                 }
             }
-        }
+            largest
+        };
+        let largest = if split {
+            (0..n)
+                .into_par_iter()
+                .with_min_len(SPLIT_CHUNK)
+                .map(loss)
+                .reduce(|| 0.0, f64::max)
+        } else {
+            (0..n).map(loss).fold(0.0, f64::max)
+        };
         let steps = (largest / MAX_ADVECTION_NUMBER).ceil().max(1.0);
         let h = dt / steps;
         for heating in self.heating.iter_mut().flatten() {
             heating.fill(0.0);
         }
         for _ in 0..steps as usize {
-            for convergence in self.convergence.iter_mut().flatten() {
-                convergence.fill(0.0);
-            }
-            for (l, link) in links.iter().enumerate() {
-                let [a, b] = link.cells.map(|c| c as usize);
-                let [fm, fd] = net(l);
-                let tm = if fm > 0.0 { mixed[a] } else { mixed[b] };
-                let td = if fd >= 0.0 { deep[a] } else { deep[b] };
-                for (c, [mixed_in, deep_in]) in self.convergence.iter_mut().enumerate() {
-                    let [m, d] = layers[c].map(|share| share * fluxes[c][l]);
-                    mixed_in[a] -= m * tm;
-                    mixed_in[b] += m * tm;
-                    deep_in[a] -= d * td;
-                    deep_in[b] += d * td;
+            {
+                // What link `l` carries in each flux's mixed and deep layer,
+                // taken upstream, out of its `cells[0]` into its `cells[1]`.
+                let (mixed, deep) = (&*mixed, &*deep);
+                let carried = |l: usize| -> [[f64; 2]; 3] {
+                    let [a, b] = links[l].cells.map(|c| c as usize);
+                    let [mixed_first, deep_first] = leaves_first(net(l));
+                    let tm = if mixed_first { mixed[a] } else { mixed[b] };
+                    let td = if deep_first { deep[a] } else { deep[b] };
+                    std::array::from_fn(|c| {
+                        let [m, d] = layers[c].map(|share| share * fluxes[c][l]);
+                        [m * tm, d * td]
+                    })
+                };
+                if split {
+                    for_each_mut(&mut self.convergence, |i, convergence| {
+                        *convergence = [[0.0; 2]; 3];
+                        for (l, side) in incidence.of(i) {
+                            let moved = carried(l);
+                            for (into, moved) in
+                                convergence.iter_mut().flatten().zip(moved.iter().flatten())
+                            {
+                                if side == 0 {
+                                    *into -= moved;
+                                } else {
+                                    *into += moved;
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    self.convergence.fill([[0.0; 2]; 3]);
+                    for (l, link) in links.iter().enumerate() {
+                        let [a, b] = link.cells.map(|c| c as usize);
+                        let moved = carried(l);
+                        for (c, moved) in moved.iter().enumerate() {
+                            for (k, moved) in moved.iter().enumerate() {
+                                self.convergence[a][c][k] -= moved;
+                                self.convergence[b][c][k] += moved;
+                            }
+                        }
+                    }
                 }
             }
-            for (i, &a) in area.iter().enumerate() {
-                if a > 0.0 {
-                    let w = self.rise[EKMAN][i] + self.rise[EDDY][i];
-                    let t = if w > 0.0 { deep[i] } else { mixed[i] };
-                    for (c, [mixed_in, deep_in]) in self.convergence.iter_mut().enumerate() {
-                        if c != GYRE {
-                            let w = self.rise[c][i];
-                            mixed_in[i] += w * t;
-                            deep_in[i] -= w * t;
-                        }
-                        self.heating[c][0][i] += h * mixed_in[i] / a;
-                        self.heating[c][1][i] += h * deep_in[i] / a;
+            // Then the vertical exchange, and each cell's new temperatures.
+            let rise = &self.rise;
+            let cell = |i: usize,
+                        convergence: &mut [[f64; 2]; 3],
+                        heating: [[&mut f64; 2]; 3],
+                        mixed: &mut f64,
+                        deep: &mut f64| {
+                let a = area[i];
+                if a <= 0.0 {
+                    return;
+                }
+                let w = rise[EKMAN][i] + rise[EDDY][i];
+                let t = if w > 0.0 { *deep } else { *mixed };
+                for (c, ([mixed_in, deep_in], [mixed_heating, deep_heating])) in
+                    convergence.iter_mut().zip(heating).enumerate()
+                {
+                    if c != GYRE {
+                        let w = rise[c][i];
+                        *mixed_in += w * t;
+                        *deep_in -= w * t;
                     }
-                    let [ekman, eddy, gyre] = &self.convergence;
-                    mixed[i] += h * (ekman[0][i] + eddy[0][i] + gyre[0][i]) / (mass[0] * a);
-                    if mass[1] > 0.0 {
-                        deep[i] += h * (ekman[1][i] + eddy[1][i] + gyre[1][i]) / (mass[1] * a);
-                    }
+                    *mixed_heating += h * *mixed_in / a;
+                    *deep_heating += h * *deep_in / a;
+                }
+                let [ekman, eddy, gyre] = convergence;
+                *mixed += h * (ekman[0] + eddy[0] + gyre[0]) / (mass[0] * a);
+                if mass[1] > 0.0 {
+                    *deep += h * (ekman[1] + eddy[1] + gyre[1]) / (mass[1] * a);
+                }
+            };
+            let [[e0, e1], [d0, d1], [g0, g1]] = &mut self.heating;
+            if split {
+                (
+                    self.convergence.par_iter_mut(),
+                    e0.par_iter_mut(),
+                    e1.par_iter_mut(),
+                    d0.par_iter_mut(),
+                    d1.par_iter_mut(),
+                    g0.par_iter_mut(),
+                    g1.par_iter_mut(),
+                    mixed.par_iter_mut(),
+                    deep.par_iter_mut(),
+                )
+                    .into_par_iter()
+                    .with_min_len(SPLIT_CHUNK)
+                    .enumerate()
+                    .for_each(|(i, (c, e0, e1, d0, d1, g0, g1, m, d))| {
+                        cell(i, c, [[e0, e1], [d0, d1], [g0, g1]], m, d);
+                    });
+            } else {
+                for (i, c) in self.convergence.iter_mut().enumerate() {
+                    let heating = [
+                        [&mut e0[i], &mut e1[i]],
+                        [&mut d0[i], &mut d1[i]],
+                        [&mut g0[i], &mut g1[i]],
+                    ];
+                    cell(i, c, heating, &mut mixed[i], &mut deep[i]);
                 }
             }
         }
@@ -809,7 +978,7 @@ impl Overturning {
             0.0
         };
         for heating in self.heating.iter_mut().flatten() {
-            heating.iter_mut().for_each(|q| *q *= scale);
+            for_each_mut(heating, |_, q| *q *= scale);
         }
         self.steps = steps as usize;
     }
@@ -827,6 +996,8 @@ pub struct Ocean {
     /// Ocean area of each cell (m²).
     area: Vec<f64>,
     links: Vec<Link>,
+    /// Each cell's links.
+    incidence: Incidence,
     /// Largest `Σ conductance / area` of any cell (m⁻²).
     largest_rate: f64,
     /// Heat convergence per cell, reused between steps.
@@ -1067,6 +1238,7 @@ impl Ocean {
                 1.0
             },
             mass_flux: std::array::from_fn(|_| vec![0.0; links.len()]),
+            incidence: Incidence::new(n, &links),
             links,
             largest_rate,
             convergence: vec![0.0; n],
@@ -1172,9 +1344,7 @@ impl Ocean {
         if let Some(wind) = &mut self.wind {
             if wind.samples > 1 {
                 let share = 1.0 / f64::from(wind.samples);
-                for s in &mut wind.stress {
-                    *s = [share * s[0], share * s[1]];
-                }
+                for_each_mut(&mut wind.stress, |_, s| *s = [share * s[0], share * s[1]]);
             }
             wind.samples = 0;
         }
@@ -1201,6 +1371,7 @@ impl Ocean {
                 &mut self.mixed,
                 &mut self.deep,
                 &self.links,
+                &self.incidence,
                 &self.mass_flux,
                 self.params.gyre_shares(),
                 &self.area,
@@ -1221,21 +1392,47 @@ impl Ocean {
                 }
             }
             if dt > 0.0 {
-                self.diffusion_heating.iter_mut().for_each(|q| *q /= dt);
+                for_each_mut(&mut self.diffusion_heating, |_, q| *q /= dt);
             }
         }
         if self.params.convective_adjustment && self.params.deep_depth > 0.0 {
             self.adjust();
         }
-        for (i, _) in self.area.iter().enumerate().filter(|(_, a)| **a > 0.0) {
-            let heating = [
-                self.ekman_heating(i),
-                self.eddy_heating(i),
-                self.diffusion_heating[i],
-                self.gyre_heating(i),
-            ];
-            for (total, q) in self.transported.iter_mut().zip(heating) {
-                total[i] += dt * q;
+        let (area, diffusion) = (&self.area, &self.diffusion_heating);
+        let heating = &self.overturning.heating;
+        // As `ekman_heating` and the others.
+        let column = |c: usize, i: usize| heating[c][0][i] + heating[c][1][i];
+        let cell = |i: usize, totals: [&mut f64; 4]| {
+            if area[i] > 0.0 {
+                let heating = [
+                    column(EKMAN, i),
+                    column(EDDY, i),
+                    diffusion[i],
+                    column(GYRE, i),
+                ];
+                for (total, q) in totals.into_iter().zip(heating) {
+                    *total += dt * q;
+                }
+            }
+        };
+        let [ekman, eddy, diffused, gyre] = &mut self.transported;
+        if splits(area.len()) {
+            (
+                ekman.par_iter_mut(),
+                eddy.par_iter_mut(),
+                diffused.par_iter_mut(),
+                gyre.par_iter_mut(),
+            )
+                .into_par_iter()
+                .with_min_len(SPLIT_CHUNK)
+                .enumerate()
+                .for_each(|(i, (a, b, c, d))| cell(i, [a, b, c, d]));
+        } else {
+            for i in 0..area.len() {
+                cell(
+                    i,
+                    [&mut ekman[i], &mut eddy[i], &mut diffused[i], &mut gyre[i]],
+                );
             }
         }
     }
@@ -1244,6 +1441,7 @@ impl Ocean {
         diffuse(
             &mut self.mixed,
             &self.links,
+            &self.incidence,
             &self.area,
             &mut self.convergence,
             amount,
@@ -1255,6 +1453,7 @@ impl Ocean {
         diffuse(
             &mut self.deep,
             &self.links,
+            &self.incidence,
             &self.area,
             &mut self.convergence,
             amount,
@@ -1574,6 +1773,7 @@ impl Ocean {
             params: _,
             area: _,
             links: _,
+            incidence: _,
             largest_rate: _,
             eddy_scale: _,
             basins: _,
@@ -1889,35 +2089,55 @@ fn get_all<'r, const N: usize>(
 /// One explicit diffusion step of `field`, where `amount` is the diffusivity
 /// times the step (m²). Flux form, so `Σ area · field` is conserved. Adds
 /// the heat each cell gained to `heat.1` (J per m² of ocean), with `heat.0`
-/// the layer's heat capacity (J m⁻² K⁻¹).
+/// the layer's heat capacity (J m⁻² K⁻¹). Each cell's sum over its links is
+/// taken in link order, by a pass over the links or, on a grid whose loops
+/// are split between threads, cell by cell side by side (`incidence`).
 fn diffuse(
     field: &mut [f64],
     links: &[Link],
+    incidence: &Incidence,
     area: &[f64],
     convergence: &mut [f64],
     amount: f64,
     heat: (f64, &mut [f64]),
 ) {
-    convergence.fill(0.0);
-    for link in links {
-        let [a, b] = link.cells.map(|c| c as usize);
-        let flux = link.conductance * (field[b] - field[a]);
-        convergence[a] += flux;
-        convergence[b] -= flux;
+    {
+        let field = &*field;
+        let flux = |link: &Link| {
+            let [a, b] = link.cells.map(|c| c as usize);
+            link.conductance * (field[b] - field[a])
+        };
+        if splits(field.len()) {
+            for_each_mut(convergence, |i, c| {
+                *c = 0.0;
+                for (l, side) in incidence.of(i) {
+                    if side == 0 {
+                        *c += flux(&links[l]);
+                    } else {
+                        *c -= flux(&links[l]);
+                    }
+                }
+            });
+        } else {
+            convergence.fill(0.0);
+            for link in links {
+                let [a, b] = link.cells.map(|c| c as usize);
+                let flux = flux(link);
+                convergence[a] += flux;
+                convergence[b] -= flux;
+            }
+        }
     }
     let (capacity, gained) = heat;
-    for (((t, c), a), q) in field
-        .iter_mut()
-        .zip(convergence.iter())
-        .zip(area)
-        .zip(gained)
-    {
-        if *a > 0.0 {
-            let change = amount * c / a;
+    let convergence = &*convergence;
+    for_each_mut2(field, gained, |i, t, q| {
+        let a = area[i];
+        if a > 0.0 {
+            let change = amount * convergence[i] / a;
             *t += change;
             *q += capacity * change;
         }
-    }
+    });
 }
 
 #[cfg(test)]
