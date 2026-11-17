@@ -113,7 +113,7 @@ a visual check.
   close-out if one is in reach (O-8, O-12, O-13, O-29, O-54).
   - [x] 15.1. Timing report in `run`: time per phase and solver
     iterations; a fixed benchmark run from a restart file
-  - [ ] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
+  - [x] 15.2. Baseline at 2,562 cells: thread counts, a profile, where the
     kernel time goes (O-54); first timing at 20,252 cells
   - [ ] 15.3. Thread scheduling: fewer and larger parallel regions, small ones
     serial (O-8, O-12)

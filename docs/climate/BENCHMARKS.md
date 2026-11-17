@@ -27,6 +27,8 @@ scripts/perf.sh profile 2562      # the same under samply
 scripts/perf.sh view profile-earth-2562
 scripts/perf.sh phases bench-earth-2562           # a run's time loop by phase
 scripts/perf.sh compare <before> <after>          # two runs' phases, in ms a step
+scripts/perf.sh same <run> <reference>            # are two runs' results identical?
+scripts/perf.sh top profile-earth-2562            # the profile as text: CPU time by function
 scripts/perf.sh conditions        # the machine's state, as logged below
 ```
 
@@ -38,6 +40,83 @@ memory. `phases` and `compare` read the timing report every run writes
 ([CLI.md](CLI.md)): wall time by phase of a step, and CG iterations by
 vertical mode. The script's header lists the options (`WORLD=aqua`, `THREADS`,
 `COLD=1` for a run from rest, `THROTTLE=1`).
+
+## Performance pass (M2.15)
+
+The target is the full climate run, `fms-climate run`, on Earth at 2,562
+cells: speed 2, one model week a second, is 294 steps a second at its 2,057 s
+step. That is the floor, not the ceiling. The default 20,252 cells (697 s
+step) is timed at the start and the end; speed 1, a model day a second, is
+124 steps a second there and speed 2 is 868.
+
+**The benchmark** is one model year from a restart file saved after the
+default nine-year spin-up (`scripts/perf.sh bench 2562`: 15,340 steps, with
+the year's statistics, monthly means and outputs as in any run). At 20,252
+cells it is 1.1 years from rest without ocean jumps
+(`COLD=1 YEARS=1.1 scripts/perf.sh bench 20252`: 49,818 steps). Steps a
+second are for the time loop; the median of three runs where three were
+made, and the spread between repeats is about 0.5%.
+
+**Conditions** (2026-11-17): MacBook Pro, Apple M5 Pro, 15 cores (5 "Super",
+10 "Performance"), 24 GB; macOS 26.6.2 (25G83); rustc 1.99.1; release
+profile. On AC power in High Power mode (`pmset` powermode 2), battery 95%.
+Only the Ghostty terminal, Activity Monitor and the agent driving the runs
+were open; CPU 96–98% idle before and after every run (`top`), 8–10 GB of
+memory unused. Runs went one at a time.
+
+### Baseline (15.2, commit `22b0240`)
+
+| Threads | 1 | 2 | 4 | 6 | 8 | 10 | 12 | 15 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Steps a second, 2,562 cells | 53 | 94 | 162 | 179 | 189 | 189 | 186 | 176 |
+| User time (s) | 306 | 322 | 331 | 361 | 391 | 414 | 436 | 470 |
+| Kernel time (s) | 1 | 2 | 8 | 42 | 90 | 143 | 200 | 302 |
+
+Results are identical at every thread count, to the last byte of every
+output. The run is 0.60 of speed 2 on all cores and fastest on 8 to 10. A
+step is 18.9 ms of work on one thread and takes 5.7 ms on 15: 3.3 times
+faster for 2.5 times the CPU time, most of that in the kernel.
+
+Wall time by phase, in ms a step (the physics and the dynamics tendencies run
+side by side, so the tendencies take the longer of the two):
+
+| Phase | 2,562 cells, 1 thread | 8 threads | 15 threads | 20,252 cells, 15 threads |
+| --- | --- | --- | --- | --- |
+| Physics tendency: moisture | 5.02 | 1.03 | 0.84 | 4.88 |
+| Physics tendency: column tendencies | 0.57 | 0.40 | 0.53 | 1.97 |
+| Dynamics tendency | 1.08 | 1.08 | 0.95 | 5.60 |
+| Hyperdiffusion | 1.09 | 0.39 | 0.55 | 2.38 |
+| Implicit right-hand side | 0.57 | 0.35 | 0.53 | 1.70 |
+| Helmholtz solves (with the interface ratios) | 2.03 | 0.72 | 0.75 | 6.41 |
+| Back-substitution | 0.19 | 0.14 | 0.22 | 0.53 |
+| Humidity transport | 1.26 | 0.79 | 0.98 | 3.23 |
+| Time filter and fixers | 0.10 | 0.13 | 0.14 | 1.48 |
+| Surface fluxes | 1.99 | 0.39 | 0.42 | 1.66 |
+| Radiation (every 5th step; every 15th at 20,252) | 4.32 | 0.74 | 0.54 | 1.23 |
+| Ocean, sea ice, land | 0.16 | 0.18 | 0.18 | 1.52 |
+| Health check, sampling, state copy | 0.20 | 0.23 | 0.28 | 0.91 |
+| **A step** | **18.87** | **5.29** | **5.69** | **27.34** |
+| **Steps a second** | **53** | **189** | **176** | **37** |
+
+- The column physics is 63% of the work (11.9 ms on one thread) and the part
+  that gains from threads: 5 to 8 times on 15.
+- The dynamics gains almost nothing: 6.3 ms on one thread, 4.1 on 15. At this
+  grid every array is below the smallest piece handed to a thread, so the
+  only parallelism is across the four layers, in dozens of regions a step
+  with tens of microseconds of work each.
+- The profile at 15 threads (`scripts/perf.sh top`) has 72% of the CPU time
+  in the kernel: the thread pool's idle workers yielding (33%), sleeping and
+  being woken (36%), and waiting on the pool's own lock (3%). That is where
+  the kernel time of O-54 goes. Allocation is 1.5%, and page faults don't
+  grow with the threads.
+- Of the time in the model itself, radiation's `column_fluxes` is 28%
+  (two calls a column: all-sky and clear-sky), `pow` 10% and `exp` 6%.
+- The solver takes 22.0 iterations a solve in the external mode, then 11.0,
+  5.0 and 3.8 (10.5 on average): the external mode alone, 0.69 ms on one
+  thread, sets the solves' wall time.
+- Setup is 7 s (building the world from the heightmap) and output 0.6 s.
+- At 20,252 cells the run makes 37 steps a second, 0.30 of speed 1, with 35%
+  of its CPU time in the kernel.
 
 ## Earlier benchmarks
 
