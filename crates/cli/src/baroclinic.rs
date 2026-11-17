@@ -97,6 +97,8 @@ pub fn run(args: BaroclinicArgs) -> Result<(), String> {
         total,
         frames: u64::from(args.frames),
         frames_from: 0,
+        spinners: 0,
+        stop_after: None,
     };
     integrate(&world, &fields, &mut si, &plan, &out, &description, |_| {})?;
     Ok(())

@@ -31,6 +31,7 @@ mod imprint;
 mod layered_run;
 mod ocean_transport;
 mod patterns;
+mod pool;
 mod render;
 mod restart;
 mod run_log;
@@ -93,7 +94,7 @@ enum Command {
     /// driven by radiation and moisture over ocean, sea ice and land; average
     /// the final year and write zonal means, a summary with the energy and
     /// water budgets, and annual-mean maps to `output/climate/`.
-    Run(climate::ClimateArgs),
+    Run(Box<climate::ClimateArgs>),
     /// Write the world's sea mask, land fraction and ocean basins (the
     /// gyres' domains) as maps, with tables of the bodies below sea level
     /// and of the basins, without running anything.
@@ -269,7 +270,7 @@ fn main() -> ExitCode {
         Command::Williamson(args) => williamson::run(args),
         Command::Baroclinic(args) => baroclinic::run(args),
         Command::HeldSuarez(args) => held_suarez::run(args),
-        Command::Run(args) => climate::run(args),
+        Command::Run(args) => climate::run(*args),
         Command::Basins(args) => basins::run(args),
     };
     match result {

@@ -40,6 +40,8 @@ pub struct LoopTiming {
     pub elapsed: Duration,
     pub timings: Timings,
     pub threads: usize,
+    /// How many of the threads spin when idle ([`crate::pool`]).
+    pub spinning: usize,
     pub cells: usize,
     /// Per vertical mode, external first: wave speed (m s⁻¹), solves and
     /// solve time (the modes are solved side by side, so these overlap).
@@ -73,11 +75,16 @@ impl LoopTiming {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "timing: {} steps in {:.2} s ({:.3} ms a step), {} threads, {} cells",
+            "timing: {} steps in {:.2} s ({:.3} ms a step), {} threads{}, {} cells",
             self.steps,
             self.elapsed.as_secs_f64(),
             self.ms_per_step(self.elapsed),
             self.threads,
+            if self.spinning > 0 {
+                format!(" ({} spinning when idle)", self.spinning)
+            } else {
+                String::new()
+            },
             self.cells
         );
         let _ = writeln!(
@@ -243,6 +250,7 @@ mod tests {
             elapsed: 10 * ms,
             timings,
             threads: 1,
+            spinning: 0,
             cells: 642,
             wave_speeds: vec![300.0],
             modes: vec![ModeSolves::default()],

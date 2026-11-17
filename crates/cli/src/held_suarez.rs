@@ -111,6 +111,8 @@ pub fn run(args: HeldSuarezArgs) -> Result<(), String> {
         total,
         frames: u64::from(args.frames),
         frames_from: movie_from,
+        spinners: 0,
+        stop_after: None,
     };
     let mut si = stepper(model, state, setup.dt);
     let mut spun_up = None;

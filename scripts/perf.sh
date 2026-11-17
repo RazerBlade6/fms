@@ -19,7 +19,9 @@
 #
 # Environment:
 #   WORLD=earth|aqua   Earth's heightmap (default) or a blank all-ocean world
-#   THREADS=N          rayon threads (default: all cores)
+#   THREADS=N          threads (default: the run's own choice for the grid)
+#   IDLE=spin|sleep    what idle threads do (default: the run's own choice)
+#   STEPS=N            stop a bench or profile run after N steps: its timing report only
 #   YEARS=N            length of a bench or profile run (default 1; 2 with COLD=1)
 #   COLD=1             bench or profile from rest, without a restart file or ocean jumps
 #   THROTTLE=1         background priority and 4 threads, for spin-ups while the laptop is in use
@@ -34,7 +36,7 @@ BIN=target/release/fms-climate
 HEIGHTMAP=data/ETOPO_2022_v1_60s_N90W180_surface.tif
 
 die() { echo "perf.sh: $*" >&2; exit 1; }
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The climate grid frequency for a number of cells (10·f² + 2).
 frequency() {
@@ -110,7 +112,7 @@ run_one() {
     mkdir -p "$dir"
     {
         echo "$(date '+%Y-%m-%d %H:%M') $(commit) $label ($kind, $cells cells, $WORLD," \
-            "threads: ${threads:-all}${THROTTLE:+, background priority})"
+            "threads: ${threads:-auto}${IDLE:+, idle: $IDLE}${THROTTLE:+, background priority})"
         echo "   ${RAYON_NUM_THREADS:+RAYON_NUM_THREADS=$RAYON_NUM_THREADS }${cmd[*]}"
     } >>"$OUT/RUNS.txt"
     echo "$label: ${cmd[*]}" >&2
@@ -144,7 +146,7 @@ run_one() {
     fi
     [ -f "$OUT/results.tsv" ] || printf 'label\tkind\tcells\tworld\tthreads\tcommit\tsteps_per_s\tcg_per_solve\tloop\tprocess_s\tuser_s\tkernel_s\tcontext_switches\tpage_faults\tpeak_mb\n' >"$OUT/results.tsv"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$label" "$kind" "$cells" "$WORLD" "${threads:-all}" "$(commit)" "$steps" "$cg" "$loop" \
+        "$label" "$kind" "$cells" "$WORLD" "${threads:-auto}${IDLE:+ $IDLE}" "$(commit)" "$steps" "$cg" "$loop" \
         "$real" "$user" "$sys" "$switches" "$faults" "$memory" >>"$OUT/results.tsv"
     echo "$label: $steps steps/s in the time loop ($loop), $cg CG iterations per solve;" \
         "whole process $real s, user $user s, kernel $sys s -> $dir" >&2
@@ -154,13 +156,14 @@ restart_file() { echo "$OUT/restart/$WORLD-$1.fmsrst"; }
 
 # The options of a bench or profile run on CELLS cells.
 bench_args() {
+    local extra="${IDLE:+ --idle $IDLE}${STEPS:+ --stop-after $STEPS}"
     if [ -n "${COLD:-}" ]; then
-        echo "--ocean-jumps 0 --years ${YEARS:-2}"
+        echo "--ocean-jumps 0 --years ${YEARS:-2}$extra"
     else
         local restart
         restart=$(restart_file "$1")
         [ -f "$restart" ] || die "$restart is missing; run 'scripts/perf.sh spinup $1' first, or set COLD=1"
-        echo "--restart $restart --years ${YEARS:-1}"
+        echo "--restart $restart --years ${YEARS:-1}$extra"
     fi
 }
 

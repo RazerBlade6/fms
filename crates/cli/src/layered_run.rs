@@ -18,6 +18,7 @@ use fms_grid::Operators;
 use fms_grid::coords::to_lat_lon;
 use fms_sim::World;
 
+use crate::pool::Spinners;
 use crate::render::{format_value, write_gif, write_png};
 use crate::run_log::{Record, RunLog};
 use crate::timing::{LoopTiming, ModeSolves};
@@ -313,6 +314,12 @@ pub struct Plan {
     /// GIF frames, spread evenly over steps `frames_from..=total`.
     pub frames: u64,
     pub frames_from: u64,
+    /// Threads of the pool kept spinning through the time loop when they
+    /// have no work ([`crate::pool`]).
+    pub spinners: usize,
+    /// Stop the time loop after this many steps of this run, for timing:
+    /// the timing report is written and nothing else.
+    pub stop_after: Option<u64>,
 }
 
 /// Run `si` to `plan.total`, checking every step. Samples the diagnostics
@@ -321,6 +328,8 @@ pub struct Plan {
 /// of the final state to `out.dir`, with the timing report
 /// ([`crate::timing`]): to stderr, and as `timing.csv` and `solver.csv`. On
 /// a blow-up, writes the dump to `out.dir/blowup` and returns an error.
+/// Stopped early by `plan.stop_after`, writes only the timing report and
+/// says so in the log it returns.
 pub fn integrate(
     world: &World,
     fields: &Fields,
@@ -377,7 +386,11 @@ pub fn integrate(
     // stepper times itself, and frames not due) are its overhead.
     let mut clock = Stopwatch::start();
     let mut last_good = si.state().clone();
-    while si.steps() < plan.total {
+    let stop_at = plan
+        .stop_after
+        .map_or(plan.total, |n| plan.total.min(start_step + n));
+    let spinners = Spinners::start(plan.spinners);
+    while si.steps() < stop_at {
         clock.lap();
         last_good.clone_from(si.state());
         timings.add(Phase::KeepLastGood, clock.lap());
@@ -402,7 +415,7 @@ pub fn integrate(
             }
         };
         timings.add(Phase::HealthCheck, clock.lap());
-        if si.steps() % sample_every == 0 || si.steps() == plan.total {
+        if si.steps() % sample_every == 0 || si.steps() == stop_at {
             log.push(Record {
                 step: si.steps(),
                 day,
@@ -427,6 +440,8 @@ pub fn integrate(
         }
     }
     let elapsed = loop_started.elapsed();
+    let spinning = spinners.count();
+    drop(spinners);
     log.loop_started = Some(loop_started);
     log.loop_time = elapsed;
     let stats = si.solver_stats();
@@ -440,7 +455,7 @@ pub fn integrate(
         eprintln!(
             "ran in {elapsed:.1?} ({:.0} steps/s, {:.1} CG iterations per solve); mass change {dm:+.1e}, \
              energy {:+.1e} (budget residual {de:+.1e})",
-            (plan.total - first.step) as f64 / elapsed.as_secs_f64(),
+            (si.steps() - first.step) as f64 / elapsed.as_secs_f64(),
             iterations as f64 / solves.max(1) as f64,
             last.diagnostics.energy / first.diagnostics.energy - 1.0,
         );
@@ -451,6 +466,7 @@ pub fn integrate(
         elapsed,
         timings,
         threads: rayon::current_num_threads(),
+        spinning,
         cells: si.state().ps.len(),
         wave_speeds: si.wave_speeds(),
         modes,
@@ -462,11 +478,15 @@ pub fn integrate(
             .collect(),
     };
     eprint!("{}", report.report());
+    report.write_csv(&out.dir)?;
+    if si.steps() < plan.total {
+        log.stopped_early = true;
+        return Ok(log);
+    }
     write_animation(world, key, overlay, &frames, out)?;
     let csv = out.dir.join("diagnostics.csv");
     log.write_csv(&csv)?;
     println!("diagnostics -> {}", csv.display());
-    report.write_csv(&out.dir)?;
     fields.publish(world, si.state(), si.model());
     write_maps(
         world,

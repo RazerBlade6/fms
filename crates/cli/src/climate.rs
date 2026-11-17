@@ -35,6 +35,7 @@ use crate::layered_run::{
     sample_every, stepper, write_map,
 };
 use crate::ocean_transport::{edge_latitudes, northward_transport};
+use crate::pool::{self, Idle};
 use crate::render::write_png;
 use crate::restart;
 use crate::{ImageArgs, WorldArgs, build_world};
@@ -157,6 +158,22 @@ pub struct ClimateArgs {
     /// GIF frames per second.
     #[arg(long, default_value_t = 12)]
     fps: u16,
+    /// Threads [default: every core from 8,192 cells, where the grid's
+    /// loops are split between threads; below, one for every 256 cells;
+    /// `RAYON_NUM_THREADS` if set].
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    threads: Option<u32>,
+    /// What threads without work do between a step's parallel regions:
+    /// `spin` keeps all but one looking for work, which holds every thread's
+    /// core busy for the whole run, and `sleep` lets them sleep [default:
+    /// spin from 8,192 cells with every core in use, otherwise sleep].
+    #[arg(long, value_enum)]
+    idle: Option<Idle>,
+    /// Stop after this many steps and write only the timing report: for
+    /// timing a grid whose year is long. The other options are as for the
+    /// run that is cut short.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    stop_after: Option<u64>,
     /// Write the run's final state to FILE when it has run to the end, to
     /// continue from with `--restart`. A run that saves its state may end
     /// before two years in true time follow the last ocean jump.
@@ -411,6 +428,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         }
         check_end_year(years, &spin_up, saving)?;
     }
+    // Before anything uses the thread pool.
+    let frequency = args.world.climate_frequency as usize;
+    let pool = pool::configure(
+        10 * frequency * frequency + 2,
+        args.threads.map(|n| n as usize),
+        args.idle,
+    );
     let mut world = build_world(&args.world)?;
     let fields = Fields::register(&mut world)?;
     let planet_params = *world.planet.params();
@@ -843,6 +867,8 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
         total,
         frames: u64::from(args.frames),
         frames_from: movie_from,
+        spinners: pool.spinners,
+        stop_after: args.stop_after,
     };
     let mut sums: Vec<Vec<f64>> = vec![vec![0.0; nc]; names.len()];
     let mut samples = 0.0;
@@ -1019,6 +1045,13 @@ pub fn run(args: ClimateArgs) -> Result<(), String> {
             samples += 1.0;
         }
     })?;
+    if log.stopped_early {
+        println!(
+            "stopped after {} steps (--stop-after): the timing report only",
+            args.stop_after.unwrap_or_default()
+        );
+        return Ok(());
+    }
     saved?;
     monthly_result.map_err(|e| format!("cannot write the monthly means: {e}"))?;
     rain_result.map_err(|e| format!("cannot write the monthly rain belt: {e}"))?;

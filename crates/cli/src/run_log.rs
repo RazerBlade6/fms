@@ -28,6 +28,9 @@ pub struct RunLog {
     pub loop_started: Option<Instant>,
     /// How long the time loop took.
     pub loop_time: Duration,
+    /// Whether the loop stopped before the run's last step, asked to time
+    /// only so many steps.
+    pub stopped_early: bool,
 }
 
 impl RunLog {
