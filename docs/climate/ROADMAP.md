@@ -5,7 +5,7 @@ What we've done and what we're doing next. How things work is in
 [OBSERVATIONS.md](OBSERVATIONS.md). Every step ends with an automated test or
 a visual check.
 
-**Next: M2.15.**
+**Next: M2.16.**
 
 ## M1 — Foundations
 - [x] 1. Cargo workspace, rustfmt, clippy and CI
@@ -107,7 +107,7 @@ a visual check.
   - [x] 14.7. Fast rotation: narrower Hadley cell, a second belt of westerlies,
     larger contrast (O-53)
   - [x] 14.8. Close-out
-- [ ] 15. **Performance pass**: speed 2 (one model week a second, 294 steps/s)
+- [x] 15. **Performance pass**: speed 2 (one model week a second, 294 steps/s)
   for the full climate run (`fms-climate run`) at 2,562 cells. The default
   20,252 cells is timed at the start and at the end, and gets a target at the
   close-out if one is in reach (O-8, O-12, O-13, O-29, O-54).
@@ -125,8 +125,8 @@ a visual check.
   - [x] 15.7. Column physics and radiation
   - [x] 15.8. Ocean, sea ice and the run's own sampling; the step's
     single-threaded loops on the pool at large grids
-  - [ ] 15.9. Close-out: final timings at 2,562 and 20,252 cells on a cold
-    machine; the target at 20,252 cells decided
+  - [x] 15.9. Close-out: final timings on a cold machine (346 steps/s at 2,562
+    cells, 71 at 20,252); the target at 20,252 cells set at half of speed 1 and met
 - [ ] 16. **Earth benchmark, part 1**, against `reference/earth` plus ERA5
   winds and temperatures aloft, with a tuning pass: cloud brightness and
   albedo (O-42), trade winds and jets, the tropical rain belt and its

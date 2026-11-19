@@ -51,21 +51,35 @@ step. That is the floor, not the ceiling. The default 20,252 cells (697 s
 step) is timed at the start and the end; speed 1, a model day a second, is
 124 steps a second there and speed 2 is 868.
 
+**Result.** At 2,562 cells the run went from 176 steps a second on 15 threads
+(189 at best) to 346, 1.18 of speed 2. At 20,252 cells it went from 36.6 to 71
+steps a second, 0.30 to 0.57 of speed 1. Results are bit-identical throughout
+except for one rounding-level solver change (15.6); no accuracy was traded.
+
 **The benchmark** is one model year from a restart file saved after the
 default nine-year spin-up (`scripts/perf.sh bench 2562`: 15,340 steps, with
 the year's statistics, monthly means and outputs as in any run). At 20,252
 cells it is 1.1 years from rest without ocean jumps
 (`COLD=1 YEARS=1.1 scripts/perf.sh bench 20252`: 49,818 steps). Steps a
 second are for the time loop; the median of three runs where three were
-made. The spread between repeats was about 0.5% in the morning's runs and
-several percent later in the day ("Drift on the day" below).
+made. Repeats agree within about 1% in full runs; the 3,000-step runs at
+20,252 cells vary by 10% and are only a guide.
 
-**Conditions** (2026-11-17): MacBook Pro, Apple M5 Pro, 15 cores (5 "Super",
+**Conditions.** 2026-11-17: MacBook Pro, Apple M5 Pro, 15 cores (5 "Super",
 10 "Performance"), 24 GB; macOS 26.6.2 (25G83); rustc 1.99.1; release
 profile. On AC power in High Power mode (`pmset` powermode 2), battery 95%.
 Only the Ghostty terminal, Activity Monitor and the agent driving the runs
 were open; CPU 96–98% idle before and after every run (`top`), 8–10 GB of
 memory unused. Runs went one at a time.
+
+2026-11-19 (close-out, 13:45 to about 14:45 IST): the same machine, macOS and
+rustc; AC power, High Power mode, battery 95%. The machine had been on minimal
+workloads for about 36 hours and restarted twice. Only Ghostty, Activity
+Monitor and the agent driving the runs were open. CPU 94 to 98% idle before
+and after the sets of runs (`top`); 3 to 4.6 GB of memory unused before, 1 GB
+after the last run. `syspolicyd` was busy for a few minutes after the profile
+run (67% of a core, then 17%, then 9%); the 20,252-cell runs started once the
+machine was 93% idle or more. Runs went one at a time.
 
 ### Baseline (15.2, commit `22b0240`)
 
@@ -313,7 +327,8 @@ Wall time by phase, ms a step, in those runs:
 On one thread a step is 75 ms (first 3,000 steps), so 15 threads make it 4.6
 times faster asleep and 5.4 spinning: tendencies 7 times, surface fluxes and
 radiation 10 times, the implicit right-hand side, the solves, the
-back-substitution and the transport 3 to 5 times.
+back-substitution and the transport 3 to 5 times. The close-out has the
+final figures.
 
 ### Single-threaded loops at large grids (15.8, `e64d918` to `788b5c3`)
 
@@ -347,9 +362,8 @@ radiation, which wasn't touched, differs by 2% between them):
 | **A step** | **13.92** | **11.61** |
 | **Steps a second** | **71.8** | **86.1** |
 
-These first 3,000 steps run faster than a year's average: the code of the
-"before" column made 65.3 steps a second over the 1.1-year run above. The
-year's figure for the "after" column is the close-out's.
+Over the year the gain is 8.7% (65.3 to 71.0 steps a second); the
+3,000-step window overstated it.
 
 - The health check summarizes the fields side by side and scans in order
   only a state with a problem, so the error it reports is the same.
@@ -372,31 +386,8 @@ the same run was about 7% slower than in the morning and repeats differed by
 several percent (15 threads at 20,252 cells: 16.2, then 16.7 to 17.4 ms; the
 2,562-cell run on 15 threads: 302 straight after the test suite, 321 to 328
 otherwise). `pmset -g therm` recorded no warning. Comparisons above are
-between runs alternated in the same state. **The close-out timings (15.9)
-wait for a cold machine.**
-
-### Close-out, still to run (15.9)
-
-On a cold, idle machine, with the conditions logged as above:
-
-```sh
-scripts/perf.sh conditions
-scripts/perf.sh bench 2562 final-2562-1      # three times: -1, -2, -3; the median
-scripts/perf.sh sweep 2562 1 4 8 10 15       # the thread counts, each asked for
-THREADS=15 IDLE=spin scripts/perf.sh bench 2562 final-2562-spin
-COLD=1 YEARS=1.1 scripts/perf.sh bench 20252 final-20252      # like the baseline's run
-COLD=1 YEARS=1.1 IDLE=sleep scripts/perf.sh bench 20252 final-20252-sleep
-STEPS=3000 COLD=1 YEARS=1.1 THREADS=1 scripts/perf.sh bench 20252 final-20252-t1
-scripts/perf.sh profile 2562 final-profile-2562 && scripts/perf.sh top final-profile-2562
-scripts/perf.sh same final-2562-1 auto-2562-1     # identical results to today's
-scripts/perf.sh same final-20252 spin-20252-cold  # and at the default grid
-```
-
-Then: the final table here (2,562 and 20,252 cells against the baseline), the
-target at 20,252 cells decided, the roadmap's 15.9 ticked. The runs of
-2026-11-17 kept in `output/m2.15/` for comparison: `base-2562-1` (baseline
-results), `auto-2562-1` (results after 15.6), `base-20252-cold`,
-`final-20252-cold` and `spin-20252-cold`, and `lg-ref` (10,242 cells).
+between runs alternated in the same state. **The close-out on a cold machine
+showed that full-year runs had lost little to it.**
 
 ### Measured and not adopted
 
@@ -416,6 +407,127 @@ results), `auto-2562-1` (results after 15.6), `base-20252-cold`,
   Helmholtz solves, 0.1 ms in the gyres'); the gyre preconditioner
   multiplying by a stored reciprocal (0.05 to 0.1 ms) or made parallel (up
   to 0.4 ms, with other iteration counts).
+
+### Close-out (15.9, commit `38f884e`, 2026-11-19)
+
+Conditions as above for 2026-11-19. Final code against the baseline.
+
+**2,562 cells**, one model year from the restart file (15,340 steps). Three
+runs with the run's own choice of threads (10, idle ones sleep): 350, 345 and
+346 steps a second. The median is 346, 2.89 ms a step, 1.18 of speed 2 (294).
+The baseline's best was 189 (8 to 10 threads) and 176 on all 15.
+
+| Threads | 1 | 4 | 8 | 10 (the run's choice) | 15 | 15, 14 of them spinning |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline `22b0240`, steps a second | 53 | 162 | 189 | 189 | 176 | not measured |
+| Final `38f884e`, steps a second | 97 | 295 | 344 | 346 | 331 | 351 |
+| Final user time (s) | 175 | 186 | 220 | 232 | 262 | 630 |
+| Final kernel time (s) | 0.5 | 5 | 49 | 77 | 153 | 17 |
+| Final context switches (millions) | 0.07 | 1.4 | 3.9 | 6.2 | 11.2 | 1.5 |
+
+The baseline at 10 threads had 414 s of user time and 143 s of kernel time; at
+15 threads, 470 s and 302 s. Four threads alone now reach speed 2 (295).
+Results of `final-2562-1`, `final-2562-t1` and `final-2562-spin` are
+identical, to the last byte of every output, to `auto-2562-1` (the run of
+2026-11-17 after 15.6).
+
+Wall time by phase, ms a step (rows as in the baseline's table):
+
+| Phase | Baseline, 1 thread | Final, 1 thread | Baseline, 8 threads | Final, 10 threads |
+| --- | --- | --- | --- | --- |
+| Physics tendency: moisture | 5.02 | 2.16 | 1.03 | 0.45 |
+| Physics tendency: column tendencies | 0.57 | 0.13 | 0.40 | 0.17 |
+| Dynamics tendency | 1.08 | 1.01 | 1.08 | 0.66 |
+| Hyperdiffusion | 1.09 | 0.53 | 0.39 | 0.46 |
+| Implicit right-hand side | 0.57 | 0.34 | 0.35 | 0.19 |
+| Helmholtz solves (with the interface ratios) | 2.03 | 0.93 | 0.72 | 0.29 |
+| Back-substitution | 0.19 | 0.23 | 0.14 | 0.15 |
+| Humidity transport | 1.26 | 0.92 | 0.79 | 0.52 |
+| Time filter and fixers | 0.10 | 0.02 | 0.13 | 0.03 |
+| Surface fluxes | 1.99 | 1.62 | 0.39 | 0.26 |
+| Radiation (every 5th step) | 4.32 | 1.90 | 0.74 | 0.25 |
+| Ocean, sea ice, land | 0.16 | 0.17 | 0.18 | 0.19 |
+| Health check, sampling, state copy | 0.20 | 0.13 | 0.23 | 0.13 |
+| **A step** | **18.87** | **10.32** | **5.29** | **2.86** |
+| **Steps a second** | **53** | **97** | **189** | **350** |
+
+The 10-thread column is the first of the three runs (350 steps a second). On
+threads the physics, the dynamics tendency and the hyperdiffusion run side by
+side, so the tendencies take 0.82 ms, not their sum. The mass fluxes moved
+from the transport into the back-substitution's region, and the filter's layer
+work into the transport's.
+
+Profile on 10 threads (`final-profile-2562`): 330 s of CPU time sampled, 62% of
+it in the kernel (the idle pool: yielding 30%, sleeping and waking 29%, plus a
+few percent of signalling and locks), against 72% of about 800 s on 15 threads
+at the baseline. In the model's own code the largest are the convective parcel
+lift (3.6%), `exp` (2.5%), `pow` (2.3%) and the longwave transfer (2.2%).
+
+**20,252 cells**, 1.1 years from rest, 49,818 steps (the baseline's run).
+
+| | Steps a second | ms a step | Share of speed 1 (124) | User time (s) | Kernel time (s) | Context switches (millions) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline `22b0240`, 15 threads | 36.6 | 27.34 | 0.30 | 9,965 | 5,286 | 323 |
+| Final, the run's choice (15 threads, 14 spinning) | 71.0 and 71.7 (two runs) | 14.09 | 0.57 | 9,657 | 424 | 25 |
+| Final, `IDLE=sleep` (15 threads sleeping) | 59.8 | 16.72 | 0.48 | 7,279 | 2,838 | 142 |
+
+The second run of the run's choice (`final-20252-2`) took 694.8 s: 71.7 steps a
+second, user time 9,751 s, kernel time 411 s, 20 million context switches. The
+table's other columns are the first run's. Both give results identical to
+`spin-20252-cold` (the run of 2026-11-17 after 15.6), so every change after
+15.6 is bit-identical at this grid too. The run is 1.94 times faster than the
+baseline for 34% less CPU time in all (10,081 s against 15,251). A default
+nine-year run at this grid (407,610 steps) takes about 1.6 hours instead of
+3.1. Spinning is worth 59.8 to 71.0 steps a second over a year (+19%).
+
+Phases, ms a step:
+
+| Phase | Baseline | Final (spinning) | Final (sleeping) |
+| --- | --- | --- | --- |
+| Tendencies (physics, dynamics, hyperdiffusion side by side) | 8.10 | 4.80 | 5.12 |
+| Implicit right-hand side | 1.70 | 0.70 | 0.70 |
+| Helmholtz solves | 6.41 | 1.99 | 3.65 |
+| Back-substitution, mass fluxes | 0.96 | 0.51 | 0.51 |
+| Flux-corrected transport, time filter | 4.03 | 2.01 | 2.24 |
+| Surface fluxes | 1.66 | 1.29 | 1.28 |
+| Radiation (every 15th step) | 1.23 | 0.53 | 0.50 |
+| Ocean transport (every 15th step) | 1.03 | 1.25 | 1.49 |
+| Ocean surface, sea ice, land, budgets, humidity fill | 1.30 | 0.57 | 0.81 |
+| Health check, sampling, state copy | 0.91 | 0.37 | 0.41 |
+| **A step** | **27.34** | **14.09** | **16.72** |
+
+On one thread, the first 3,000 steps from rest (`final-20252-t1`) take 78.0 ms
+a step (12.8 steps a second). The same 3,000 steps with the run's choice of
+threads (`final-20252-3000`) take 13.2 ms (76 steps a second), so 15 threads are
+5.9 times one. Per phase on one thread, in ms: moisture 16.7, column tendencies
+1.3, dynamics tendency 9.8, hyperdiffusion 6.2, implicit right-hand side 4.1,
+Helmholtz solves 7.4, back-substitution 2.6, flux-corrected transport 8.4,
+surface fluxes 11.8, radiation 5.0, ocean transport 1.1.
+
+**The target at 20,252 cells.** Speed 1 (a model day a second, 124 steps a
+second, 8.06 ms a step) is not in reach on this machine with this design: one
+thread needs 78 ms a step, so 15 cores would have to be worth 9.7 threads, and
+they are worth 5.9 (5 fast cores and 10 slower; the dynamics' phases gain 3 to
+5 times, the column physics 10). The target is set at half of speed 1, a model
+day in two seconds (62 steps a second), and is met at 71. What is left to gain
+without changing the model is small: the rounding-level solver changes listed
+above (2 to 5%).
+
+**Speed 3 at 2,562 cells** (a model month a second, about 1,260 steps a second,
+0.79 ms a step) is out of reach: one thread needs 10.3 ms a step, so the cores
+would have to be worth 13 threads, and the run's 10 threads are worth 3.6 at
+this grid, where the dynamics has four layers to share out (O-55).
+
+No accuracy was traded anywhere in the pass: every change is bit-identical
+except the Helmholtz stencil (rounding level, same tolerance, climate equal
+within year-to-year noise).
+
+Runs kept in `output/m2.15`: `base-2562-1`, `base-20252-cold`,
+`profile-base-2562`, `auto-2562-1`, `spin-20252-cold`, `lg-ref`,
+`final-2562-1`, `-2`, `-3`, `final-2562-t1`, `-t4`, `-t8`, `-t15`,
+`final-2562-spin`, `final-profile-2562`, `final-20252`, `final-20252-2`,
+`final-20252-sleep`, `final-20252-t1`, `final-20252-3000`, `restart/`,
+`RUNS.txt` and `results.tsv`.
 
 ## Earlier benchmarks
 

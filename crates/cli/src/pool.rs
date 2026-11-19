@@ -6,7 +6,7 @@
 //! costs tens of microseconds and a context switch. Where a step has work
 //! for every thread, at grids whose loops are split between threads, that
 //! waiting is the largest single cost: keeping the workers spinning, so they
-//! take the next region's work at once, is 18% faster at 20,252 cells. On a
+//! take the next region's work at once, is 19% faster at 20,252 cells. On a
 //! small grid the dynamics has only its layers to share out; spinning gains
 //! nothing there, and threads beyond about one per 256 cells only add
 //! wake-ups. Measured at M2.15 (docs/climate/BENCHMARKS.md).

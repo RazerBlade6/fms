@@ -118,7 +118,7 @@ with the layers as tasks, and operators fused into fewer passes
 ### O-13: Semi-implicit steps are long but expensive
 *Partly resolved at M2.15.6; the rest parked.* An iteration costs less than half what
 it did (4 passes instead of 9, the operator from a stencil), and the solves are 10% of
-a step at 2,562 cells and 11% at 20,252. The iteration count is unchanged: 22 a solve
+a step at 2,562 cells and 14% at 20,252 (1.99 of 14.09 ms). The iteration count is unchanged: 22 a solve
 in the external mode, which runs on one thread and sets the solves' wall time. An
 extrapolated first guess raised it. Left: multigrid or Chebyshev preconditioning (a
 large change for a tenth of a step), a looser tolerance (changes results). Size the
@@ -129,7 +129,7 @@ step from a design maximum wind: flows accelerate, and Williamson 5 blew up othe
 time and removing it was worth 1 to 2%.
 
 ### O-49: Ocean transport is about 5% of a step
-*Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing. At 20,252 cells after M2.15 it is 9% of a step (1.07 ms): the gyres' solve is 94% of it, half of that the ILU preconditioner on one thread. A parallel preconditioner would change the iteration counts.
+*Recorded at M2.13.3.* Earth at 2,562 cells, 4 threads, background priority: transport 4.8% of run time, surface heat and ice 0.8%; advection needs 1 sub-step per call. 90-day runs (3,780 steps): 94.0 s and 102.5 s with transport every step, 97.9 s and 97.3 s every 5 steps, 91.8 s daily. The expected saving of about 4% is within the run-to-run noise; surface temperature after 90 days is 285.52, 285.53, 285.54 K. Longer intervals than the radiation's buy almost nothing. At 20,252 cells after M2.15 it is 1.25 ms of a 14.09 ms step (9%): the gyres' solve is 94% of it, half of that the ILU preconditioner on one thread. A parallel preconditioner would change the iteration counts.
 
 ### O-54: `fms-climate run` spends 40–45% of its CPU time in the kernel
 *Resolved at M2.15* ([BENCHMARKS.md](BENCHMARKS.md)). The kernel time was the thread
@@ -137,9 +137,12 @@ pool's idle workers yielding, sleeping and being woken between a step's many sho
 parallel regions (72% of the CPU time on 15 threads at 2,562 cells, 35% at 20,252).
 The step has fewer regions, a small grid takes 10 threads, and on a large grid the
 idle threads spin instead of sleeping (context switches at 20,252 cells: 323 million
-a year to 34 million). Left: with every core spinning, a step's serial stretches run
+a year to 25 million). Left: with every core spinning, a step's serial stretches run
 10 to 25% slower, on whichever core took the step; threads can't be pinned to the
 fast cores without `unsafe` code or a new dependency.
+
+### O-55: The default grid runs at 0.57 of speed 1
+*Parked.* 71 steps/s at 20,252 cells against 124 for speed 1 ([BENCHMARKS.md](BENCHMARKS.md)). One thread needs 78 ms a step and 15 cores are worth 5.9 threads (the dynamics' phases gain 3 to 5 times, the column physics 10); speed 3 at 2,562 cells is out of reach for the same reason (10.3 ms on one thread against 0.79). Options: the rounding-level solver changes listed in BENCHMARKS.md (2 to 5%), a parallel preconditioner for the gyres, pinning the step's serial stretches to the fast cores (needs `unsafe` or a dependency), and trading accuracy (a longer radiation interval, lagged physics), which this pass did not do.
 
 ## Dynamics
 

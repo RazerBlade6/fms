@@ -417,7 +417,7 @@ Without currents both layers jump at the ends of years 2–4, by three years eac
 loops are split between threads, it takes every core and keeps all but one thread
 *spinning* through the time loop: a thread without work keeps looking for some
 instead of sleeping, because waking sleepers for each of a step's short parallel
-regions costs more than the regions' work (18% of the run at 20,252 cells). Below
+regions costs more than the regions' work (19% of the run at 20,252 cells). Below
 8,192 cells the dynamics has only its layers to share out: the run takes a thread
 for every 256 cells and lets idle ones sleep. `--threads` and `--idle` override
 both; fewer threads than cores turn the spinning off.
